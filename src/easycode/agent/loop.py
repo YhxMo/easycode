@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from easycode.agent.context import History
-from easycode.agent.summarizer import Summarizer
+from easycode.agent.summarizer import LLMSummarizer, Summarizer
 from easycode.agent.system import build_system_prompt, find_agents_rules
 from easycode.approval import (
     PERM_ASK,
@@ -23,6 +23,22 @@ from easycode.workspace import PathContext
 
 MAX_TOOL_ITERATIONS = 12
 DEFAULT_MAX_PARALLEL = 4
+
+#: Context-compaction defaults (aligned with opencode `compaction` config).
+COMPACTION_DEFAULTS: dict[str, Any] = {
+    "auto": True,
+    "buffer": 20_000,
+    "preserve_recent_tokens": None,
+    "tail_turns": None,
+    "prune": True,
+    "summary_max_chars": 8_000,
+}
+
+#: clear old tool outputs once >PRUNE_PROTECT tokens accumulate (min PRUNE_MINIMUM freed)
+PRUNE_MINIMUM = 20_000
+PRUNE_PROTECT = 40_000
+PRUNED_OUTPUT = "[Tool output cleared]"
+PROTECTED_TOOL_OUTPUTS = {"use_skill", "task"}
 
 PARALLEL_TASKS_SCHEMA = {
     "type": "function",
@@ -122,7 +138,6 @@ class Agent:
     enabled_tools: set[str] | None = None
     hook: Callable[[str, ToolCall, str], None] | None = None
     summarizer: Summarizer | None = None
-    condense_threshold: int = 20  # keep this many recent messages verbatim
     subagent_factory: Callable[[str], "Agent"] | None = None
     include_parallel_tool: bool = True
     secondary_roots: list[Path] = field(default_factory=list)
@@ -134,6 +149,8 @@ class Agent:
     mcp_manager: "MCPSessionManager | None" = None
     include_mcp_tools: bool = True
     max_context_tokens: int = 32_000
+    compaction: dict[str, Any] = field(default_factory=dict)
+    model_limits: dict[str, int] | None = None
     snapshot_manager: "FileSnapshotManager | None" = None
     _redo_stack: list[list[dict]] = field(default_factory=list)
     agents: "AgentRegistry | None" = None
@@ -141,7 +158,8 @@ class Agent:
     system_override: str | None = None
 
     def __post_init__(self) -> None:
-        self.history.max_tokens = self.max_context_tokens
+        self.compaction = {**COMPACTION_DEFAULTS, **(self.compaction or {})}
+        self.history.max_tokens = self._usable_tokens()
         self.history.set_system(self._build_system())
 
     def _build_system(self) -> str:
@@ -196,16 +214,88 @@ class Agent:
     def message_payload(self) -> list[dict]:
         return self.history.payload()
 
+    def _usable_tokens(self) -> int:
+        """Usable context budget = model window − reserved output buffer.
+
+        When the model's limits are unknown (fallback), the whole
+        ``max_context_tokens`` is usable — there is no output figure to reserve.
+        """
+        limits = self.model_limits
+        if not limits:
+            return self.max_context_tokens
+        context = limits["context"]
+        output = limits["output"] or 0
+        buffer = int(self.compaction.get("buffer") or 0)
+        reserved = min(buffer, output) if output else buffer
+        return max(0, context - reserved)
+
+    def _preserve_recent_tokens(self) -> int:
+        explicit = self.compaction.get("preserve_recent_tokens")
+        if explicit is not None:
+            return int(explicit)
+        return max(2_000, min(15_000, int(self._usable_tokens() * 0.25)))
+
+    async def _summarize(self, messages: list[dict]) -> str | None:
+        if self.summarizer is None:
+            return None
+        if isinstance(self.summarizer, LLMSummarizer):
+            return await self.summarizer.summarize(messages, previous_summary=self.history.summary)
+        return await self.summarizer(messages)
+
+    def _prune_tool_outputs(self) -> None:
+        """Clear the outputs of old completed tool calls to free context (opencode prune).
+
+        Protects the most recent two user turns, existing summaries, and the
+        ``use_skill``/``task`` tools; only clears once there are at least
+        ``PRUNE_PROTECT`` tokens of older tool output and the freed amount
+        exceeds ``PRUNE_MINIMUM``.
+        """
+        if not self.compaction.get("prune", True):
+            return
+        turns = 0
+        total = 0
+        pruned = 0
+        to_clear: list[dict] = []
+        for m in reversed(self.history.messages):
+            role = m.get("role")
+            if role == "user":
+                turns += 1
+            if turns < 2:
+                continue
+            if self.history.is_summary(m):
+                break
+            if role != "tool":
+                continue
+            if m.get("name") in PROTECTED_TOOL_OUTPUTS:
+                continue
+            content = str(m.get("content") or "")
+            if not content or content == PRUNED_OUTPUT:
+                continue
+            size = self.history.estimate_messages_tokens([m])
+            total += size
+            if total <= PRUNE_PROTECT:
+                continue
+            pruned += size
+            to_clear.append(m)
+        if pruned > PRUNE_MINIMUM:
+            for m in to_clear:
+                m["content"] = PRUNED_OUTPUT
+
     async def _condense_if_over_budget(self) -> None:
         if not self.history.over_budget():
             return
-        if self.summarizer:
-            old, has_old = self.history.summarizable_chunk(self.condense_threshold)
-            if has_old:
-                summary = await self.summarizer(old)
-                self.history.condense(summary, keep_recent=self.condense_threshold)
-                return
-        self.history.trim()
+        self._prune_tool_outputs()
+        if not self.history.over_budget():
+            return
+        tail_start = self.history.select_tail_start(
+            self._preserve_recent_tokens(), self.compaction.get("tail_turns")
+        )
+        if tail_start is None or self.summarizer is None:
+            self.history.trim()
+            return
+        summary = await self._summarize(self.history.messages[:tail_start])
+        if summary is None or not self.history.condense_from(summary, tail_start):
+            self.history.trim()
 
     async def respond(
         self, user_input: str, max_iterations: int = MAX_TOOL_ITERATIONS
@@ -459,6 +549,8 @@ class Agent:
                 mcp_servers=self.mcp_servers,
                 mcp_manager=self.mcp_manager,
                 max_context_tokens=self.max_context_tokens,
+                compaction=dict(self.compaction),
+                model_limits=self.model_limits,
                 agents=self.agents,
                 skills=self.skills,
             )

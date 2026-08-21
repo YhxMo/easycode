@@ -56,12 +56,12 @@ def build_provider(cfg: Config, alias: str) -> LiteLLMProvider:
     return LiteLLMProvider(model, **kwargs)
 
 
-def build_summarizer(cfg: Config, alias: str):
+def build_summarizer(cfg: Config, alias: str, max_chars: int = 8_000):
     """LLM summarizer for an alias (same credentials as the stream provider)."""
     from easycode.agent.summarizer import LLMSummarizer
 
     model, kwargs = provider_kwargs(cfg, alias)
-    return LLMSummarizer(model, **kwargs)
+    return LLMSummarizer(model, max_chars=max_chars, **kwargs)
 
 
 def make_agent(
@@ -90,7 +90,11 @@ def make_agent(
         permission_mode=cfg.permission_mode,
         mcp_servers=cfg.mcp_servers,
         max_context_tokens=cfg.max_context_tokens,
-        summarizer=build_summarizer(cfg, model_alias),
+        compaction=dict(cfg.compaction),
+        model_limits=cfg.get_model_limits(model_alias),
+        summarizer=build_summarizer(
+            cfg, model_alias, max_chars=int(cfg.compaction.get("summary_max_chars", 8_000))
+        ),
         agents=agents,
         skills=skills,
     )
@@ -407,7 +411,11 @@ def _render_rollback(summary: dict) -> None:
 def _rebind_agent(agent: Agent, cfg: Config, alias: str) -> None:
     """Swap the provider on the existing agent, keeping history."""
     agent.provider = build_provider(cfg, alias)
-    agent.summarizer = build_summarizer(cfg, alias)
+    agent.summarizer = build_summarizer(
+        cfg, alias, max_chars=int(cfg.compaction.get("summary_max_chars", 8_000))
+    )
+    agent.model_limits = cfg.get_model_limits(alias)
+    agent.history.max_tokens = agent._usable_tokens()
 
 
 def _approval_key(tc) -> str:

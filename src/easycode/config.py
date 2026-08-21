@@ -35,6 +35,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
 }
 
+#: Context-compaction knobs (aligned with opencode `compaction` config).
+DEFAULT_COMPACTION: dict[str, Any] = {
+    "auto": True,
+    "buffer": 20_000,  # reserved output buffer subtracted from the model window
+    "preserve_recent_tokens": None,  # None → 25% of usable, clamped 2k..15k
+    "tail_turns": None,  # max recent turns kept verbatim (None → budget-driven)
+    "prune": True,  # clear old completed tool outputs before summarizing
+    "summary_max_chars": 8_000,
+}
+
 
 def _skills_enabled(raw: dict[str, Any]) -> bool:
     skills = raw.get("skills")
@@ -110,6 +120,8 @@ class Config:
     permission_mode: str = PERM_ASK
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    compaction: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_COMPACTION))
+    model_limits_cache: dict[str, dict[str, int] | None] = field(default_factory=dict, repr=False)
     workspace_projects: list[dict[str, Any]] = field(default_factory=list)  # [{root, secondary}]
     skills_enabled: bool = True
 
@@ -145,6 +157,7 @@ class Config:
             permission_mode=permission_mode,
             mcp_servers=dict(raw.get("mcp_servers") or {}),
             max_context_tokens=int(raw.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
+            compaction={**DEFAULT_COMPACTION, **(raw.get("compaction") or {})},
             skills_enabled=_skills_enabled(raw),
         )
 
@@ -169,6 +182,28 @@ class Config:
 
     def set_default_model(self, alias: str) -> None:
         self.default_model = alias
+
+    def get_model_limits(self, alias_or_model: str) -> dict[str, int] | None:
+        """Model context/output token limits from litellm; None when unknown.
+
+        Returns ``{"context": int, "output": int}`` or None. Results are cached
+        per resolved model string; callers fall back to ``max_context_tokens``.
+        """
+        model = self.resolve_model(alias_or_model)
+        if model in self.model_limits_cache:
+            return self.model_limits_cache[model]
+        limits: dict[str, int] | None = None
+        try:
+            import litellm
+
+            info = litellm.get_model_info(model)
+            max_in = info.get("max_input_tokens")
+            if max_in:
+                limits = {"context": int(max_in), "output": int(info.get("max_output_tokens") or 0)}
+        except Exception:  # noqa: BLE001 - unknown model/custom provider → fallback
+            limits = None
+        self.model_limits_cache[model] = limits
+        return limits
 
     def path_context(self, root: Path | None = None, secondary: list[Path] | None = None) -> PathContext:
         """Sandbox context for an agent: config workspace + overrides.
@@ -216,6 +251,8 @@ class Config:
             payload["permission"] = self.permission_mode
         if self.mcp_servers:
             payload["mcp_servers"] = self.mcp_servers
+        if self.compaction != DEFAULT_COMPACTION:
+            payload["compaction"] = self.compaction
         if not self.skills_enabled:
             payload["skills"] = {"enabled": False}
         self.config_path.write_text(

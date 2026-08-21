@@ -76,8 +76,10 @@ async def test_agent_condenses_when_over_budget(tmp_path):
         calls.append(messages)
         return "COMPRESSED"
 
-    agent = make_agent(tmp_path, [{"text": "final"}], summarizer=fake_summarizer, condense_threshold=4)
-    agent.history.max_chars = 1_000  # tiny budget forces compression
+    agent = make_agent(tmp_path, [{"text": "final"}], summarizer=fake_summarizer)
+    # tiny budgets force compression and keep only one recent turn verbatim
+    agent.history.max_chars = 1_000
+    agent.compaction["preserve_recent_tokens"] = 50
     for i in range(10):
         agent.history.add_user("line: " + "x" * 200)
         agent.history.add_assistant("reply: " + "y" * 200)

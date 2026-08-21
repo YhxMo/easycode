@@ -7,7 +7,7 @@ Python CLI 编程助手（类 Claude Code / opencode），带 Web UI。
 - **内置 7 个工具**：`execute_shell` / `read_file` / `write_file` / `edit_file` / `grep` / `glob` / `parallel_tasks`
 - **子 agent 并行**：`parallel_tasks` 把独立子任务分发到子 agent（限流并发、独立上下文、结果回填）
 - **项目规则**：自动加载工作区 AGENTS.md（向上查找）注入系统提示
-- **上下文压缩**：历史超预算时由 LLM 摘要旧消息，保留最近 N 条原文
+- **上下文压缩**：历史超预算时按 token 预算保留最近几轮原文、把更早部分 LLM 压成结构化摘要，并与上一次摘要滚动合并（对齐 opencode）；压缩前先清理旧工具输出（prune）
 - **Token/成本优化**：`write_file`/`edit_file` 结果只把短确认回喂给模型（完整 diff 走 review/hook 通道，不重复消耗 token）；`use_skill` 结果去重；上下文预算用廉价字符估算门控（避免每轮全量 token 计数）；工具结果截断保持合法 JSON；`read_file` 支持分页（`offset`/`limit` 行号读取 + 续读脚注）
 - **结构化编辑 + diff**：`edit_file` 精确替换（唯一匹配校验、dry_run 预览 unified diff）；CLI diff 语法高亮，`/run` 一键改代码并汇总变更
 - **双端交互**：多行 REPL CLI + Web UI（FastAPI + SSE 流式 + React）
@@ -65,7 +65,8 @@ uv sync
 - 路径归属判定：主/次工作目录 + 系统临时目录 + `~/.easycode/` 免批准，其余为 `external`（读取允许，编辑需批准）
 - `permission`：`ask`（默认，外部文件编辑/疑似联网命令事前询问）/ `auto-review`（全自动+事后变更汇总）/ `allow-all`（全放行）；CLI 用 `--permission`
 - `mcp_servers`：外部 MCP server（stdio `{command,args}` 或 `{url}`），工具以 `mcp__<server>__<tool>` 注入 agent
-- `max_context_tokens`：上下文预算（默认 32k），超限时 LLM 摘要最旧消息，无摘要能力则硬裁剪
+- `max_context_tokens`：未知模型窗口时的上下文回退预算（默认 32k）；已知模型用 `litellm.get_model_info` 推导 `usable = 窗口 − 输出预留`
+- `compaction`：压缩微调（对齐 opencode）——`auto`（开关）、`buffer`（输出预留，默认 20000）、`preserve_recent_tokens`（保留原文的 token 预算，默认 25% usable，clamp 2k~15k）、`tail_turns`（最多保留轮数）、`prune`（压缩前清理旧工具输出）、`summary_max_chars`（摘要长度上限）
 
 - `models`：别名 → litellm 模型串（带提供商前缀，如 `deepseek/`、`openai/`、`anthropic/`），或对象 `{"model": "gpt-4o", "key_id": "my-key"}`（key 从凭据文件取）
 - 想临时换模型，无需改文件，在 REPL 里用 `/model`（见下）

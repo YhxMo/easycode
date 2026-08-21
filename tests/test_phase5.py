@@ -799,12 +799,11 @@ def test_history_trim_fallback_without_summarizer():
 
 @pytest.mark.asyncio
 async def test_agent_summarizer_wired_in_loop(tmp_path):
-    """Over-budget turns invoke the summarizer and condense history."""
+    """Over-budget turns invoke the summarizer and keep a token-selected tail."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
-    yuge = "z" * 30_000
     script = [
         {"tool_calls": [("c1", "read_file", {"path": "nope"})], "text": ""},
         {"text": "final answer"},
@@ -816,22 +815,26 @@ async def test_agent_summarizer_wired_in_loop(tmp_path):
         registry=build_registry(8000),
         root=tmp_path,
         summarizer=None,
-        max_context_tokens=1000,
+        max_context_tokens=100_000,
     )
-    agent.history = History(max_tokens=1000)
+    agent.history = History(max_tokens=100_000)
     agent.history.set_system("sys")
-    agent.history.add_user("start")
-    agent.history.add_user(yuge)  # push over budget before turn
+    agent.history.add_user("old " + "z" * 20_000)  # old turn to summarize
+    agent.history.add_assistant("old answer")
+    agent.history.add_user("recent question")  # recent turn fits the tail budget
+    agent.history.add_assistant("recent answer")
+    agent.history.max_chars = 1_000  # force over-budget before the turn
+    agent.compaction["preserve_recent_tokens"] = 2_000
 
     async def fake_summarize(messages):
         return "[synthetic summary]"
 
     agent.summarizer = fake_summarize
-    agent.condense_threshold = 2
     async for _ in agent.respond("do it"):
         pass
     contents = " ".join(str(m.get("content", "")) for m in agent.history.messages)
     assert "synthetic summary" in contents
+    assert "recent answer" in contents
 
 
 @pytest.mark.asyncio
@@ -853,6 +856,117 @@ async def test_agent_no_summarizer_hard_trim(tmp_path):
     agent.history.add_user(yuge)
     agent.history.trim()
     assert len(agent.history.messages) <= 2
+
+
+def test_usable_tokens_reserves_output_buffer(tmp_path):
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    a = Agent(
+        provider=FakeProvider(),
+        registry=build_registry(8000),
+        root=tmp_path,
+        max_context_tokens=32_000,
+        model_limits={"context": 100_000, "output": 8_000},
+    )
+    # default buffer 20_000 → reserved = min(20_000, 8_000) = 8_000
+    assert a._usable_tokens() == 100_000 - 8_000
+
+    b = Agent(provider=FakeProvider(), registry=build_registry(8000), root=tmp_path, max_context_tokens=32_000)
+    assert b.model_limits is None
+    assert b._usable_tokens() == 32_000  # unknown model → no reserve
+
+
+def test_prune_clears_old_tool_outputs(tmp_path, monkeypatch):
+    import easycode.agent.loop as loop
+
+    monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
+    monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
+    from easycode.agent.loop import Agent, PRUNED_OUTPUT
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    agent = Agent(provider=FakeProvider(), registry=build_registry(8000), root=tmp_path)
+    h = agent.history
+    h.add_user("q1")
+    h.add_tool("1", "read_file", "x" * 400)
+    h.add_user("q2")
+    h.add_tool("2", "read_file", "y" * 400)
+    h.add_user("q3")
+    h.add_tool("3", "read_file", "z" * 400)
+
+    agent._prune_tool_outputs()
+
+    assert h.messages[1]["content"] == PRUNED_OUTPUT  # oldest cleared
+    assert h.messages[3]["content"] == "y" * 400  # last 2 turns protected
+    assert h.messages[5]["content"] == "z" * 400
+
+
+def test_prune_protects_skill_output(tmp_path, monkeypatch):
+    import easycode.agent.loop as loop
+
+    monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
+    monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    agent = Agent(provider=FakeProvider(), registry=build_registry(8000), root=tmp_path)
+    h = agent.history
+    h.add_user("q1")
+    h.add_tool("1", "use_skill", "x" * 400)
+    h.add_user("q2")
+    h.add_tool("2", "read_file", "y" * 400)
+    h.add_user("q3")
+    h.add_tool("3", "read_file", "z" * 400)
+
+    agent._prune_tool_outputs()
+
+    assert h.messages[1]["content"] == "x" * 400  # skill output never cleared
+    assert h.messages[3]["content"] == "y" * 400
+    assert h.messages[5]["content"] == "z" * 400
+
+
+@pytest.mark.asyncio
+async def test_summarizer_merges_previous_summary(tmp_path, monkeypatch):
+    """The loop passes the prior summary to LLMSummarizer for rolling merge."""
+    from easycode.agent.loop import Agent
+    from easycode.agent.summarizer import LLMSummarizer
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    captured = {}
+
+    async def fake_summarize(self, messages, previous_summary=None):
+        captured["previous"] = previous_summary
+        return "[merged]"
+
+    monkeypatch.setattr(LLMSummarizer, "summarize", fake_summarize)
+
+    agent = Agent(
+        provider=FakeProvider(script=[{"text": "ok"}]),
+        registry=build_registry(8000),
+        root=tmp_path,
+        summarizer=LLMSummarizer("fake/a"),
+        max_context_tokens=100_000,
+    )
+    from easycode.agent.context import History
+
+    agent.history = History(max_tokens=100_000)
+    agent.history.set_system("sys")
+    agent.history.add_user("old " + "z" * 20_000)
+    agent.history.add_assistant("old answer")
+    agent.history.add_user("recent")
+    agent.history.add_assistant("recent answer")
+    agent.history.summary = "[first summary]"
+    agent.history.max_chars = 1_000
+    agent.compaction["preserve_recent_tokens"] = 2_000
+
+    async for _ in agent.respond("do it"):
+        pass
+    assert captured.get("previous") == "[first summary]"
+    assert "[merged]" in " ".join(str(m.get("content", "")) for m in agent.history.messages)
 
 
 def test_make_agent_wires_summarizer(tmp_path, monkeypatch):

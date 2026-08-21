@@ -302,9 +302,9 @@ def create_app(
         cfg.set_default_model(req.alias)
         cfg.save()
         for sess in store.list():
-            from easycode.cli import build_provider
+            from easycode.cli import _rebind_agent
 
-            sess.agent.provider = build_provider(cfg, req.alias)
+            _rebind_agent(sess.agent, cfg, req.alias)
             sess.model_alias = req.alias
         return {
             "default": cfg.default_model,
