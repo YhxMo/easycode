@@ -21,6 +21,8 @@ from easycode.workspace import PathContext
 
 SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
 MAX_LINE_LEN = 2000
+MAX_READ_BYTES = 50 * 1024
+DEFAULT_READ_LIMIT = 2000
 
 
 def _scope(root: Path, ctx: PathContext | None) -> PathContext:
@@ -33,7 +35,8 @@ def _json(status: str, payload: dict) -> str:
 
 class ReadFileArgs(BaseModel):
     path: str = Field(description="path, relative to a workspace root")
-    max_chars: int = Field(40_000, description="max characters to return", ge=1, le=1_000_000)
+    offset: int = Field(1, description="1-based line number to start reading from (for paging large files)", ge=1, le=10_000_000)
+    limit: int = Field(DEFAULT_READ_LIMIT, description="maximum number of lines to return", ge=1, le=1_000_000)
 
 
 def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False) -> str:
@@ -42,23 +45,64 @@ def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None,
     if not p.is_file():
         return _json("error", {"message": f"not a file: {args.path}"})
     text = p.read_text(encoding="utf-8", errors="replace")
-    truncated = len(text) > args.max_chars
-    if truncated:
-        text = text[: args.max_chars] + "\n...[truncated]"
-    lines = text.splitlines()
-    if any(len(line) > MAX_LINE_LEN for line in lines):
-        lines = [line[:MAX_LINE_LEN] + "…[overflow]" if len(line) > MAX_LINE_LEN else line for line in lines]
-        text = "\n".join(lines)
+    all_lines = text.splitlines()
+    total = len(all_lines)
+    if total == 0:
+        if args.offset > 1:
+            return _json("error", {"message": f"offset {args.offset} out of range (file has 0 lines)"})
+        content = "(empty file)"
+        return _json(
+            "ok",
+            {
+                "path": scope.display(p),
+                "in_allowed": scope.in_allowed(p),
+                "start_line": 1,
+                "end_line": 0,
+                "total_lines": 0,
+                "truncated": False,
+                "lines": 0,
+                "chars": len(content),
+                "content": content,
+            },
+        )
+    start = args.offset - 1
+    if start >= total:
+        return _json("error", {"message": f"offset {args.offset} out of range (file has {total} lines)"})
+
+    selected: list[str] = []
+    bytes_used = 0
+    truncated = False
+    for line in all_lines[start : start + args.limit]:
+        if len(line) > MAX_LINE_LEN:
+            line = line[:MAX_LINE_LEN] + "…[truncated line]"
+            truncated = True
+        size = len(line.encode("utf-8", errors="replace")) + 1
+        if selected and bytes_used + size > MAX_READ_BYTES:
+            truncated = True
+            break
+        selected.append(line)
+        bytes_used += size
+    if start + len(selected) < total:
         truncated = True
+
+    numbered = [f"{i}: {line}" for i, line in enumerate(selected, start=args.offset)]
+    content = "\n".join(numbered)
+    if truncated:
+        content += f"\n\n(Showing lines {args.offset}-{args.offset + len(selected) - 1} of {total}. Use offset={args.offset + len(selected)} to continue.)"
+    else:
+        content += f"\n\n(End of file - total {total} lines)"
     return _json(
         "ok",
         {
             "path": scope.display(p),
             "in_allowed": scope.in_allowed(p),
-            "chars": len(text),
-            "lines": len(lines),
+            "start_line": args.offset,
+            "end_line": args.offset + len(selected) - 1,
+            "total_lines": total,
             "truncated": truncated,
-            "content": text,
+            "lines": len(selected),
+            "chars": len(content),
+            "content": content,
         },
     )
 

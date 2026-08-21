@@ -6,7 +6,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncIterator, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from easycode.agent.context import History
 from easycode.agent.summarizer import Summarizer
@@ -308,7 +308,7 @@ class Agent:
                     self.hook(tc.name, tc, result)
                 if self.permission_mode == PERM_AUTO_REVIEW:
                     self._collect_review(tc, result)
-                self.history.add_tool(tc.id, tc.name, result)
+                self.history.add_tool(tc.id, tc.name, self._model_view(tc.name, result))
                 yield AgentEvent(kind="tool_result", tool_call=tc, tool_result=result)
         else:
             yield AgentEvent(kind="error", error=f"hit max tool iterations ({max_iterations})")
@@ -325,6 +325,28 @@ class Agent:
         diff = data.get("diff")
         if path:
             self._review_items.append({"tool": tc.name, "path": path, "diff": diff or ""})
+
+    def _model_view(self, name: str, result: str) -> str:
+        """Compact model-facing view of a tool result.
+
+        The full result (including the diff) still streams to the UI and the
+        review/hook channels, but the model does not need to re-read the diff
+        it just produced — align with opencode where edit/write return a short
+        confirmation and keep the diff out of the LLM-visible output.
+        """
+        if name not in ("write_file", "edit_file"):
+            return result
+        try:
+            data = json.loads(result)
+        except json.JSONDecodeError:
+            return result
+        if not isinstance(data, dict) or data.get("status") != "ok":
+            return result
+        compact: dict[str, Any] = {"status": "ok", "path": data.get("path")}
+        if data.get("dry_run"):
+            compact["dry_run"] = True
+            compact["message"] = "preview only, file unchanged"
+        return json.dumps(compact, ensure_ascii=False)
 
     async def _dispatch_tool(self, tc: ToolCall, force_allowed: bool = False) -> str:
         if self.mcp_manager and self.mcp_manager.has_tool(tc.name):
@@ -391,7 +413,7 @@ class Agent:
         # inject the body into the conversation once (stays for the session)
         self.history.add({"role": "system", "content": f"[skill: {skill.name}]\n{skill.body}"})
         return json.dumps(
-            {"status": "ok", "skill": skill.name, "loaded": True, "body": skill.body},
+            {"status": "ok", "skill": skill.name, "loaded": True},
             ensure_ascii=False,
         )
 

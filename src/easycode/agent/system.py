@@ -41,6 +41,9 @@ Available tools:
 Guidelines:
 - Before answering questions about the codebase, inspect the actual files
   (glob / grep / read_file) instead of guessing.
+- For large files, read them in pages: read_file returns line-numbered content
+  with a footer (line range + next offset). Continue with offset=<next line> to
+  page through the file instead of asking for the whole file at once.
 - When making changes, prefer write_file to create or overwrite files with the
   complete new content, or edit_file for precise surgical edits (preview with
   dry_run if unsure).

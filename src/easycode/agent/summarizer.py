@@ -22,9 +22,10 @@ SUMMARY_PROMPT = (
 class LLMSummarizer:
     """Summarize a transcript chunk with a non-streaming LLM call."""
 
-    def __init__(self, model: str, max_chars: int = 8_000) -> None:
+    def __init__(self, model: str, max_chars: int = 8_000, **kwargs: Any) -> None:
         self.model = model
         self.max_chars = max_chars
+        self.kwargs = kwargs
 
     async def summarize(self, messages: list[Message]) -> str:
         transcript = self._to_transcript(messages)
@@ -35,6 +36,7 @@ class LLMSummarizer:
                     {"role": "system", "content": SUMMARY_PROMPT},
                     {"role": "user", "content": transcript},
                 ],
+                **self.kwargs,
             )
             content = resp.choices[0].message.content or ""
         except Exception as exc:  # noqa: BLE001 - degrade to a fallback note

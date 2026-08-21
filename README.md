@@ -8,6 +8,7 @@ Python CLI 编程助手（类 Claude Code / opencode），带 Web UI。
 - **子 agent 并行**：`parallel_tasks` 把独立子任务分发到子 agent（限流并发、独立上下文、结果回填）
 - **项目规则**：自动加载工作区 AGENTS.md（向上查找）注入系统提示
 - **上下文压缩**：历史超预算时由 LLM 摘要旧消息，保留最近 N 条原文
+- **Token/成本优化**：`write_file`/`edit_file` 结果只把短确认回喂给模型（完整 diff 走 review/hook 通道，不重复消耗 token）；`use_skill` 结果去重；上下文预算用廉价字符估算门控（避免每轮全量 token 计数）；工具结果截断保持合法 JSON；`read_file` 支持分页（`offset`/`limit` 行号读取 + 续读脚注）
 - **结构化编辑 + diff**：`edit_file` 精确替换（唯一匹配校验、dry_run 预览 unified diff）；CLI diff 语法高亮，`/run` 一键改代码并汇总变更
 - **双端交互**：多行 REPL CLI + Web UI（FastAPI + SSE 流式 + React）
 - **多会话**：Web 端会话隔离 + 落盘持久化（刷新/重启可恢复）

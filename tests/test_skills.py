@@ -105,6 +105,7 @@ Special instructions to follow
     assert data["status"] == "ok"
     assert data["skill"] == "my-skill"
     assert data["loaded"] is True
+    assert "body" not in data  # P7-2: skill body is injected once via system message
 
     # After use_skill, system message is injected into history
     assert any("[skill: my-skill]" in str(m.get("content")) for m in agent.history.messages)

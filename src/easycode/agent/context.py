@@ -68,10 +68,39 @@ class History:
 
             return litellm.token_counter(messages=self.payload() or [{"role": "user", "content": ""}])
         except Exception:  # noqa: BLE001 - heuristic fallback
-            return max(1, self.estimate_chars() // 4)
+            return max(1, self._estimate_tokens_cheap())
+
+    def _estimate_tokens_cheap(self) -> int:
+        """Tokenizer-aware char heuristic without a litellm call.
+
+        CJK and other non-ASCII characters (kana, hangul, emoji…) tokenize
+        ≈ 1 token/char while ASCII is closer to 4 chars/token. A flat
+        chars/4 assumption badly under-counts non-ASCII-heavy transcripts,
+        so count non-ASCII separately.
+        """
+        text = "".join(str(m.get("content") or "") for m in self.messages)
+        text += "".join(
+            str(tc.get("function", {}).get("arguments") or "")
+            for m in self.messages
+            for tc in (m.get("tool_calls") or [])
+        )
+        non_ascii = sum(1 for ch in text if ord(ch) > 127)
+        ascii_chars = len(text) - non_ascii
+        return non_ascii + (ascii_chars + 3) // 4
 
     def over_budget(self) -> bool:
-        return self.estimate_tokens() > self.max_tokens or self.estimate_chars() > self.max_chars
+        """Cheap-gated budget check; avoid a full token count on every loop iteration.
+
+        estimate_chars()/_estimate_tokens_cheap() are O(message text) while
+        litellm.token_counter is comparatively expensive, so only run the exact
+        count when the cheap estimate approaches ~70% of the token budget.
+        """
+        chars = self.estimate_chars()
+        if chars > self.max_chars:
+            return True
+        if self._estimate_tokens_cheap() <= int(self.max_tokens * 0.7):
+            return False
+        return self.estimate_tokens() > self.max_tokens
 
     def trim(self) -> None:
         """Drop oldest messages beyond the limits (no summarization)."""

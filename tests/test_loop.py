@@ -117,3 +117,51 @@ async def test_concurrent_turns_isolated(tmp_path):
     assert "".join(e.content or "" for e in e2) == "B"
     assert a1.history.messages[-1]["content"] == "A"
     assert a2.history.messages[-1]["content"] == "B"
+
+
+async def test_write_file_model_view_strips_diff(tmp_path):
+    """P7-1: history/model payload must not re-feed the diff, but the UI
+    tool_result event keeps it."""
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": "a.txt", "content": "line1\nline2\n"})], "text": ""},
+        {"text": "done"},
+    ]
+    agent, provider = make_agent(tmp_path, script)
+    events = await collect(agent, "write")
+
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "line1\nline2\n"
+    results = [e.tool_result for e in events if e.kind == "tool_result"]
+    assert results and "diff" in results[0]
+
+    history_tools = [m for m in agent.history.messages if m.get("role") == "tool"]
+    assert history_tools
+    assert "diff" not in history_tools[0]["content"]
+    assert '"status": "ok"' in history_tools[0]["content"]
+
+    payload_tools = [m for m in provider.calls[1] if m["role"] == "tool"]
+    assert payload_tools
+    assert "diff" not in payload_tools[0]["content"]
+
+
+async def test_edit_file_model_view_strips_diff_review_keeps(tmp_path):
+    """P7-1: same for edit_file — the auto-review diff stays complete."""
+    import json as _json
+
+    f = tmp_path / "e.py"
+    f.write_text("def one():\n    return 1\n", encoding="utf-8")
+    script = [
+        {"tool_calls": [("c1", "edit_file", {"path": "e.py", "old_string": "return 1", "new_string": "return 42"})], "text": ""},
+        {"text": "changed"},
+    ]
+    agent, provider = make_agent(tmp_path, script)
+    agent.permission_mode = "auto-review"
+    events = await collect(agent, "edit")
+
+    history_tools = [m for m in agent.history.messages if m.get("role") == "tool"]
+    assert history_tools
+    assert "diff" not in history_tools[0]["content"]
+
+    reviews = [e for e in events if e.kind == "review"]
+    assert reviews
+    changes = _json.loads(reviews[0].content)["changes"]
+    assert "return 42" in changes[0]["diff"]
