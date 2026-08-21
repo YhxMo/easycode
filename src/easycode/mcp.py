@@ -23,9 +23,13 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+from easycode.sandbox import sandbox_command
+from easycode.workspace import PathContext
 
 log = logging.getLogger("easycode.mcp")
 
@@ -90,19 +94,27 @@ class _BaseTransport:
 class StdioTransport(_BaseTransport):
     """Newline-delimited JSON over a spawned subprocess."""
 
-    def __init__(self, command: str, args: list[str], env: dict[str, str] | None, cwd: str | None) -> None:
+    def __init__(
+        self,
+        command: str,
+        args: list[str],
+        env: dict[str, str] | None,
+        cwd: str | None,
+        ctx: PathContext,
+    ) -> None:
         super().__init__()
         self.command = command
         self.args = args
         self.env = env
         self.cwd = cwd
+        self.ctx = ctx
         self.proc: asyncio.subprocess.Process | None = None
 
     async def start(self) -> None:
         merged_env = {**os.environ, **(self.env or {})}
+        command = sandbox_command([self.command, *self.args], self.ctx)
         self.proc = await asyncio.create_subprocess_exec(
-            self.command,
-            *self.args,
+            *command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -254,7 +266,11 @@ class MCPSession:
             except (TypeError, ValueError):
                 log.warning("MCP server %r tool %r has invalid schema; skipped", self.name, name)
                 continue
-            self.tools[fname] = {"name": name, "schema": schema}
+            self.tools[fname] = {
+                "name": name,
+                "schema": schema,
+                "annotations": dict(tool.get("annotations") or {}),
+            }
 
     async def call(self, fname: str, arguments: dict[str, Any]) -> str:
         entry = self.tools.get(fname)
@@ -286,8 +302,9 @@ class MCPSession:
 class MCPSessionManager:
     """Owns one :class:`MCPSession` per configured server; failures degrade."""
 
-    def __init__(self, servers: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, servers: dict[str, dict[str, Any]], ctx: PathContext | None = None) -> None:
         self._servers = servers
+        self._ctx = ctx or PathContext(primary=Path.cwd())
         self._sessions: dict[str, MCPSession] = {}
         self._started = False
         self._lock = asyncio.Lock()
@@ -319,6 +336,7 @@ class MCPSessionManager:
                 args=list(conf.get("args") or []),
                 env=conf.get("env"),
                 cwd=conf.get("cwd"),
+                ctx=self._ctx,
             )
         session = MCPSession(name, transport)
         await session.start()
@@ -332,6 +350,22 @@ class MCPSessionManager:
 
     def has_tool(self, name: str) -> bool:
         return any(name in session.tools for session in self._sessions.values())
+
+    def _tool_entry(self, name: str) -> dict[str, Any] | None:
+        for session in self._sessions.values():
+            if name in session.tools:
+                return session.tools[name]
+        return None
+
+    def requires_approval(self, name: str) -> bool:
+        entry = self._tool_entry(name)
+        if entry is None:
+            return False
+        annotations = entry.get("annotations") or {}
+        return annotations.get("destructiveHint") is True or annotations.get("readOnlyHint") is False
+
+    def approval_reason(self, name: str) -> str:
+        return f"MCP 工具声明存在副作用: {name}"
 
     async def call(self, fname: str, arguments: dict[str, Any]) -> str:
         for session in self._sessions.values():

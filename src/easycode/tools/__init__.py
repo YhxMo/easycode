@@ -26,7 +26,7 @@ ALL_TOOL_NAMES = ("execute_shell", "read_file", "write_file", "edit_file", "grep
 
 @tool("execute_shell", "Run a shell command in the workspace root and capture output.", ExecuteShellArgs)
 def _execute_shell(args: ExecuteShellArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False) -> str:
-    return execute_shell(args, root=root)
+    return execute_shell(args, root=root, ctx=ctx, force_allowed=force_allowed)
 
 
 @tool("read_file", "Read a text file (relative to a workspace root).", ReadFileArgs)

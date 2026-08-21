@@ -31,6 +31,9 @@ class Session:
     secondary_roots: list[str] = field(default_factory=list)
     permission_mode: str = "ask"  # ask | auto-review | allow-all
     cancel_event: Any | None = None  # asyncio.Event; set by the cancel endpoint
+    always_allow: list[str] = field(default_factory=list)  # approval_key() scopes, persists
+    approval_log: list[dict] = field(default_factory=list)  # resolved approval records
+    user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
 
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
@@ -42,12 +45,16 @@ class Session:
 
     @property
     def summary(self) -> dict:
+        policy = self.agent.execution_policy
         out = {
             "id": self.id,
             "title": self.title,
             "created_at": self.created_at,
             "model_alias": self.model_alias,
             "permission_mode": self.permission_mode,
+            "sandbox_mode": policy.sandbox_mode,
+            "approval_policy": policy.approval_policy,
+            "approvals_reviewer": policy.approvals_reviewer,
         }
         if self.root:
             out["root"] = self.root
@@ -145,15 +152,20 @@ class SessionStore:
                     root=root,
                     secondary_roots=secondary,
                     permission_mode=permission_mode,
+                    always_allow=list(data.get("always_allow") or []),
+                    approval_log=list(data.get("approval_log") or []),
+                    user_times=list(data.get("user_times") or []),
                 )
                 sess.agent.history.messages = list(sess.messages)
                 self._sessions[sess.id] = sess
-            except (OSError, KeyError, json.JSONDecodeError):
+            except (OSError, KeyError, ValueError, json.JSONDecodeError):
                 continue
 
     def record_exchange(self, session: Session) -> None:
         """Persist current history after a turn."""
         session.messages = list(session.agent.history.messages)
+        n_user = sum(1 for m in session.messages if m.get("role") == "user")
+        session.user_times = list(session.user_times[:n_user])
         self._flush(session)
 
     def _flush(self, session: Session) -> None:
@@ -164,6 +176,9 @@ class SessionStore:
             "model_alias": session.model_alias,
             "permission_mode": session.permission_mode,
             "messages": session.messages,
+            "always_allow": list(session.always_allow),
+            "approval_log": list(session.approval_log),
+            "user_times": list(session.user_times),
         }
         if session.root:
             payload["root"] = session.root

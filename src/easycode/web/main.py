@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -14,15 +15,46 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from easycode.config import Config
-from easycode.credentials import Credential, delete_credential, load_credentials, save_credential
+from easycode.config import API_FORMATS, DEFAULT_API_FORMAT, Config, infer_api_format
+from easycode.credentials import (
+    Credential,
+    delete_credential,
+    new_credential_id,
+    load_credentials,
+    save_credential,
+)
 from easycode.skills import SkillRegistry
 from easycode.web.bridge import ApprovalBroker, event_to_sse, stream_chat_with_approval
 from easycode.web.session import Session, SessionStore
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
-WEB_KEY_PREFIX = "web-"
+FORMAT_PROVIDERS = {
+    "openai_responses": "openai",
+    "openai_compatible": "openai",
+    "anthropic": "anthropic",
+    "bedrock": "bedrock",
+    "gemini": "gemini",
+}
+
+
+def infer_provider(model: str, api_format: str) -> str:
+    """Infer the supplier independently from the wire API format."""
+    prefix = model.split("/", 1)[0].strip().lower() if "/" in model else ""
+    if prefix and prefix != "responses":
+        return prefix
+    return FORMAT_PROVIDERS.get(api_format, "custom")
+
+
+def _derive_api_format(model: str) -> str:
+    """API format for a model when the credential stores none.
+
+    Recognises OpenAI Responses (``responses/`` route), and the native
+    Anthropic / Bedrock / Gemini formats from the wire provider (``provider``
+    or the model-string prefix); everything else defaults to OpenAI-compatible
+    chat completions.
+    """
+    return infer_api_format(model)
 
 
 def _attach_snapshot(sess: Session) -> None:
@@ -184,6 +216,7 @@ def build_projects(cfg: Config, store: SessionStore) -> list[dict]:
 
 class ApprovalRequest(BaseModel):
     approve: bool = True
+    always: bool = False
 
 
 class UndoRequest(BaseModel):
@@ -200,6 +233,17 @@ class AddModelRequest(BaseModel):
     provider: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+    api_format: str = DEFAULT_API_FORMAT
+
+
+class UpdateModelRequest(BaseModel):
+    model: str
+    new_alias: str | None = None
+    provider: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    clear_key: bool = False
+    api_format: str | None = None
 
 
 def create_app(
@@ -233,6 +277,25 @@ def create_app(
     store = session_store or SessionStore(cfg, cfg.root, factory)
     store.load_all()
 
+    def models_response() -> dict:
+        providers: dict[str, str] = {}
+        limits: dict[str, dict[str, int] | None] = {}
+        credentials = load_credentials()
+        for alias, spec in cfg.models.items():
+            credential = credentials.get(spec.key_id) if spec.key_id else None
+            providers[alias] = (
+                spec.provider
+                or (credential.provider if credential else None)
+                or infer_provider(spec.model, spec.api_format)
+            )
+            limits[alias] = cfg.get_model_limits(alias)
+        return {
+            "default": cfg.default_model,
+            "models": {alias: spec.to_value() for alias, spec in cfg.models.items()},
+            "providers": providers,
+            "limits": limits,
+        }
+
     app = FastAPI(title="Easy code", version="0.1.0")
     app.state.store = store
     app.add_middleware(
@@ -244,40 +307,134 @@ def create_app(
 
     @app.get("/api/models")
     def get_models() -> dict:
-        """Masked model list: values are str or {model, key_id} — never api_key."""
+        """Return model records without exposing API keys."""
         reloaded = Config.load(start=cfg.root)
         cfg.models = reloaded.models
         cfg.default_model = reloaded.default_model
-        return {
-            "default": cfg.default_model,
-            "models": {alias: spec.to_value() for alias, spec in cfg.models.items()},
-        }
+        return models_response()
 
     @app.post("/api/models/add")
     def add_model(req: AddModelRequest) -> dict:
         alias = req.alias.strip()
-        if not alias or not req.model.strip():
+        model = req.model.strip()
+        if not alias or not model:
             raise HTTPException(422, "alias and model are required")
-        if req.api_key:
-            key_id = f"{WEB_KEY_PREFIX}{alias}"
+        api_format = req.api_format
+        if api_format not in API_FORMATS:
+            raise HTTPException(422, f"unsupported api_format: {api_format}")
+        if alias in cfg.models:
+            raise HTTPException(409, f"model alias already exists: {alias}")
+
+        api_key = (req.api_key or "").strip()
+        base_url = (req.base_url or "").strip() or None
+        key_id = None
+        if api_key or base_url:
+            key_id = new_credential_id()
             save_credential(
                 Credential(
                     key_id=key_id,
-                    api_key=req.api_key,
+                    api_key=api_key,
                     provider=req.provider,
-                    base_url=req.base_url,
+                    base_url=base_url,
                 )
             )
-            cfg.set_model_alias(alias, {"model": req.model, "key_id": key_id})
-        else:
-            cfg.set_model_alias(alias, req.model)
+        entry: dict[str, str] = {"model": model, "api_format": api_format}
+        if req.provider and req.provider.strip():
+            entry["provider"] = req.provider.strip()
+        if key_id:
+            entry["key_id"] = key_id
+        cfg.set_model_alias(alias, entry)
         if cfg.default_model not in cfg.models:
             cfg.set_default_model(alias)
         cfg.save()
+        return models_response()
+
+    @app.get("/api/models/{alias}")
+    def get_model_detail(alias: str) -> dict:
+        """Return one model's editable configuration.
+
+        Unlike the collection endpoint, this returns the raw API key because
+        the localhost-only edit dialog must be able to reveal it on demand.
+        Models without a stored credential fall back to provider env vars so
+        the dialog shows the effective configuration (masked until revealed).
+        """
+        spec = cfg.models.get(alias)
+        if spec is None:
+            raise HTTPException(404, f"unknown alias: {alias}")
+        cred = load_credentials().get(spec.key_id) if spec.key_id else None
+        api_format = spec.api_format or _derive_api_format(spec.model)
+        provider = spec.provider or (cred.provider if cred and cred.provider else infer_provider(spec.model, api_format))
+        api_key = cred.api_key if cred else ""
+        base_url = cred.base_url if cred else None
         return {
-            "default": cfg.default_model,
-            "models": {a: spec.to_value() for a, spec in cfg.models.items()},
+            "alias": alias,
+            "model": spec.model,
+            "key_id": spec.key_id,
+            "provider": provider,
+            "base_url": base_url,
+            "api_key": api_key,
+            "api_format": api_format,
+            "has_api_key": bool(api_key),
         }
+
+    @app.put("/api/models/{alias}")
+    def update_model(alias: str, req: UpdateModelRequest) -> dict:
+        spec = cfg.models.get(alias)
+        target_alias = (req.new_alias or alias).strip()
+        model = req.model.strip()
+        if spec is None:
+            raise HTTPException(404, f"unknown alias: {alias}")
+        if not target_alias or not model:
+            raise HTTPException(422, "alias and model are required")
+        if target_alias != alias and target_alias in cfg.models:
+            raise HTTPException(409, f"alias already exists: {target_alias}")
+
+        api_format = req.api_format or spec.api_format
+        if api_format not in API_FORMATS:
+            raise HTTPException(422, f"unsupported api_format: {api_format}")
+
+        current_cred = load_credentials().get(spec.key_id) if spec.key_id else None
+        if req.clear_key:
+            if spec.key_id:
+                delete_credential(spec.key_id)
+            key_id = None
+        else:
+            next_api_key = (req.api_key if req.api_key is not None else (current_cred.api_key if current_cred else "")).strip()
+            next_base_url = req.base_url if req.base_url is not None else (current_cred.base_url if current_cred else None)
+            if spec.key_id or next_api_key or next_base_url:
+                key_id = spec.key_id or new_credential_id()
+                save_credential(
+                    Credential(
+                        key_id=key_id,
+                        api_key=next_api_key,
+                        provider=req.provider if req.provider is not None else (current_cred.provider if current_cred else None),
+                        base_url=next_base_url,
+                    )
+                )
+            else:
+                key_id = None
+
+        if target_alias != alias:
+            cfg.rename_model_alias(alias, target_alias)
+        provider = req.provider.strip() if req.provider is not None else spec.provider
+        entry: dict[str, str] = {"model": model, "api_format": api_format}
+        if provider:
+            entry["provider"] = provider
+        if key_id:
+            entry["key_id"] = key_id
+        cfg.set_model_alias(target_alias, entry)
+        cfg.save()
+
+        for sess in store.list():
+            if sess.model_alias != alias:
+                continue
+            from easycode.cli import _rebind_agent
+
+            _rebind_agent(sess.agent, cfg, target_alias)
+            sess.model_alias = target_alias
+            store.record_exchange(sess)
+
+        return models_response()
 
     @app.delete("/api/models/{alias}")
     def delete_model(alias: str) -> dict:
@@ -285,15 +442,12 @@ def create_app(
             raise HTTPException(404, f"unknown alias: {alias}")
         spec = cfg.models[alias]
         del cfg.models[alias]
-        if spec.key_id == f"{WEB_KEY_PREFIX}{alias}":
+        if spec.key_id:
             delete_credential(spec.key_id)
         if cfg.default_model == alias:
             cfg.set_default_model(next(iter(cfg.models), "deepseek-v4flash"))
         cfg.save()
-        return {
-            "default": cfg.default_model,
-            "models": {a: s.to_value() for a, s in cfg.models.items()},
-        }
+        return models_response()
 
     @app.post("/api/models")
     def set_model(req: ModelRequest) -> dict:
@@ -306,10 +460,7 @@ def create_app(
 
             _rebind_agent(sess.agent, cfg, req.alias)
             sess.model_alias = req.alias
-        return {
-            "default": cfg.default_model,
-            "models": {a: spec.to_value() for a, spec in cfg.models.items()},
-        }
+        return models_response()
 
     @app.get("/api/sessions")
     def list_sessions() -> list[dict]:
@@ -320,7 +471,12 @@ def create_app(
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
-        return {**sess.summary, "messages": sess.messages}
+        return {
+            **sess.summary,
+            "messages": sess.messages,
+            "approvals": list(sess.approval_log),
+            "user_times": list(sess.user_times),
+        }
 
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str) -> dict:
@@ -426,9 +582,9 @@ def create_app(
 
     @app.post("/api/approval/{approval_id}")
     def resolve_approval(approval_id: str, req: ApprovalRequest) -> dict:
-        if not broker.resolve(approval_id, req.approve):
+        if not broker.resolve(approval_id, req.approve, req.always):
             raise HTTPException(404, f"unknown or expired approval: {approval_id}")
-        return {"ok": True, "approve": req.approve}
+        return {"ok": True, "approve": req.approve, "always": req.always}
 
     @app.post("/api/sessions/{session_id}/cancel")
     def cancel_session(session_id: str) -> dict:
@@ -508,6 +664,7 @@ def create_app(
         if sess.title == "新会话":
             sess.title = raw_message.strip()[:30]
             store.record_exchange(sess)
+        sess.user_times.append(datetime.now(timezone.utc).isoformat())
 
         async def gen():
             cancel_event = asyncio.Event()
@@ -517,15 +674,17 @@ def create_app(
                     {"type": "session", "session_id": sess.id}, ensure_ascii=False
                 ) + "\n\n"
                 gen_it = stream_chat_with_approval(
-                    sess.agent, req.message, broker, cancel_event=cancel_event
+                    sess.agent, req.message, broker, cancel_event=cancel_event, session=sess
                 )
                 async for kind, payload in gen_it:
                     if kind == "approval":
-                        approval_id, tc = payload
+                        approval_id, tc, reason, scope = payload
                         data = json.dumps(
                             {
                                 "type": "approval_required",
                                 "approval_id": approval_id,
+                                "reason": reason,
+                                "scope": scope,
                                 "tool_call": {
                                     "id": tc.id,
                                     "name": tc.name,
@@ -551,7 +710,15 @@ def create_app(
                     sess.cancel_event = None
                 store.record_exchange(sess)
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     dist = static_dir or FRONTEND_DIST
     if dist.is_dir():
@@ -576,7 +743,7 @@ def create_app(
             candidate = (dist / full_path).resolve()
             if full_path and candidate.is_file() and str(candidate).startswith(str(dist.resolve())):
                 return FileResponse(candidate)
-            return FileResponse(dist / "index.html")
+            return FileResponse(dist / "index.html", headers={"Cache-Control": "no-store"})
 
     return app
 

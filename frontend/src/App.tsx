@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  ApprovalRecord,
   CommandInfo,
   ModelsInfo,
   SessionDetail,
@@ -21,6 +22,7 @@ import {
   undoSession,
 } from "./api";
 import type { ChatOptions } from "./api";
+import { ApprovalSheet } from "./ApprovalSheet";
 import { CommandMenu } from "./CommandMenu";
 import { ModelPicker } from "./ModelPicker";
 import { PermissionPicker } from "./PermissionPicker";
@@ -28,11 +30,13 @@ import { ProjectPicker, basename } from "./ProjectPicker";
 import { SecondaryEditor } from "./SecondaryEditor";
 import { ToolCard } from "./ToolCard";
 
+type ApprovalState = "pending" | "approved" | "denied" | "expired";
+
 type Item =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; time?: string }
   | { kind: "assistant"; text: string }
-  | { kind: "tool"; name: string; args: Record<string, unknown>; result?: string; done: boolean }
-  | { kind: "approval"; id: string; name: string; args: Record<string, unknown>; decided?: boolean }
+  | { kind: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; done: boolean }
+  | { kind: "approval"; id: string; toolCallId: string; name: string; args: Record<string, unknown>; reason?: string; scope?: string; state: ApprovalState }
   | { kind: "review"; text: string }
   | { kind: "notice"; text: string }
   | { kind: "error"; text: string };
@@ -56,6 +60,31 @@ function FolderIcon() {
   );
 }
 
+function UndoIcon() {
+  return (
+    <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M9 7 4 12l5 5" />
+      <path d="M4 12h10a6 6 0 0 1 6 6" />
+    </svg>
+  );
+}
+
+function CopyIcon({ copied = false }: { copied?: boolean }) {
+  if (copied) {
+    return (
+      <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="m5 12 4 4L19 6" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="8" y="8" width="11" height="11" rx="1.5" />
+      <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" />
+    </svg>
+  );
+}
+
 function normalizeToolArgs(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -73,24 +102,63 @@ function normalizeToolArgs(value: unknown): Record<string, unknown> {
   return {};
 }
 
-function historyToItems(messages: any[]): Item[] {
+function currentTimeLabel(): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date());
+}
+
+function formatClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return currentTimeLabel();
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(d);
+}
+
+function historyToItems(
+  messages: any[],
+  approvals: ApprovalRecord[] = [],
+  userTimes: string[] = [],
+): Item[] {
   const items: Item[] = [];
+  const toolResults = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role === "tool" && m.tool_call_id) toolResults.set(String(m.tool_call_id), String(m.content ?? ""));
+  }
+  const approvalByCall = new Map<string, ApprovalRecord>();
+  for (const a of approvals) approvalByCall.set(String(a.tool_call_id), a);
+  let userIndex = 0;
   for (const m of messages) {
     if (m.role === "user") {
-      items.push({ kind: "user", text: String(m.content ?? "") });
+      items.push({ kind: "user", text: String(m.content ?? ""), time: userTimes[userIndex] });
+      userIndex += 1;
     } else if (m.role === "assistant") {
       if (m.content) items.push({ kind: "assistant", text: String(m.content) });
       if (m.tool_calls?.length) {
         for (const tc of m.tool_calls) {
-          if (tc.function) {
+          if (!tc.function) continue;
+          const id = String(tc.id ?? "");
+          const approval = approvalByCall.get(id);
+          if (approval) {
             items.push({
-              kind: "tool",
-              name: tc.function.name,
-              args: normalizeToolArgs(tc.function.arguments),
-              result: "(上次会话中执行)",
-              done: true,
+              kind: "approval",
+              id: `hist-${id}`,
+              toolCallId: id,
+              name: approval.name,
+              args: approval.args ?? {},
+              reason: approval.reason,
+              scope: approval.scope,
+              state: approval.decision,
             });
           }
+          items.push({
+            kind: "tool",
+            id,
+            name: tc.function.name,
+            args: normalizeToolArgs(tc.function.arguments),
+            result: toolResults.get(id),
+            done: true,
+          });
         }
       }
     }
@@ -111,26 +179,31 @@ export default function App() {
   const [currentSecondary, setCurrentSecondary] = useState<string[]>([]);
   const [chosenPermission, setChosenPermission] = useState<string>("ask");
   const [currentPermission, setCurrentPermission] = useState<string>("ask");
+  const [overlayOpen, setOverlayOpen] = useState(true);
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdIndex, setCmdIndex] = useState(0);
   const [rollbackInfo, setRollbackInfo] = useState<RollbackInfo | null>(null);
+  const [copiedMessage, setCopiedMessage] = useState<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
-  const decideApproval = useCallback(async (index: number, approve: boolean) => {
-    const item = items[index];
-    if (item?.kind !== "approval" || item.decided) return;
-    setItems((prev) =>
-      prev.map((it, i) => (i === index ? { ...it, decided: true } : it)),
-    );
-    try {
-      await submitApproval(item.id, approve);
-    } catch {
-      setItems((prev) =>
-        prev.map((it, i) => (i === index ? { ...it, decided: false } : it)),
-      );
-    }
-  }, [items]);
+  const decideApproval = useCallback(
+    async (item: Extract<Item, { kind: "approval" }>, approve: boolean, always: boolean) => {
+      const mark = (state: ApprovalState) =>
+        setItems((prev) =>
+          prev.map((it) => (it.kind === "approval" && it.id === item.id ? { ...it, state } : it)),
+        );
+      mark(approve ? "approved" : "denied");
+      try {
+        await submitApproval(item.id, approve, always);
+      } catch {
+        // The approval was already resolved (e.g. turn cancelled, timed out or
+        // the user refreshed) — mark it expired instead of reverting to pending.
+        mark("expired");
+      }
+    },
+    [],
+  );
 
   const refreshSessions = useCallback(() => {
     fetchSessions().then(setSessions).catch(() => {});
@@ -154,10 +227,11 @@ export default function App() {
       setCurrentId(id);
       setItems([]);
       setRollbackInfo(null);
+      setOverlayOpen(true);
       if (id) {
         try {
           const detail: SessionDetail = await fetchSession(id);
-          setItems(historyToItems(detail.messages));
+          setItems(historyToItems(detail.messages, detail.approvals, detail.user_times));
           setCurrentSecondary(detail.secondary_roots ?? []);
           setCurrentPermission(detail.permission_mode ?? "ask");
         } catch {
@@ -197,6 +271,28 @@ export default function App() {
 
   const currentRoot = sessions.find((s) => s.id === currentId)?.root ?? null;
   const projectName = currentRoot ? basename(currentRoot) : DEFAULT_PROJECT;
+  const exploration = useMemo(() => {
+    let reads = 0;
+    let searches = 0;
+    for (const item of items) {
+      if (item.kind !== "tool") continue;
+      if (/read|list_dir|glob|find/i.test(item.name)) reads += 1;
+      if (/search|grep/i.test(item.name)) searches += 1;
+    }
+    return { reads, searches };
+  }, [items]);
+  const lastItem = items[items.length - 1];
+  const activeTool = lastItem?.kind === "tool" && !lastItem.done;
+  const pendingApprovals = useMemo(
+    () => items.filter((it): it is Extract<Item, { kind: "approval" }> => it.kind === "approval" && it.state === "pending"),
+    [items],
+  );
+  const pendingApproval = pendingApprovals.length > 0;
+  const currentSession = sessions.find((s) => s.id === currentId);
+  const currentModelName =
+    (currentId ? (models.models[currentSession?.model_alias ?? ""]?.model ?? currentSession?.model_alias) : null) ??
+    models.models[models.default]?.model ??
+    models.default;
 
   const changePermission = useCallback(
     async (mode: string) => {
@@ -256,6 +352,15 @@ export default function App() {
     if (currentId) cancelSessionChat(currentId).catch(() => {});
   }, [currentId]);
 
+  const copyMessage = useCallback((text: string, index: number) => {
+    const write = navigator.clipboard?.writeText(text);
+    if (!write) return;
+    void write.then(() => {
+      setCopiedMessage(index);
+      window.setTimeout(() => setCopiedMessage((current) => (current === index ? null : current)), 2000);
+    });
+  }, []);
+
   const ranTool = useRef(false);
   const send = useCallback(async () => {
     const text = input.trim();
@@ -269,8 +374,8 @@ export default function App() {
     if (currentId === null) {
       if (chosenRoot) opts.root = chosenRoot;
       if (chosenSecondary.length) opts.secondary_roots = chosenSecondary;
-      opts.permission_mode = chosenPermission;
     }
+    opts.permission_mode = currentId === null ? chosenPermission : currentPermission;
     const patches: Item[] = [
       { kind: "user", text },
       { kind: "assistant", text: "" },
@@ -278,16 +383,30 @@ export default function App() {
     setItems((prev) => [...prev, ...patches]);
     try {
       await streamChat(sessionId, text, (ev) => {
+        const expirePending = () =>
+          setItems((prev) =>
+            prev.map((it) =>
+              it.kind === "approval" && it.state === "pending" ? { ...it, state: "expired" } : it,
+            ),
+          );
         if (ev.type === "session") {
           if (ev.session_id) setCurrentId(ev.session_id);
+          refreshSessions();
         } else if (ev.type === "text") {
           setItems((prev) => {
             const next = [...prev];
             const last = next[next.length - 1];
-            if (last?.kind === "assistant") last.text += ev.content ?? "";
+            if (last?.kind === "assistant") {
+              last.text += ev.content ?? "";
+            } else {
+              // Text after a tool call starts a new assistant block (the old
+              // handler dropped it, hiding the model's final reply).
+              next.push({ kind: "assistant", text: ev.content ?? "" });
+            }
             return next;
           });
         } else if (ev.type === "cancelled") {
+          expirePending();
           setItems((prev) => [...prev, { kind: "notice", text: "⏹ 已中断" }]);
         } else if (ev.type === "tool_start") {
           ranTool.current = true;
@@ -295,6 +414,7 @@ export default function App() {
             ...prev,
             {
               kind: "tool",
+              id: ev.tool_call.id,
               name: ev.tool_call.name,
               args: ev.tool_call.arguments,
               done: false,
@@ -303,14 +423,17 @@ export default function App() {
         } else if (ev.type === "tool_result") {
           setItems((prev) => {
             const next = [...prev];
-            const last = next[next.length - 1];
-            if (last?.kind === "tool") {
-              last.result = ev.result;
-              last.done = true;
+            const tool = [...next].reverse().find(
+              (item) => item.kind === "tool" && item.id === ev.tool_call?.id,
+            );
+            if (tool?.kind === "tool") {
+              tool.result = ev.result;
+              tool.done = true;
             }
             return next;
           });
         } else if (ev.type === "done") {
+          expirePending();
           // 工具执行后若无最终回复，提示完成状态，避免看起来卡住
           setItems((prev) => {
             const last = prev[prev.length - 1];
@@ -322,18 +445,30 @@ export default function App() {
               last?.kind === "tool" && !last.done
                 ? "⚠ 回合已结束但工具未返回结果"
                 : "✓ 已完成（模型未输出文字回复，工具可能已生效）";
-            return [...prev, { kind: "error", text: msg }];
+            return [
+              ...prev,
+              {
+                kind: noReply && last?.kind === "tool" && !last.done ? "error" : "notice",
+                text: msg,
+              },
+            ];
           });
         } else if (ev.type === "error") {
+          expirePending();
           setItems((prev) => [...prev, { kind: "error", text: ev.error ?? "error" }]);
         } else if (ev.type === "approval_required") {
+          setOverlayOpen(true);
           setItems((prev) => [
             ...prev,
             {
               kind: "approval",
               id: ev.approval_id,
+              toolCallId: ev.tool_call.id,
               name: ev.tool_call.name,
               args: ev.tool_call.arguments,
+              reason: ev.reason,
+              scope: ev.scope,
+              state: "pending" as ApprovalState,
             },
           ]);
         } else if (ev.type === "review") {
@@ -347,6 +482,9 @@ export default function App() {
       ]);
     } finally {
       setBusy(false);
+      setItems((prev) =>
+        prev.map((it) => (it.kind === "approval" && it.state === "pending" ? { ...it, state: "expired" } : it)),
+      );
       refreshSessions();
       if (currentId === null) {
         // pick up the newly-created session
@@ -462,9 +600,14 @@ export default function App() {
             >
               ↶ <span>撤销</span>
             </button>
-            <span className={`connection-state ${busy ? "working" : ""}`}>
+            <span
+              className={`connection-state ${busy ? "working" : ""} ${pendingApproval ? "clickable" : ""}`}
+              role={pendingApproval ? "button" : undefined}
+              title={pendingApproval ? "打开批准" : undefined}
+              onClick={pendingApproval ? () => setOverlayOpen(true) : undefined}
+            >
               <span aria-hidden="true" />
-              {busy ? "正在工作" : "已连接"}
+              {busy ? (pendingApproval ? "等待批准" : "正在工作") : "已连接"}
             </span>
           </div>
         </header>
@@ -483,14 +626,30 @@ export default function App() {
               return (
                 <div key={i} className="msg-row user">
                   <div className="msg user">{it.text}</div>
-                  <button
-                    className="rb-inline"
-                    title="回滚到这条 prompt 之前（删除其后所有消息与文件改动）"
-                    disabled={busy || currentId === null}
-                    onClick={() => rollback("undo", nth)}
-                  >
-                    <span aria-hidden="true">↶</span> 撤销此消息
-                  </button>
+                  <div className="msg-meta">
+                    <span>Build</span>
+                    <span className="msg-meta-separator">·</span>
+                    <span>{currentModelName}</span>
+                    <span className="msg-meta-separator">·</span>
+                    <time>{it.time ? formatClock(it.time) : currentTimeLabel()}</time>
+                    <button
+                      className="msg-action"
+                      title="回滚到这条 prompt 之前"
+                      aria-label="回滚到这条消息之前"
+                      disabled={busy || currentId === null}
+                      onClick={() => rollback("undo", nth)}
+                    >
+                      <UndoIcon />
+                    </button>
+                    <button
+                      className="msg-action"
+                      title="复制消息"
+                      aria-label="复制消息"
+                      onClick={() => copyMessage(it.text, i)}
+                    >
+                      <CopyIcon copied={copiedMessage === i} />
+                    </button>
+                  </div>
                 </div>
               );
             }
@@ -505,31 +664,32 @@ export default function App() {
             }
             if (it.kind === "tool") {
               return (
-                <ToolCard key={i} tool={{ id: String(i), name: it.name, arguments: it.args }} result={it.result} done={it.done} />
+              <ToolCard key={i} tool={{ id: it.id || String(i), name: it.name, arguments: it.args }} result={it.result} done={it.done} />
               );
             }
             if (it.kind === "approval") {
+              const label =
+                it.state === "approved"
+                  ? "已允许"
+                  : it.state === "denied"
+                    ? "已拒绝"
+                    : it.state === "expired"
+                      ? "已过期"
+                      : "等待批准";
               return (
-                <div key={i} className="approval-card">
-                  <div className="approval-title">⚠ 需要批准：{it.name}</div>
-                  <pre className="approval-args">{JSON.stringify(it.args, null, 2)}</pre>
-                  {it.decided ? (
-                    <div className="approval-decided">已提交</div>
-                  ) : (
-                    <div className="approval-actions">
-                      <button className="primary" onClick={() => decideApproval(i, true)}>
-                        允许
-                      </button>
-                      <button onClick={() => decideApproval(i, false)}>拒绝</button>
-                    </div>
-                  )}
+                <div key={i} className={`approval-line ${it.state}`}>
+                  <span className="approval-line-dot" aria-hidden="true">!</span>
+                  <span className="approval-line-text">
+                    {label} · {it.name}
+                    {it.scope ? <code>{it.scope}</code> : null}
+                  </span>
                 </div>
               );
             }
             if (it.kind === "review") {
               return (
                 <details key={i} className="review-card">
-                  <summary>变更汇总（auto-review）</summary>
+                  <summary>自动审查与变更记录</summary>
                   <pre>{it.text}</pre>
                 </details>
               );
@@ -547,6 +707,17 @@ export default function App() {
               </div>
             );
           })}
+          {busy && !activeTool && !pendingApproval && (
+            <div className="agent-status running" role="status" aria-live="polite">
+              <strong>{exploration.reads || exploration.searches ? "正在探索" : "思考中"}</strong>
+              <span>
+                {exploration.reads > 0 && `${exploration.reads} 次读取`}
+                {exploration.reads > 0 && exploration.searches > 0 && "，"}
+                {exploration.searches > 0 && `${exploration.searches} 次搜索`}
+                {!exploration.reads && !exploration.searches && "Planning next steps"}
+              </span>
+            </div>
+          )}
           <div ref={endRef} />
         </div>
         <div className="composer-area">
@@ -664,6 +835,26 @@ export default function App() {
             </div>
           </div>
         </div>
+        {pendingApproval && !overlayOpen && (
+          <div className="approval-pill">
+            <button type="button" onClick={() => setOverlayOpen(true)}>
+              等待批准 · {pendingApprovals.length}
+            </button>
+          </div>
+        )}
+        <ApprovalSheet
+          open={pendingApproval && overlayOpen}
+          position={1}
+          total={pendingApprovals.length}
+          name={pendingApprovals[0]?.name ?? ""}
+          reason={pendingApprovals[0]?.reason}
+          scope={pendingApprovals[0]?.scope}
+          onDecide={(approve, always) => {
+            const first = pendingApprovals[0];
+            if (first) decideApproval(first, approve, always);
+          }}
+          onDismiss={() => setOverlayOpen(false)}
+        />
       </main>
     </div>
   );

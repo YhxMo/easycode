@@ -9,9 +9,12 @@ build/
 # Node / frontend
 node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # Env / config (never commit secrets)
 .env
+easycode.config.json
+credentials.json
 
 # Tools
 .pytest_cache/
@@ -23,3 +26,6 @@ frontend/dist/
 ._*
 # Local history
 .easycode_history
+
+# Local browser/test records
+.playwright-mcp/

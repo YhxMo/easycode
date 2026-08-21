@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from easycode.credentials import data_home
+from easycode.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_READ_ONLY, SANDBOX_WORKSPACE_WRITE
 
 CATEGORIES = ("workspace", "temp", "system", "external")
 
@@ -29,6 +30,7 @@ class PathContext:
     primary: Path
     secondary: list[Path] = field(default_factory=list)
     extra_safe_dirs: list[Path] = field(default_factory=list)
+    sandbox_mode: str = SANDBOX_WORKSPACE_WRITE
 
     @property
     def roots(self) -> list[Path]:
@@ -42,19 +44,38 @@ class PathContext:
                 out.append(resolved)
         return out
 
-    def safe_dirs(self) -> list[Path]:
-        """All directories exempt from approval: roots + temp + ~/.easycode + extras."""
+    def writable_roots(self) -> list[Path]:
+        """Primary, bound secondary roots, temp, data dir, and explicit extra roots."""
         out: list[Path] = [*self.roots]
-        for d in [Path(tempfile.gettempdir()), data_home(), *self.extra_safe_dirs]:
+        for d in [data_home(), Path(tempfile.gettempdir()), *self.extra_safe_dirs]:
             resolved = d.resolve()
             if not any(resolved.is_relative_to(p) or p.is_relative_to(resolved) for p in out):
                 out.append(resolved)
         return out
 
+    def safe_dirs(self) -> list[Path]:
+        """Backward-compatible alias for writable roots."""
+        return self.writable_roots()
+
+    def protected_paths(self) -> list[Path]:
+        out = [p for root in self.roots for p in (root / ".git", root / ".easycode")]
+        cred = data_home() / "credentials.json"
+        if cred.exists():
+            out.append(cred)
+        return out
+
     def in_allowed(self, path: Path) -> bool:
-        """True if ``path`` lies under any safe directory."""
+        """True if ``path`` is writable without sandbox escalation."""
         p = path.resolve()
-        return any(p.is_relative_to(d) for d in self.safe_dirs())
+        if self.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
+            return True
+        if self.sandbox_mode == SANDBOX_READ_ONLY:
+            return False
+        if self.sandbox_mode != SANDBOX_WORKSPACE_WRITE:
+            return False
+        if any(p.is_relative_to(d.resolve()) for d in self.protected_paths()):
+            return False
+        return any(p.is_relative_to(d) for d in self.writable_roots())
 
     def classify(self, path: Path) -> str:
         """Categorize a path: workspace | temp | system | external."""

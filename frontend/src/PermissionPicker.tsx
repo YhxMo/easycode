@@ -10,13 +10,13 @@ const MODES = [
   {
     value: "auto-review",
     label: "自动审查",
-    hint: "自动执行，完成后汇总变更",
+    hint: "越界操作执行前由独立 reviewer 审批",
     icon: "✓",
   },
   {
     value: "allow-all",
     label: "完全访问",
-    hint: "允许所有操作，不再弹出确认",
+    hint: "关闭沙箱与审批，允许宿主机完整访问",
     icon: "∞",
   },
 ] as const;

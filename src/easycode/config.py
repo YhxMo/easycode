@@ -17,6 +17,15 @@ CONFIG_FILENAME = "easycode.config.json"
 DEFAULT_MAX_TOOL_RESULT_CHARS = 8000
 DEFAULT_MAX_CONTEXT_TOKENS = 32_000
 
+API_FORMATS = (
+    "openai_responses",
+    "openai_compatible",
+    "anthropic",
+    "bedrock",
+    "gemini",
+)
+DEFAULT_API_FORMAT = "openai_compatible"
+
 DEFAULT_MODELS: dict[str, str] = {
     "deepseek-v4flash": "deepseek/deepseek-v4-flash",
     "gpt5.6-terra": "openai/gpt-5.6-terra",
@@ -55,34 +64,53 @@ def _skills_enabled(raw: dict[str, Any]) -> bool:
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """A model entry: litellm model string + optional credentials key.
-
-    Compatible with both config shapes:
-
-    - string: ``"openai/gpt-4o"`` (key comes from env vars)
-    - object: ``{"model": "gpt-4o", "key_id": "my-key"}`` (key from credentials file)
-    """
+    """Canonical model entry: model name, supplier, protocol, and credential reference."""
 
     model: str
     key_id: str | None = None
+    api_format: str = DEFAULT_API_FORMAT
+    provider: str | None = None
 
     @classmethod
     def parse(cls, value: str | dict[str, Any]) -> "ModelSpec":
         if isinstance(value, str):
-            return cls(model=value)
+            return cls(model=value, api_format=infer_api_format(value))
         if isinstance(value, dict):
-            return cls(model=str(value.get("model") or ""), key_id=value.get("key_id") or None)
+            model = str(value.get("model") or "")
+            api_format = str(value.get("api_format") or infer_api_format(model))
+            if api_format not in API_FORMATS:
+                raise ValueError(f"invalid api_format: {api_format!r}")
+            return cls(
+                model=model,
+                key_id=value.get("key_id") or None,
+                api_format=api_format,
+                provider=str(value.get("provider") or "").strip() or None,
+            )
         raise ValueError(f"invalid model entry: {value!r}")
 
     def to_value(self) -> str | dict[str, str]:
-        if self.key_id is None:
-            return self.model
-        return {"model": self.model, "key_id": self.key_id}
+        out: dict[str, str] = {"model": self.model}
+        if self.key_id is not None:
+            out["key_id"] = self.key_id
+        out["api_format"] = self.api_format
+        if self.provider is not None:
+            out["provider"] = self.provider
+        return out
 
     def to_display(self) -> str:
         if self.key_id is None:
             return self.model
         return f"{self.model} (key: {self.key_id})"
+
+
+def infer_api_format(model: str) -> str:
+    """Infer a protocol for built-in model defaults before explicit setup."""
+    if model.startswith("responses/") or "/responses/" in model:
+        return "openai_responses"
+    prefix = model.split("/", 1)[0] if "/" in model else ""
+    if prefix in ("anthropic", "bedrock", "gemini"):
+        return prefix
+    return DEFAULT_API_FORMAT
 
 
 def find_config_file(start: Path | None = None) -> Path | None:
@@ -179,6 +207,18 @@ class Config:
     def set_model_alias(self, alias: str, model: str | dict[str, Any]) -> None:
         """Runtime alias override (in-memory); accepts str or {model, key_id}."""
         self.models[alias] = ModelSpec.parse(model)
+
+    def rename_model_alias(self, old: str, new: str) -> None:
+        """Rename a model alias in-place; no-op if names match."""
+        if old == new:
+            return
+        if old not in self.models:
+            raise KeyError(f"unknown alias: {old}")
+        if new in self.models:
+            raise ValueError(f"alias already exists: {new}")
+        self.models[new] = self.models.pop(old)
+        if self.default_model == old:
+            self.default_model = new
 
     def set_default_model(self, alias: str) -> None:
         self.default_model = alias

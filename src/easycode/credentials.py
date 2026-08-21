@@ -1,17 +1,15 @@
-"""Credentials store: ``~/.easycode/credentials.json`` (chmod 600, never committed).
+"""Per-model credentials stored in ``~/.easycode/credentials.json``.
 
-Layout::
-
-    { "<key_id>": {"api_key": "sk-...", "provider": "openai", "base_url": "https://..."} }
-
-Model configs reference a key by ``key_id``; the raw api key never leaves
-this file (web endpoints only expose ``key_id``).
+The file is local-only, chmod 600, and never belongs in the project tree.
+Each model owns one credential record; API format is model metadata and is
+intentionally not part of credential lookup.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,7 +49,17 @@ class Credential:
     def masked(self) -> dict[str, Any]:
         """Public view: no api key, only a tail-hint for recognition."""
         tail = self.api_key[-4:] if len(self.api_key) >= 4 else ""
-        return {"key_id": self.key_id, "key_tail": tail, "provider": self.provider, "base_url": self.base_url}
+        return {
+            "key_id": self.key_id,
+            "key_tail": tail,
+            "provider": self.provider,
+            "base_url": self.base_url,
+        }
+
+
+def new_credential_id() -> str:
+    """Return a stable, alias-independent id for a new model credential."""
+    return f"model-{uuid4().hex}"
 
 
 def credentials_path(home: Path | None = None) -> Path:
@@ -71,11 +79,16 @@ def load_credentials(path: Path | None = None) -> dict[str, Credential]:
         return {}
     out: dict[str, Credential] = {}
     for key_id, entry in (raw or {}).items():
-        if not isinstance(entry, dict) or not entry.get("api_key"):
+        if (
+            not isinstance(entry, dict)
+            or not entry.get("api_key")
+            and not entry.get("provider")
+            and not entry.get("base_url")
+        ):
             continue
         out[str(key_id)] = Credential(
             key_id=str(key_id),
-            api_key=entry["api_key"],
+            api_key=str(entry.get("api_key") or ""),
             provider=entry.get("provider"),
             base_url=entry.get("base_url"),
         )

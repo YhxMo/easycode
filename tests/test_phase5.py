@@ -10,36 +10,30 @@ import pytest
 from fastapi.testclient import TestClient
 
 from easycode.config import Config
-from easycode.credentials import (
-    Credential,
-    delete_credential,
-    load_credentials,
-    save_credential,
-)
+from easycode.credentials import Credential, delete_credential, load_credentials, save_credential
 from easycode.web.main import create_app
 
 
 # ---------------------------------------------------------------- credentials
 
-def test_credentials_read_write_delete(tmp_path):
+def test_credentials_read_write_delete_and_metadata(tmp_path):
     p = tmp_path / ".easycode" / "credentials.json"
-    save_credential(Credential(key_id="k1", api_key="sk-abc", provider="openai"), path=p)
-    save_credential(Credential(key_id="k2", api_key="sk-xyz", base_url="http://x/v1"), path=p)
+    save_credential(Credential(key_id="model-a", api_key="sk-a", base_url="http://a/v1"), path=p)
+    save_credential(Credential(key_id="model-b", api_key="sk-b", base_url="http://b/v1"), path=p)
 
     creds = load_credentials(p)
-    assert creds["k1"].api_key == "sk-abc"
-    assert creds["k1"].provider == "openai"
-    assert creds["k2"].base_url == "http://x/v1"
-
-    assert delete_credential("k1", path=p) is True
-    assert delete_credential("k1", path=p) is False
-    assert "k1" not in load_credentials(p)
-    assert "k2" in load_credentials(p)
+    assert creds["model-a"].api_key == "sk-a"
+    assert creds["model-a"].base_url == "http://a/v1"
+    assert creds["model-b"].api_key == "sk-b"
+    assert delete_credential("model-a", path=p) is True
+    assert delete_credential("model-a", path=p) is False
+    assert "model-a" not in load_credentials(p)
+    assert "model-b" in load_credentials(p)
 
 
 def test_credentials_file_permissions(tmp_path):
     p = tmp_path / ".easycode" / "credentials.json"
-    save_credential(Credential(key_id="k", api_key="sk-secret"), path=p)
+    save_credential(Credential(key_id="model", api_key="sk-secret"), path=p)
     assert (os.stat(p).st_mode & 0o777) == 0o600
 
 
@@ -54,10 +48,18 @@ def test_credentials_missing_or_corrupt(tmp_path):
 
 
 def test_credentials_masked_no_key():
-    c = Credential(key_id="k1", api_key="sk-super-secret-1234")
+    c = Credential(key_id="model", api_key="sk-super-secret-1234")
     m = c.masked()
     assert "api_key" not in m
     assert m["key_tail"] == "1234"
+
+
+def test_credentials_support_metadata_without_api_key(tmp_path):
+    p = tmp_path / ".easycode" / "credentials.json"
+    save_credential(Credential(key_id="model", api_key="", base_url="http://local/v1"), path=p)
+    cred = load_credentials(p)["model"]
+    assert cred.api_key == ""
+    assert cred.base_url == "http://local/v1"
 
 
 # ---------------------------------------------------------------- model spec
@@ -68,7 +70,7 @@ def test_config_models_accept_str_and_object(tmp_path, monkeypatch):
             {
                 "models": {
                     "plain": "openai/gpt-4o",
-                    "keyed": {"model": "gpt-4o", "key_id": "my-key"},
+                    "keyed": {"model": "gpt-4o", "key_id": "my-key", "provider": "rightcode"},
                 }
             }
         ),
@@ -79,12 +81,18 @@ def test_config_models_accept_str_and_object(tmp_path, monkeypatch):
     assert cfg.resolve_model("plain") == "openai/gpt-4o"
     assert cfg.resolve_model("keyed") == "gpt-4o"
     assert cfg.model_spec("keyed").key_id == "my-key"
+    assert cfg.model_spec("keyed").provider == "rightcode"
     assert cfg.model_spec("plain").key_id is None
 
     cfg.save()
     raw = json.loads((tmp_path / "easycode.config.json").read_text(encoding="utf-8"))
-    assert raw["models"]["plain"] == "openai/gpt-4o"
-    assert raw["models"]["keyed"] == {"model": "gpt-4o", "key_id": "my-key"}
+    assert raw["models"]["plain"] == {"model": "openai/gpt-4o", "api_format": "openai_compatible"}
+    assert raw["models"]["keyed"] == {
+        "model": "gpt-4o",
+        "key_id": "my-key",
+        "api_format": "openai_compatible",
+        "provider": "rightcode",
+    }
 
 
 def test_model_spec_passthrough_and_display():
@@ -127,35 +135,307 @@ def add_model_body(alias="gpt-local", model="gpt-4o", key="sk-lives-here"):
     return {"alias": alias, "model": model, "provider": "openai", "base_url": "http://127.0.0.1:9000/v1", "api_key": key}
 
 
+def model_key_id(client: TestClient, alias: str) -> str:
+    key_id = client.get(f"/api/models/{alias}").json()["key_id"]
+    assert key_id
+    return key_id
+
+
 def test_add_model_with_key_stores_credential_and_masks(tmp_path):
     client = make_app(tmp_path)
     r = client.post("/api/models/add", json=add_model_body())
     assert r.status_code == 200
     data = r.json()
-    assert data["models"]["gpt-local"] == {"model": "gpt-4o", "key_id": "web-gpt-local"}
+    assert data["models"]["gpt-local"]["model"] == "gpt-4o"
+    assert data["models"]["gpt-local"]["api_format"] == "openai_compatible"
+    assert data["models"]["gpt-local"]["provider"] == "openai"
+    assert data["models"]["gpt-local"]["key_id"].startswith("model-")
+    assert data["providers"]["gpt-local"] == "openai"
 
     creds = load_credentials(tmp_path / ".easycode" / "credentials.json")
-    assert creds["web-gpt-local"].api_key == "sk-lives-here"
+    assert creds[data["models"]["gpt-local"]["key_id"]].api_key == "sk-lives-here"
 
     # GET /api/models must never leak the key anywhere in the response
     r2 = client.get("/api/models")
     body = r2.text
     assert "sk-lives-here" not in body
     assert "sk-" not in body
-    assert "web-gpt-local" in body
+    assert data["models"]["gpt-local"]["key_id"] in body
 
 
-def test_add_model_without_key_is_plain_string(tmp_path):
+def test_models_group_by_supplier_not_api_format(tmp_path):
+    client = make_app(tmp_path)
+    body = add_model_body(alias="hosted-gpt", model="gpt-4o")
+    body["provider"] = "rightcode"
+    body["api_format"] = "anthropic"
+
+    response = client.post("/api/models/add", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["providers"]["hosted-gpt"] == "rightcode"
+    assert response.json()["models"]["hosted-gpt"]["api_format"] == "anthropic"
+
+
+def test_each_added_model_gets_its_own_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = make_app(tmp_path)
+    first = add_model_body(alias="first", model="model-a", key="sk-first")
+    second = add_model_body(alias="second", model="model-b", key="sk-second")
+    first["api_format"] = "openai_compatible"
+    second["api_format"] = "anthropic"
+    assert client.post("/api/models/add", json=first).status_code == 200
+    assert client.post("/api/models/add", json=second).status_code == 200
+
+    first_id = model_key_id(client, "first")
+    second_id = model_key_id(client, "second")
+    assert first_id != second_id
+    creds = load_credentials(tmp_path / ".easycode" / "credentials.json")
+    assert creds[first_id].api_key == "sk-first"
+    assert creds[second_id].api_key == "sk-second"
+
+    from easycode.cli import provider_kwargs
+
+    cfg = Config.load(start=tmp_path)
+    first_model, first_kwargs = provider_kwargs(cfg, "first")
+    second_model, second_kwargs = provider_kwargs(cfg, "second")
+    assert first_model == "model-a"
+    assert first_kwargs["api_key"] == "sk-first"
+    assert first_kwargs["custom_llm_provider"] == "openai"
+    assert second_model == "model-b"
+    assert second_kwargs["api_key"] == "sk-second"
+    assert second_kwargs["custom_llm_provider"] == "anthropic"
+
+
+def test_add_model_without_key_still_gets_independent_profile(tmp_path):
     client = make_app(tmp_path)
     r = client.post("/api/models/add", json={"alias": "plain", "model": "deepseek/deepseek-chat"})
     assert r.status_code == 200
-    assert r.json()["models"]["plain"] == "deepseek/deepseek-chat"
+    entry = r.json()["models"]["plain"]
+    assert entry["model"] == "deepseek/deepseek-chat"
+    assert entry["api_format"] == "openai_compatible"
+    assert "key_id" not in entry
     assert not (tmp_path / ".easycode" / "credentials.json").exists()
 
 
 def test_add_model_validation(tmp_path):
     client = make_app(tmp_path)
     assert client.post("/api/models/add", json={"alias": " ", "model": "x"}).status_code == 422
+
+
+def test_get_model_detail_returns_editable_credential(tmp_path):
+    client = make_app(tmp_path)
+    client.post("/api/models/add", json=add_model_body())
+    r = client.get("/api/models/gpt-local")
+    assert r.status_code == 200
+    assert r.json() == {
+        "alias": "gpt-local",
+        "model": "gpt-4o",
+        "key_id": model_key_id(client, "gpt-local"),
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:9000/v1",
+        "api_key": "sk-lives-here",
+        "api_format": "openai_compatible",
+        "has_api_key": True,
+    }
+    assert client.get("/api/models/nope").status_code == 404
+
+
+def test_get_model_detail_does_not_use_environment_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
+    monkeypatch.setenv("DEEPSEEK_API_BASE", "https://api.deepseek.test")
+    client = make_app(
+        tmp_path,
+        {"models": {"ds": "deepseek/deepseek-chat", "oa": "openai/gpt-4o", "odd": "weird-model"}},
+    )
+    r = client.get("/api/models/ds")
+    assert r.status_code == 200
+    assert r.json() == {
+        "alias": "ds",
+        "model": "deepseek/deepseek-chat",
+        "key_id": None,
+        "provider": "deepseek",
+        "base_url": None,
+        "api_key": "",
+        "api_format": "openai_compatible",
+        "has_api_key": False,
+    }
+    assert client.get("/api/models/oa").json()["base_url"] is None
+    odd = client.get("/api/models/odd").json()
+    assert odd["provider"] == "openai"
+    assert odd["api_key"] == ""
+    assert odd["base_url"] is None
+
+
+def test_get_model_detail_derives_api_format(tmp_path, monkeypatch):
+    for var in ("ANTHROPIC_API_KEY", "BEDROCK_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    client = make_app(
+        tmp_path,
+        {
+            "models": {
+                "cl": "anthropic/claude-3-5-sonnet",
+                "rs": "openai/responses/gpt-5",
+                "ds": "deepseek/deepseek-chat",
+                "odd": "weird-model",
+            }
+        },
+    )
+    assert client.get("/api/models/cl").json()["api_format"] == "anthropic"
+    assert client.get("/api/models/rs").json()["api_format"] == "openai_responses"
+    assert client.get("/api/models/ds").json()["api_format"] == "openai_compatible"
+    assert client.get("/api/models/odd").json()["api_format"] == "openai_compatible"
+
+
+def test_add_model_stores_and_returns_api_format(tmp_path):
+    client = make_app(tmp_path)
+    body = add_model_body(alias="resp", model="gpt-5")
+    body["api_format"] = "openai_responses"
+    r = client.post("/api/models/add", json=body)
+    assert r.status_code == 200
+    assert client.get("/api/models/resp").json()["api_format"] == "openai_responses"
+    cred = load_credentials(tmp_path / ".easycode" / "credentials.json")[model_key_id(client, "resp")]
+    assert cred.api_key == body["api_key"]
+
+
+def test_add_model_without_key_persists_api_format(tmp_path):
+    client = make_app(tmp_path)
+    r = client.post(
+        "/api/models/add",
+        json={"alias": "plain", "model": "gpt-5", "api_format": "openai_responses"},
+    )
+    assert r.status_code == 200
+    assert client.get("/api/models/plain").json()["api_format"] == "openai_responses"
+    raw = json.loads((tmp_path / "easycode.config.json").read_text(encoding="utf-8"))
+    assert raw["models"]["plain"]["model"] == "gpt-5"
+    assert raw["models"]["plain"]["api_format"] == "openai_responses"
+    assert "key_id" not in raw["models"]["plain"]
+    assert not (tmp_path / ".easycode" / "credentials.json").exists()
+
+
+def test_update_model_without_credential_persists_api_format(tmp_path):
+    client = make_app(tmp_path, {"models": {"plain": "gpt-5"}})
+    r = client.put("/api/models/plain", json={"model": "gpt-5", "api_format": "openai_responses"})
+    assert r.status_code == 200
+    assert client.get("/api/models/plain").json()["api_format"] == "openai_responses"
+    raw = json.loads((tmp_path / "easycode.config.json").read_text(encoding="utf-8"))
+    assert raw["models"]["plain"]["model"] == "gpt-5"
+    assert raw["models"]["plain"]["api_format"] == "openai_responses"
+    assert "key_id" not in raw["models"]["plain"]
+
+    # a model without an independent credential cannot connect
+    from easycode.cli import provider_kwargs
+
+    cfg = Config.load(start=tmp_path)
+    with pytest.raises(ValueError, match="no credential configured"):
+        provider_kwargs(cfg, "plain")
+
+
+def test_provider_kwargs_prefers_config_format_over_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_credential(
+        Credential(key_id="k1", api_key="sk-cred", provider="custom"),
+        path=tmp_path / ".easycode" / "credentials.json",
+    )
+    cfg = Config()
+    cfg.set_model_alias("mixed", {"model": "gemini-2.0-flash", "key_id": "k1", "api_format": "anthropic"})
+    from easycode.cli import provider_kwargs
+
+    model, kwargs = provider_kwargs(cfg, "mixed")
+    assert model == "gemini-2.0-flash"
+    assert kwargs["custom_llm_provider"] == "anthropic"
+    assert kwargs["api_key"] == "sk-cred"
+
+
+def test_update_model_updates_api_format_keeps_key(tmp_path):
+    client = make_app(tmp_path)
+    client.post("/api/models/add", json=add_model_body())
+    r = client.put("/api/models/gpt-local", json={"model": "claude-4", "api_format": "anthropic"})
+    assert r.status_code == 200
+    key_id = model_key_id(client, "gpt-local")
+    cred = load_credentials(tmp_path / ".easycode" / "credentials.json")[key_id]
+    assert cred.api_key == "sk-lives-here"
+    assert cred.provider == "openai"
+    detail = client.get("/api/models/gpt-local").json()
+    assert detail["api_format"] == "anthropic"
+
+    # model-only update keeps the stored format
+    client.put("/api/models/gpt-local", json={"model": "claude-4.1"})
+    assert client.get("/api/models/gpt-local").json()["api_format"] == "anthropic"
+
+
+def test_update_model_renames_alias_migrates_key_and_sessions(tmp_path):
+    client = make_app(tmp_path)
+    client.post("/api/models/add", json=add_model_body())
+    with client:
+        session = client.app.state.store.create("gpt-local")
+        r = client.put(
+            "/api/models/gpt-local",
+            json={
+                "model": "gpt-4.1",
+                "new_alias": "renamed",
+                "provider": "custom",
+                "base_url": "http://new.example/v1",
+                "api_key": "sk-replaced",
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert "gpt-local" not in data["models"]
+        assert data["models"]["renamed"]["model"] == "gpt-4.1"
+        assert data["models"]["renamed"]["api_format"] == "openai_compatible"
+        assert session.model_alias == "renamed"
+
+    creds = load_credentials(tmp_path / ".easycode" / "credentials.json")
+    renamed_key = data["models"]["renamed"]["key_id"]
+    assert creds[renamed_key].api_key == "sk-replaced"
+    assert creds[renamed_key].provider == "custom"
+    assert creds[renamed_key].base_url == "http://new.example/v1"
+
+
+def test_update_model_keeps_key_and_updates_meta(tmp_path):
+    client = make_app(tmp_path)
+    client.post("/api/models/add", json=add_model_body())
+    r = client.put(
+        "/api/models/gpt-local",
+        json={"model": "gpt-4.1-mini", "provider": "openrouter", "base_url": "http://router/v1"},
+    )
+    assert r.status_code == 200
+    key_id = model_key_id(client, "gpt-local")
+    creds = load_credentials(tmp_path / ".easycode" / "credentials.json")
+    assert creds[key_id].api_key == "sk-lives-here"
+    assert creds[key_id].provider == "openrouter"
+    assert creds[key_id].base_url == "http://router/v1"
+
+
+def test_update_model_model_only_keeps_credential_meta(tmp_path):
+    client = make_app(tmp_path)
+    client.post("/api/models/add", json=add_model_body())
+    r = client.put("/api/models/gpt-local", json={"model": "gpt-4.1"})
+    assert r.status_code == 200
+    cred = load_credentials(tmp_path / ".easycode" / "credentials.json")[model_key_id(client, "gpt-local")]
+    assert cred.api_key == "sk-lives-here"
+    assert cred.provider == "openai"
+    assert cred.base_url == "http://127.0.0.1:9000/v1"
+
+
+def test_update_model_clears_owned_key(tmp_path):
+    client = make_app(tmp_path)
+    client.post("/api/models/add", json=add_model_body())
+    r = client.put(
+        "/api/models/gpt-local",
+        json={"model": "gpt-4o", "clear_key": True},
+    )
+    assert r.status_code == 200
+    assert r.json()["models"]["gpt-local"]["model"] == "gpt-4o"
+    assert "key_id" not in r.json()["models"]["gpt-local"]
+    assert load_credentials(tmp_path / ".easycode" / "credentials.json") == {}
+
+
+def test_update_model_rejects_alias_conflict(tmp_path):
+    client = make_app(tmp_path)
+    client.post("/api/models/add", json=add_model_body())
+    r = client.put("/api/models/gpt-local", json={"model": "gpt-4o", "new_alias": "fake-a"})
+    assert r.status_code == 409
 
 
 def test_delete_model_removes_web_credential(tmp_path):
@@ -166,30 +446,6 @@ def test_delete_model_removes_web_credential(tmp_path):
     assert "gpt-local" not in r.json()["models"]
     assert load_credentials(tmp_path / ".easycode" / "credentials.json") == {}
     assert client.delete("/api/models/nope").status_code == 404
-
-
-def test_delete_model_keeps_shared_credential(tmp_path):
-    # both aliases share the same web credential from the start
-    save_credential(
-        Credential(key_id="web-gpt-local-2", api_key="sk-shared"),
-        path=tmp_path / ".easycode" / "credentials.json",
-    )
-    client = make_app(
-        tmp_path,
-        {
-            "models": {
-                "gpt-local": {"model": "gpt-4o", "key_id": "web-gpt-local-2"},
-                "gpt-local-2": {"model": "gpt-4o-mini", "key_id": "web-gpt-local-2"},
-            }
-        },
-    )
-    with client:
-        # deleting gpt-local must NOT remove a credential shared with gpt-local-2
-        # (removal only happens for a key owned by this exact alias)
-        r = client.delete("/api/models/gpt-local")
-        assert r.status_code == 200
-    creds = load_credentials(tmp_path / ".easycode" / "credentials.json")
-    assert "web-gpt-local-2" in creds
 
 
 def test_delete_default_model_falls_back(tmp_path):
@@ -394,8 +650,8 @@ def test_needs_approval_modes(tmp_path):
     assert needs_approval(shell_pip, ctx, "ask") is True
     assert needs_approval(shell_local, ctx, "ask") is False
 
-    assert needs_approval(edit_out, ctx, "auto-review") is False
-    assert needs_approval(shell_net, ctx, "auto-review") is False
+    assert needs_approval(edit_out, ctx, "auto-review") is True
+    assert needs_approval(shell_net, ctx, "auto-review") is True
     assert needs_approval(edit_out, ctx, "allow-all") is False
 
     assert permission_parse("ask") == "ask"
@@ -525,7 +781,7 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
                 import asyncio
 
                 await asyncio.sleep(0.05)
-                fut.set_result(True)
+                fut.set_result((True, False))
 
             import asyncio
 
@@ -617,7 +873,7 @@ def test_build_provider_forwards_credentials(tmp_path, monkeypatch):
         path=tmp_path / ".easycode" / "credentials.json",
     )
     cfg = Config()
-    cfg.set_model_alias("keyed", {"model": "gpt-4o", "key_id": "k1"})
+    cfg.set_model_alias("keyed", {"model": "gpt-4o", "key_id": "k1", "api_format": "openai_compatible"})
 
     from easycode.cli import build_provider
 
@@ -627,10 +883,10 @@ def test_build_provider_forwards_credentials(tmp_path, monkeypatch):
     assert prov.kwargs["api_base"] == "http://x/v1"
     assert prov.kwargs["custom_llm_provider"] == "openai"
 
-    # provider/model-style entries don't get an override
-    prov2 = build_provider(cfg, "openai/gpt-4o")
-    assert prov2.model == "openai/gpt-4o"
-    assert prov2.kwargs == {}
+    cfg.set_model_alias("prefixed", {"model": "openai/gpt-4o", "key_id": "k1", "api_format": "openai_compatible"})
+    prov2 = build_provider(cfg, "prefixed")
+    assert prov2.model == "gpt-4o"
+    assert prov2.kwargs["custom_llm_provider"] == "openai"
 
 
 def test_build_provider_missing_credential_raises(tmp_path, monkeypatch):
@@ -640,8 +896,98 @@ def test_build_provider_missing_credential_raises(tmp_path, monkeypatch):
 
     from easycode.cli import build_provider
 
-    with pytest.raises(ValueError, match="key_id 'nope'"):
+    with pytest.raises(ValueError, match="credential 'nope' not found"):
         build_provider(cfg, "keyed")
+
+
+def test_apply_api_format_routing():
+    from easycode.cli import apply_api_format
+
+    assert apply_api_format("gpt-4o", "openai_compatible") == ("gpt-4o", "openai")
+    assert apply_api_format("gpt-5", "openai_responses") == ("responses/gpt-5", "openai")
+    assert apply_api_format("openai/gpt-5", "openai_responses") == ("responses/gpt-5", "openai")
+    assert apply_api_format("responses/gpt-5", "openai_responses") == ("responses/gpt-5", "openai")
+    assert apply_api_format("openai/gpt-4o", "openai_compatible") == ("gpt-4o", "openai")
+    assert apply_api_format("claude-sonnet", "anthropic") == ("claude-sonnet", "anthropic")
+    assert apply_api_format("claude-3", "bedrock") == ("claude-3", "bedrock")
+    assert apply_api_format("gemini-2.0", "gemini") == ("gemini-2.0", "gemini")
+    assert apply_api_format("gpt-4o", "mystery-format") == ("gpt-4o", None)
+
+
+def test_apply_api_format_overrides_model_prefix():
+    from easycode.cli import apply_api_format
+
+    # the chosen format wins over a stored provider prefix
+    assert apply_api_format("deepseek/deepseek-v4-flash", "anthropic") == (
+        "deepseek-v4-flash",
+        "anthropic",
+    )
+    assert apply_api_format("anthropic/claude-sonnet-5", "openai_compatible") == (
+        "claude-sonnet-5",
+        "openai",
+    )
+
+
+def test_build_provider_forwards_api_format(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_credential(
+        Credential(
+            key_id="k1",
+            api_key="sk-cred",
+            provider="openai",
+            base_url="http://x/v1",
+        ),
+        path=tmp_path / ".easycode" / "credentials.json",
+    )
+    cfg = Config()
+    cfg.set_model_alias("keyed", {"model": "gpt-5", "key_id": "k1", "api_format": "openai_responses"})
+
+    from easycode.cli import build_provider
+
+    prov = build_provider(cfg, "keyed")
+    assert prov.model == "responses/gpt-5"
+    assert prov.kwargs["api_key"] == "sk-cred"
+    assert prov.kwargs["api_base"] == "http://x/v1"
+    assert prov.kwargs["custom_llm_provider"] == "openai"
+
+    # prefixed model: the format wins over the stored prefix
+    cfg.set_model_alias("prefixed", {"model": "openai/gpt-5", "key_id": "k1", "api_format": "openai_responses"})
+    prov2 = build_provider(cfg, "prefixed")
+    assert prov2.model == "responses/gpt-5"
+    assert prov2.kwargs["custom_llm_provider"] == "openai"
+
+    # api_format wins over the credential provider for unprefixed models
+    save_credential(
+        Credential(key_id="k2", api_key="sk-cred", provider="custom"),
+        path=tmp_path / ".easycode" / "credentials.json",
+    )
+    cfg.set_model_alias("gemini", {"model": "gemini-2.0-flash", "key_id": "k2", "api_format": "gemini"})
+    prov3 = build_provider(cfg, "gemini")
+    assert prov3.model == "gemini-2.0-flash"
+    assert prov3.kwargs["custom_llm_provider"] == "gemini"
+
+
+def test_build_provider_format_overrides_prefixed_model(tmp_path, monkeypatch):
+    """deepseek-prefixed model + anthropic format must speak Anthropic, not DeepSeek."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_credential(
+        Credential(
+            key_id="k1",
+            api_key="sk-ds",
+            provider="deepseek",
+            base_url="https://api.deepseek.com",
+        ),
+        path=tmp_path / ".easycode" / "credentials.json",
+    )
+    cfg = Config()
+    cfg.set_model_alias("ds", {"model": "deepseek/deepseek-v4-flash", "key_id": "k1", "api_format": "anthropic"})
+
+    from easycode.cli import build_provider
+
+    prov = build_provider(cfg, "ds")
+    assert prov.model == "deepseek-v4-flash"
+    assert prov.kwargs["custom_llm_provider"] == "anthropic"
+    assert prov.kwargs["api_base"] == "https://api.deepseek.com"
 
 # ---------------------------------------------------------------- P5-4 mcp
 
@@ -971,7 +1317,12 @@ async def test_summarizer_merges_previous_summary(tmp_path, monkeypatch):
 
 def test_make_agent_wires_summarizer(tmp_path, monkeypatch):
     cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg_file.write_text(
+        json.dumps({"models": {"fake-a": {"model": "fake/a", "key_id": "fake-key"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_credential(Credential(key_id="fake-key", api_key="sk-fake"), path=tmp_path / ".easycode" / "credentials.json")
     monkeypatch.chdir(tmp_path)
     cfg = Config.load()
     cfg.root = tmp_path
@@ -1481,6 +1832,9 @@ def test_session_permission_persistence(tmp_path):
     assert s.permission_mode == "auto-review"
     assert s.agent.permission_mode == "auto-review"
     assert s.summary["permission_mode"] == "auto-review"
+    assert s.summary["sandbox_mode"] == "workspace-write"
+    assert s.summary["approval_policy"] == "on-request"
+    assert s.summary["approvals_reviewer"] == "auto-review"
 
     store2 = SessionStore(cfg, primary, factory)
     store2.load_all()
@@ -1552,3 +1906,79 @@ def test_chat_with_permission_mode_on_existing_session(tmp_path):
         assert r2.status_code == 200
     news = [x for x in store.list() if x.id != s.id]
     assert news and news[0].permission_mode == "allow-all"
+
+
+@pytest.mark.asyncio
+async def test_web_always_allow_matches_session_scope_no_prompt(tmp_path):
+    """A pre-registered session always-allow scope skips the approval prompt."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.bridge import ApprovalBroker, stream_chat_with_approval
+    from easycode.web.session import Session
+    from tests.conftest import FakeProvider
+
+    outside = tmp_path.parent / "always-x.txt"
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": str(outside), "content": "x"})], "text": ""},
+        {"text": "ok"},
+    ]
+    agent = Agent(provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path)
+    broker = ApprovalBroker()
+    sess = Session(id="s1", title="t", created_at="now", model_alias="fake-a", agent=agent)
+    parent = str(outside.parent).rstrip("/")
+    sess.always_allow.append(f"write_file:{parent}/*")
+
+    approvals = []
+
+    async for kind, payload in stream_chat_with_approval(agent, "go", broker, session=sess):
+        if kind == "approval":
+            approvals.append(payload)
+
+    assert approvals == []
+    assert outside.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.asyncio
+async def test_web_approval_log_records_decision(tmp_path):
+    """Resolved approvals are recorded on the session (approved / denied / expired)."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.bridge import ApprovalBroker, stream_chat_with_approval
+    from easycode.web.session import Session
+    from tests.conftest import FakeProvider
+
+    outside = tmp_path.parent / "log-y.txt"
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": str(outside), "content": "y"})], "text": ""},
+        {"text": "ok"},
+    ]
+    agent = Agent(provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path)
+    broker = ApprovalBroker()
+
+    class AutoBroker(ApprovalBroker):
+        def add(self, approval_id: str):
+            fut = super().add(approval_id)
+
+            async def resolve():
+                import asyncio
+
+                await asyncio.sleep(0.05)
+                fut.set_result((True, True))
+
+            import asyncio
+
+            asyncio.ensure_future(resolve())
+            return fut
+
+    broker = AutoBroker()
+    sess = Session(id="s1", title="t", created_at="now", model_alias="fake-a", agent=agent)
+    async for _kind, _payload in stream_chat_with_approval(agent, "go", broker, session=sess):
+        pass
+
+    assert sess.approval_log
+    log = sess.approval_log[0]
+    assert log["name"] == "write_file"
+    assert log["decision"] == "approved"
+    assert log["always"] is True
+    assert log["tool_call_id"] == "c1"
+    assert log["scope"].endswith("/*")

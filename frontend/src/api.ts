@@ -12,7 +12,7 @@ export type ChatEvent =
   | { type: "error"; error?: string }
   | { type: "done" }
   | { type: "cancelled" }
-  | { type: "approval_required"; approval_id: string; tool_call: ToolCall }
+  | { type: "approval_required"; approval_id: string; tool_call: ToolCall; reason?: string; scope?: string }
   | { type: "review"; content?: string };
 
 export interface SessionSummary {
@@ -21,21 +21,45 @@ export interface SessionSummary {
   created_at: string;
   model_alias: string;
   permission_mode?: string;
+  sandbox_mode?: "read-only" | "workspace-write" | "danger-full-access";
+  approval_policy?: "on-request" | "never";
+  approvals_reviewer?: "user" | "auto-review";
   root?: string | null;
   secondary_roots?: string[];
 }
 
 export type PermissionMode = "ask" | "auto-review" | "allow-all";
 
-export interface SessionDetail extends SessionSummary {
-  messages: any[];
+export type ApprovalDecision = "approved" | "denied" | "expired";
+
+export interface ApprovalRecord {
+  tool_call_id: string;
+  name: string;
+  args: Record<string, unknown>;
+  reason?: string;
+  scope?: string;
+  decision: ApprovalDecision;
+  always: boolean;
 }
 
-export type ModelEntry = string | { model: string; key_id?: string };
+export interface SessionDetail extends SessionSummary {
+  messages: any[];
+  approvals?: ApprovalRecord[];
+  user_times?: string[];
+}
+
+export type ModelEntry = { model: string; key_id?: string; api_format: string; provider?: string };
+
+export interface ModelLimits {
+  context: number;
+  output: number;
+}
 
 export interface ModelsInfo {
   default: string;
   models: Record<string, ModelEntry>;
+  providers?: Record<string, string>;
+  limits?: Record<string, ModelLimits | null>;
 }
 
 export interface WorkspaceProject {
@@ -72,10 +96,41 @@ export interface AddModelBody {
   provider?: string;
   base_url?: string;
   api_key?: string;
+  api_format?: string;
+}
+
+export interface EditableModel {
+  alias: string;
+  model: string;
+  key_id?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
+  api_key: string;
+  api_format?: string | null;
+  has_api_key?: boolean;
+}
+
+export interface UpdateModelBody {
+  model: string;
+  new_alias?: string;
+  provider?: string;
+  base_url?: string;
+  api_key?: string;
+  clear_key?: boolean;
+  api_format?: string;
 }
 
 async function json<T>(resp: Response): Promise<T> {
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try {
+      const body = (await resp.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      // Keep the HTTP status when the server did not return JSON.
+    }
+    throw new Error(detail);
+  }
   return (await resp.json()) as T;
 }
 
@@ -140,17 +195,29 @@ export function addModel(body: AddModelBody): Promise<ModelsInfo> {
   }).then((r) => json<ModelsInfo>(r));
 }
 
+export function fetchModel(alias: string): Promise<EditableModel> {
+  return fetch(`/api/models/${encodeURIComponent(alias)}`).then((r) => json<EditableModel>(r));
+}
+
+export function updateModel(alias: string, body: UpdateModelBody): Promise<ModelsInfo> {
+  return fetch(`/api/models/${encodeURIComponent(alias)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ModelsInfo>(r));
+}
+
 export function deleteModel(alias: string): Promise<ModelsInfo> {
   return fetch(`/api/models/${encodeURIComponent(alias)}`, {
     method: "DELETE",
   }).then((r) => json<ModelsInfo>(r));
 }
 
-export function submitApproval(approvalId: string, approve: boolean): Promise<void> {
+export function submitApproval(approvalId: string, approve: boolean, always = false): Promise<void> {
   return fetch(`/api/approval/${encodeURIComponent(approvalId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approve }),
+    body: JSON.stringify({ approve, always }),
   }).then((r) => {
     if (!r.ok) throw new Error(`approval HTTP ${r.status}`);
   });

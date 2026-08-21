@@ -27,18 +27,18 @@ uv sync
 
 ### API Key
 
-二选一：
-
-- `.env` 环境变量：复制 `.env.example` 为 `.env`，填入供应商 key（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` …）
-- 凭据文件 `~/.easycode/credentials.json`（自动 `chmod 600`，不入库）：
+每个模型通过 Web UI 单独保存 API Key 和 Base URL。凭据文件位于
+`~/.easycode/credentials.json`，自动 `chmod 600`，不在项目目录中：
 
 ```json
 {
-  "my-key": { "api_key": "sk-...", "provider": "openai", "base_url": "https://..." }
+  "model-<uuid>": { "api_key": "sk-...", "base_url": "https://..." }
 }
 ```
 
-配置文件里用 `{"model": "gpt-4o", "key_id": "my-key"}` 引用 key；Web UI「添加模型」弹窗自动写入凭据，`GET /api/models` 脱敏不返回 key。
+配置文件中的模型条目引用独立 `key_id`，并保存 `api_format`；Web UI
+「添加模型」会为填写了 API Key/Base URL 的模型自动创建独立凭据，模型之间不会共享 Key。
+`GET /api/models` 永远不返回 API Key。
 
 ### 模型别名（easycode.config.json）
 
@@ -46,11 +46,11 @@ uv sync
 {
   "default_model": "deepseek-v4flash",
   "models": {
-    "deepseek-v4flash": "deepseek/deepseek-v4-flash",
-    "gpt5.6-terra": "openai/gpt-5.6-terra",
-    "gpt5.6-sol": "openai/gpt-5.6-sol",
-    "claude-sonnet5": "anthropic/claude-sonnet-5",
-    "claude-opus5": "anthropic/claude-opus-5"
+    "deepseek-v4flash": {
+      "model": "deepseek-v4-flash",
+      "key_id": "model-<uuid>",
+      "api_format": "openai_compatible"
+    }
   },
   "tools": { "execute_shell": true, "read_file": true, "write_file": true, "grep": true, "glob": true },
   "max_tool_result_chars": 8000,
@@ -68,7 +68,7 @@ uv sync
 - `max_context_tokens`：未知模型窗口时的上下文回退预算（默认 32k）；已知模型用 `litellm.get_model_info` 推导 `usable = 窗口 − 输出预留`
 - `compaction`：压缩微调（对齐 opencode）——`auto`（开关）、`buffer`（输出预留，默认 20000）、`preserve_recent_tokens`（保留原文的 token 预算，默认 25% usable，clamp 2k~15k）、`tail_turns`（最多保留轮数）、`prune`（压缩前清理旧工具输出）、`summary_max_chars`（摘要长度上限）
 
-- `models`：别名 → litellm 模型串（带提供商前缀，如 `deepseek/`、`openai/`、`anthropic/`），或对象 `{"model": "gpt-4o", "key_id": "my-key"}`（key 从凭据文件取）
+- `models`：别名 → `{"model": "gpt-4o", "key_id": "model-<uuid>", "api_format": "openai_compatible"}`；接口格式决定请求协议，Key/Base URL 从该模型自己的凭据读取
 - 想临时换模型，无需改文件，在 REPL 里用 `/model`（见下）
 - 配置文件从当前目录向上查找最近的 `easycode.config.json`
 

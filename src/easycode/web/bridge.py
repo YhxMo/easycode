@@ -48,21 +48,21 @@ class ApprovalBroker:
 
     def __init__(self, timeout: float = 300.0) -> None:
         self.timeout = timeout
-        self._pending: dict[str, asyncio.Future[bool]] = {}
+        self._pending: dict[str, asyncio.Future[tuple[bool, bool]]] = {}
 
-    def add(self, approval_id: str) -> asyncio.Future[bool]:
-        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+    def add(self, approval_id: str) -> asyncio.Future[tuple[bool, bool]]:
+        fut: asyncio.Future[tuple[bool, bool]] = asyncio.get_running_loop().create_future()
         self._pending[approval_id] = fut
         return fut
 
     def remove(self, approval_id: str) -> None:
         self._pending.pop(approval_id, None)
 
-    def resolve(self, approval_id: str, approve: bool) -> bool:
+    def resolve(self, approval_id: str, approve: bool, always: bool = False) -> bool:
         fut = self._pending.get(approval_id)
         if fut is None or fut.done():
             return False
-        fut.set_result(approve)
+        fut.set_result((approve, always))
         return True
 
     def cancel_all(self) -> None:
@@ -115,12 +115,13 @@ async def stream_chat_with_approval(
     flush_chars: int = TEXT_FLUSH_CHARS,
     flush_seconds: float = TEXT_FLUSH_SECONDS,
     cancel_event: asyncio.Event | None = None,
+    session: "Session | None" = None,
 ) -> AsyncIterator[tuple[str, object]]:
     """Agent turn with human approval interleaved.
 
     Yields (kind, payload) pairs:
     - ("text", chunk) / ("event", AgentEvent) for the normal stream
-    - ("approval", (approval_id, tool_call_dict)) when the user must decide
+    - ("approval", (approval_id, tool_call, reason, scope)) when the user must decide
     - ("event", AgentEvent(kind="cancelled")) once ``cancel_event`` fires
 
     The agent pauses on the approval future; the caller resolves it via
@@ -128,6 +129,10 @@ async def stream_chat_with_approval(
     provided and gets set, the in-flight turn task is cancelled (the agent
     rolls back partial history) and the stream ends with a ``cancelled``
     event instead of raising.
+
+    When ``session`` is given, approvals that match the session's recorded
+    ``always_allow`` scopes are auto-approved without prompting, and every
+    decision/timeout is appended to the session's ``approval_log``.
     """
     q: asyncio.Queue = asyncio.Queue()
     buf: list[str] = []
@@ -144,16 +149,44 @@ async def stream_chat_with_approval(
         prev = agent.approval_handler
 
         async def approval_handler(tc: ToolCall) -> bool:
+            from easycode.approval import approval_key, approval_reason, approval_scope
+
+            scope = approval_scope(tc)
+            key = approval_key(tc)
+            if session and key in session.always_allow:
+                return True
             approval_id = uuid.uuid4().hex[:12]
             fut = broker.add(approval_id)
-            await q.put(("approval", (approval_id, tc)))
+            reason = (
+                agent.mcp_manager.approval_reason(tc.name)
+                if agent.mcp_manager and agent.mcp_manager.requires_approval(tc.name)
+                else approval_reason(tc, agent.path_context())
+            )
+            await q.put(("approval", (approval_id, tc, reason, scope)))
+            decision = "expired"
+            always = False
             try:
-                ok = await asyncio.wait_for(fut, timeout=broker.timeout)
+                approve, always = await asyncio.wait_for(fut, timeout=broker.timeout)
+                decision = "approved" if approve else "denied"
+                if approve and session and always and key not in session.always_allow:
+                    session.always_allow.append(key)
             except asyncio.TimeoutError:
-                ok = False
+                decision = "expired"
             finally:
                 broker.remove(approval_id)
-            return ok
+                if session is not None:
+                    session.approval_log.append(
+                        {
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "args": tc.arguments,
+                            "reason": reason,
+                            "scope": scope,
+                            "decision": decision,
+                            "always": bool(always and decision == "approved"),
+                        }
+                    )
+            return decision == "approved"
 
         agent.approval_handler = approval_handler
         try:

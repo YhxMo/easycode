@@ -18,6 +18,13 @@ from easycode.approval import (
     needs_approval,
 )
 from easycode.models.base import Provider, StreamEvent, ToolCall
+from easycode.policy import (
+    APPROVAL_NEVER,
+    REVIEWER_AUTO,
+    ExecutionPolicy,
+    cap_permission,
+)
+from easycode.reviewer import ReviewDecision
 from easycode.tools.registry import ToolRegistry
 from easycode.workspace import PathContext
 
@@ -144,7 +151,10 @@ class Agent:
     extra_safe_dirs: list[Path] = field(default_factory=list)
     permission_mode: str = PERM_ASK
     approval_handler: Callable[[ToolCall], Awaitable[bool]] | None = None
+    review_handler: Callable[[ToolCall, str, list[dict]], Awaitable[ReviewDecision | bool]] | None = None
     _review_items: list[dict] = field(default_factory=list)
+    _review_decisions: list[bool] = field(default_factory=list)
+    _consecutive_review_denials: int = 0
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     mcp_manager: "MCPSessionManager | None" = None
     include_mcp_tools: bool = True
@@ -179,7 +189,7 @@ class Agent:
             return
         from easycode.mcp import MCPSessionManager
 
-        self.mcp_manager = MCPSessionManager(self.mcp_servers)
+        self.mcp_manager = MCPSessionManager(self.mcp_servers, self.path_context())
         await self.mcp_manager.start()
         if self.mcp_manager.tool_schemas():
             self.history.set_system(self._build_system())
@@ -190,7 +200,12 @@ class Agent:
             primary=self.root,
             secondary=[Path(p) for p in self.secondary_roots],
             extra_safe_dirs=[Path(p) for p in self.extra_safe_dirs],
+            sandbox_mode=self.execution_policy.sandbox_mode,
         )
+
+    @property
+    def execution_policy(self) -> ExecutionPolicy:
+        return ExecutionPolicy.from_preset(self.permission_mode)
 
     def _tools_desc(self) -> str:
         lines = []
@@ -308,6 +323,8 @@ class Agent:
         start_len = len(self.history.messages)
         self.history.add_user(user_input)
         self._review_items = []
+        self._review_decisions = []
+        self._consecutive_review_denials = 0
         try:
             async for ev in self._turn(user_input, max_iterations):
                 yield ev
@@ -370,28 +387,56 @@ class Agent:
             self.history.add(assistant_msg)
 
             for tc in tool_calls:
-                yield AgentEvent(kind="tool_start", tool_call=tc)
                 ctx = self.path_context()
                 if self.snapshot_manager:
                     self.snapshot_manager.note_tool(tc.name, tc.arguments, ctx)
-                requires_approval = self.approval_handler is not None and needs_approval(
-                    tc, ctx, self.permission_mode
+                policy = self.execution_policy
+                requires_approval = policy.approval_policy != APPROVAL_NEVER and (
+                    needs_approval(tc, ctx, self.permission_mode)
+                    or bool(self.mcp_manager and self.mcp_manager.requires_approval(tc.name))
                 )
                 approved = True
+                denial_reason = "rejected by user"
+                breaker_tripped = False
                 if requires_approval:
-                    yield AgentEvent(kind="approval", tool_call=tc, content=approval_reason(tc, ctx))
-                    approved = await self.approval_handler(tc)
-                    if not approved:
-                        result = json.dumps(
-                            {
-                                "status": "error",
-                                "message": f"tool call rejected by user: {tc.name}",
-                                "rejected": True,
-                            },
-                            ensure_ascii=False,
+                    reason = (
+                        self.mcp_manager.approval_reason(tc.name)
+                        if self.mcp_manager and self.mcp_manager.requires_approval(tc.name)
+                        else approval_reason(tc, ctx)
+                    )
+                    if policy.approvals_reviewer == REVIEWER_AUTO:
+                        decision = await self._auto_review(tc, reason)
+                        approved = decision.approve
+                        denial_reason = decision.rationale
+                        breaker_tripped = self._record_review_decision(approved)
+                        yield AgentEvent(
+                            kind="review",
+                            tool_call=tc,
+                            content=json.dumps(
+                                {
+                                    "phase": "pre-execution",
+                                    "approved": decision.approve,
+                                    "rationale": decision.rationale,
+                                    "tool": tc.name,
+                                },
+                                ensure_ascii=False,
+                            ),
                         )
                     else:
-                        result = await self._dispatch_tool(tc, force_allowed=True)
+                        yield AgentEvent(kind="approval", tool_call=tc, content=reason)
+                        approved = await self.approval_handler(tc) if self.approval_handler else False
+                yield AgentEvent(kind="tool_start", tool_call=tc)
+                if not approved:
+                    result = json.dumps(
+                        {
+                            "status": "error",
+                            "message": f"tool call rejected: {tc.name}: {denial_reason}",
+                            "rejected": True,
+                        },
+                        ensure_ascii=False,
+                    )
+                elif requires_approval:
+                    result = await self._dispatch_tool(tc, force_allowed=True)
                 else:
                     result = await self._dispatch_tool(tc)
                 if self.hook:
@@ -400,6 +445,13 @@ class Agent:
                     self._collect_review(tc, result)
                 self.history.add_tool(tc.id, tc.name, self._model_view(tc.name, result))
                 yield AgentEvent(kind="tool_result", tool_call=tc, tool_result=result)
+                if breaker_tripped:
+                    yield AgentEvent(
+                        kind="error",
+                        error="automatic review denial limit reached; turn interrupted",
+                    )
+                    yield AgentEvent(kind="done")
+                    return
         else:
             yield AgentEvent(kind="error", error=f"hit max tool iterations ({max_iterations})")
             yield AgentEvent(kind="done")
@@ -415,6 +467,26 @@ class Agent:
         diff = data.get("diff")
         if path:
             self._review_items.append({"tool": tc.name, "path": path, "diff": diff or ""})
+
+    async def _auto_review(self, tc: ToolCall, reason: str) -> ReviewDecision:
+        if self.review_handler is None:
+            return ReviewDecision(False, "automatic reviewer is not configured")
+        try:
+            result = await self.review_handler(tc, reason, list(self.history.messages))
+            if isinstance(result, ReviewDecision):
+                return result
+            return ReviewDecision(bool(result), "automatic reviewer decision")
+        except Exception as exc:  # noqa: BLE001 - fail closed at the boundary
+            return ReviewDecision(False, f"automatic review failed: {type(exc).__name__}: {exc}")
+
+    def _record_review_decision(self, approved: bool) -> bool:
+        self._review_decisions.append(approved)
+        self._review_decisions = self._review_decisions[-50:]
+        if approved:
+            self._consecutive_review_denials = 0
+        else:
+            self._consecutive_review_denials += 1
+        return self._consecutive_review_denials >= 3 or self._review_decisions.count(False) >= 10
 
     def _model_view(self, name: str, result: str) -> str:
         """Compact model-facing view of a tool result.
@@ -553,13 +625,26 @@ class Agent:
                 model_limits=self.model_limits,
                 agents=self.agents,
                 skills=self.skills,
+                approval_handler=self.approval_handler,
+                review_handler=self.review_handler,
             )
+        sub.root = self.root
+        sub.secondary_roots = list(self.secondary_roots)
+        sub.extra_safe_dirs = list(self.extra_safe_dirs)
+        sub.mcp_servers = self.mcp_servers
+        sub.mcp_manager = self.mcp_manager
+        sub.permission_mode = self.permission_mode
+        sub.approval_handler = self.approval_handler
+        sub.review_handler = self.review_handler
         if spec is None:
+            sub.history.set_system(sub._build_system())
             return sub
         if spec.tools is not None:
             sub.enabled_tools = set(spec.tools)
         if spec.permission:
-            sub.permission_mode = spec.permission
+            sub.permission_mode = cap_permission(self.permission_mode, spec.permission)
+        else:
+            sub.permission_mode = self.permission_mode
         if spec.system:
             sub.system_override = spec.system
         if spec.temperature is not None and hasattr(sub.provider, "kwargs"):

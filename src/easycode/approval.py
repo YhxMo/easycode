@@ -14,12 +14,14 @@ import re
 from typing import Any
 
 from easycode.models.base import ToolCall
+from easycode.policy import (
+    PERMISSIONS,
+    PERM_ALLOW_ALL,
+    PERM_ASK,
+    PERM_AUTO_REVIEW,
+    permission_parse,
+)
 from easycode.workspace import PathContext
-
-PERM_ASK = "ask"
-PERM_AUTO_REVIEW = "auto-review"
-PERM_ALLOW_ALL = "allow-all"
-PERMISSIONS = (PERM_ASK, PERM_AUTO_REVIEW, PERM_ALLOW_ALL)
 
 NETWORK_HINTS = (
     "curl",
@@ -44,6 +46,39 @@ NETWORK_HINT_RE = re.compile("|".join(re.escape(h) for h in NETWORK_HINTS), re.I
 
 FILE_EDIT_TOOLS = {"write_file", "edit_file"}
 
+TRUNC_LIMIT = 80
+
+
+def approval_key(tc: ToolCall) -> str:
+    """Per-session 'always allow' key: tool + first/relevant argument.
+
+    Shared by CLI and Web so 'always allow' semantics are identical. File
+    tools match by their parent-directory scope so the Web UI can display a
+    ``/dir/*`` pattern that mirrors opencode's permission dialog.
+    """
+    if tc.name in FILE_EDIT_TOOLS:
+        return f"{tc.name}:{approval_scope(tc)}"
+    if tc.name == "execute_shell":
+        return f"{tc.name}:{str(tc.arguments.get('command', ''))[:TRUNC_LIMIT]}"
+    return tc.name
+
+
+def approval_scope(tc: ToolCall) -> str:
+    """Human-facing boundary that an approval grants when 'always allowed'.
+
+    - File tools: the parent directory with a ``/*`` glob (this is the scope
+      the user is granting, matching the ``/dir/*`` pattern in the UI).
+    - Shell: the command text (truncated).
+    - Everything else: the tool name.
+    """
+    if tc.name in FILE_EDIT_TOOLS:
+        path = str(tc.arguments.get("path", "")).rstrip("/")
+        parent = path.rsplit("/", 1)[0] if "/" in path else "."
+        return f"{parent}/*" if parent else "/*"
+    if tc.name == "execute_shell":
+        return str(tc.arguments.get("command", ""))[:TRUNC_LIMIT]
+    return tc.name
+
 
 def needs_approval(tc: ToolCall, ctx: PathContext, mode: str) -> bool:
     """Decision layer: True when the tool call must be confirmed first.
@@ -51,7 +86,7 @@ def needs_approval(tc: ToolCall, ctx: PathContext, mode: str) -> bool:
     Auto-review and allow-all never block; ask blocks external-file edits and
     network-looking shell commands.
     """
-    if mode == PERM_ALLOW_ALL or mode == PERM_AUTO_REVIEW:
+    if mode == PERM_ALLOW_ALL:
         return False
     if tc.name in FILE_EDIT_TOOLS:
         path = tc.arguments.get("path", "")
@@ -59,22 +94,38 @@ def needs_approval(tc: ToolCall, ctx: PathContext, mode: str) -> bool:
             return False
         return not ctx.in_allowed(ctx.resolve(str(path)))
     if tc.name == "execute_shell":
-        return _looks_like_network(str(tc.arguments.get("command", "")))
+        return tc.arguments.get("sandbox_permissions") == "require_escalated" or _looks_like_network(
+            str(tc.arguments.get("command", ""))
+        )
     return False
 
 
 def approval_reason(tc: ToolCall, ctx: PathContext) -> str:
-    """Human-readable explanation for the approval prompt."""
+    """Categorical, human-readable explanation for the approval prompt.
+
+    Kept free of the concrete command/path (the UI shows that separately as
+    the ``scope`` line), so the prompt reads like opencode's permission
+    dialog category line.
+    """
     if tc.name in FILE_EDIT_TOOLS:
         path = tc.arguments.get("path", "")
-        return f"编辑工作区外的文件: {path}（{ctx.classify(ctx.resolve(str(path)))}）"
+        resolved = ctx.resolve(str(path))
+        for protected in ctx.protected_paths():
+            if resolved.is_relative_to(protected):
+                return "修改受保护目录 (.git/.easycode)"
+        return "访问项目目录之外的文件"
     if tc.name == "execute_shell":
-        return f"疑似联网命令: {str(tc.arguments.get('command', ''))[:120]}"
+        return "执行疑似联网命令"
     return f"工具需要批准: {tc.name}"
 
 
 def _looks_like_network(command: str) -> bool:
     return bool(NETWORK_HINT_RE.search(command))
+
+
+def looks_like_network(command: str) -> bool:
+    """Compatibility preflight; Seatbelt is the actual network boundary."""
+    return _looks_like_network(command)
 
 
 def needs_review(tc: ToolCall) -> bool:
@@ -84,11 +135,3 @@ def needs_review(tc: ToolCall) -> bool:
     if tc.name == "execute_shell":
         return True
     return False
-
-
-def permission_parse(value: str) -> str:
-    v = (value or "").strip().lower()
-    v = {"auto": PERM_AUTO_REVIEW, "allow_all": PERM_ALLOW_ALL, "allow": PERM_ALLOW_ALL}.get(v, v)
-    if v not in PERMISSIONS:
-        raise ValueError(f"invalid permission mode: {value} (use {', '.join(PERMISSIONS)})")
-    return v

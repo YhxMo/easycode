@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkspacesInfo } from "./api";
 import { chooseWorkspace } from "./api";
 import { SecondaryEditor } from "./SecondaryEditor";
@@ -26,6 +26,18 @@ export function ProjectPicker({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, []);
 
   // switching the main root shows that project's bound secondary roots
   useEffect(() => {
@@ -59,26 +71,35 @@ export function ProjectPicker({
     }
   };
 
+  const projects = (workspaces.projects ?? [])
+    .map((p) => p.root)
+    .filter((r): r is string => Boolean(r));
+  const currentName = root ? basename(root) : DEFAULT_PROJECT;
+
+  const selectRoot = (nextRoot: string | null) => {
+    setOpen(false);
+    onRoot(nextRoot);
+  };
+
   return (
-    <div className="project-picker">
+    <div className="project-picker" ref={pickerRef}>
       <div className="project-picker-block">
         <div className="picker-row">
-          <select
-            className="project-select"
-            value={root ?? ""}
+          <button
+            type="button"
+            className={`project-select ${open ? "open" : ""}`}
             disabled={disabled || busy}
-            onChange={(e) => onRoot(e.target.value || null)}
+            aria-expanded={open}
+            aria-haspopup="listbox"
+            onClick={() => setOpen(!open)}
           >
-            <option value="">{DEFAULT_PROJECT}</option>
-            {(workspaces.projects ?? [])
-              .map((p) => p.root)
-              .filter((r): r is string => Boolean(r))
-              .map((w) => (
-                <option key={w} value={w} title={w}>
-                  {basename(w)}
-                </option>
-              ))}
-          </select>
+            <span className="project-select-icon" aria-hidden="true">⌂</span>
+            <span className="project-select-copy">
+              <strong>{currentName}</strong>
+              <small>{root ?? "使用默认工作区"}</small>
+            </span>
+            <span className="project-select-caret" aria-hidden="true">⌄</span>
+          </button>
           <button
             className="project-add-btn primary-folder-add"
             title="用访达选择主目录"
@@ -89,6 +110,41 @@ export function ProjectPicker({
             <span aria-hidden="true">＋</span>
           </button>
         </div>
+        {open && (
+          <div className="project-menu" role="listbox" aria-label="选择主项目目录">
+            <div className="project-menu-label">主项目目录</div>
+            <button
+              type="button"
+              role="option"
+              aria-selected={!root}
+              className={`project-option ${!root ? "active" : ""}`}
+              onClick={() => selectRoot(null)}
+            >
+              <span className="project-option-mark" aria-hidden="true">{!root ? "✓" : ""}</span>
+              <span className="project-option-copy">
+                <strong>{DEFAULT_PROJECT}</strong>
+                <small>不绑定本地目录</small>
+              </span>
+            </button>
+            {projects.map((project) => (
+              <button
+                key={project}
+                type="button"
+                role="option"
+                aria-selected={project === root}
+                className={`project-option ${project === root ? "active" : ""}`}
+                title={project}
+                onClick={() => selectRoot(project)}
+              >
+                <span className="project-option-mark" aria-hidden="true">{project === root ? "✓" : ""}</span>
+                <span className="project-option-copy">
+                  <strong>{basename(project)}</strong>
+                  <small>{project}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <SecondaryEditor
           root={root}
           secondary={secondary}

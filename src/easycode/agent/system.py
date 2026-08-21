@@ -50,6 +50,9 @@ Guidelines:
 - Use execute_shell to run tests, build, or inspect the environment. Run
   commands in the workspace root. Avoid destructive commands (rm -rf, git
   push --force, etc.) unless the user explicitly asks.
+- Shell commands run without network and can write only the primary and bound
+  secondary workspace roots. When an essential action must cross that boundary,
+  set sandbox_permissions="require_escalated" and provide a concise justification.
 - Tool JSON results may be truncated; rely on the status field.
 - Keep answers concise and cite file paths when relevant.
 """
