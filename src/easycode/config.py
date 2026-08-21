@@ -1,0 +1,223 @@
+"""Configuration loading and model alias resolution."""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+
+from easycode.approval import PERM_ASK, permission_parse
+from easycode.workspace import PathContext
+
+CONFIG_FILENAME = "easycode.config.json"
+DEFAULT_MAX_TOOL_RESULT_CHARS = 8000
+DEFAULT_MAX_CONTEXT_TOKENS = 32_000
+
+DEFAULT_MODELS: dict[str, str] = {
+    "deepseek-v4flash": "deepseek/deepseek-v4-flash",
+    "gpt5.6-terra": "openai/gpt-5.6-terra",
+    "gpt5.6-sol": "openai/gpt-5.6-sol",
+    "claude-sonnet5": "anthropic/claude-sonnet-5",
+    "claude-opus5": "anthropic/claude-opus-5",
+}
+
+DEFAULT_TOOLS = {name: True for name in ("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks")}
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "default_model": "deepseek-v4flash",
+    "models": DEFAULT_MODELS,
+    "tools": DEFAULT_TOOLS,
+    "max_tool_result_chars": DEFAULT_MAX_TOOL_RESULT_CHARS,
+    "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
+}
+
+
+def _skills_enabled(raw: dict[str, Any]) -> bool:
+    skills = raw.get("skills")
+    if isinstance(skills, dict):
+        return bool(skills.get("enabled", True))
+    return True
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """A model entry: litellm model string + optional credentials key.
+
+    Compatible with both config shapes:
+
+    - string: ``"openai/gpt-4o"`` (key comes from env vars)
+    - object: ``{"model": "gpt-4o", "key_id": "my-key"}`` (key from credentials file)
+    """
+
+    model: str
+    key_id: str | None = None
+
+    @classmethod
+    def parse(cls, value: str | dict[str, Any]) -> "ModelSpec":
+        if isinstance(value, str):
+            return cls(model=value)
+        if isinstance(value, dict):
+            return cls(model=str(value.get("model") or ""), key_id=value.get("key_id") or None)
+        raise ValueError(f"invalid model entry: {value!r}")
+
+    def to_value(self) -> str | dict[str, str]:
+        if self.key_id is None:
+            return self.model
+        return {"model": self.model, "key_id": self.key_id}
+
+    def to_display(self) -> str:
+        if self.key_id is None:
+            return self.model
+        return f"{self.model} (key: {self.key_id})"
+
+
+def find_config_file(start: Path | None = None) -> Path | None:
+    """Search from cwd (or ``start``) upward for the nearest config file."""
+    cur = (start or Path.cwd()).resolve()
+    for d in (cur, *cur.parents):
+        candidate = d / CONFIG_FILENAME
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def find_env_file(start: Path | None = None) -> Path | None:
+    """Search from cwd (or ``start``) upward for the nearest ``.env`` file."""
+    cur = (start or Path.cwd()).resolve()
+    for d in (cur, *cur.parents):
+        candidate = d / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+@dataclass
+class Config:
+    """merged configuration; overrides are kept in-memory only."""
+
+    config_path: Path | None = None
+    root: Path = field(default_factory=Path.cwd)
+    default_model: str = "deepseek-v4flash"
+    models: dict[str, ModelSpec] = field(default_factory=lambda: {k: ModelSpec(v) for k, v in DEFAULT_MODELS.items()})
+    tools: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_TOOLS))
+    max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS
+    secondary_roots: list[str] = field(default_factory=list)
+    extra_safe_dirs: list[str] = field(default_factory=list)
+    permission_mode: str = PERM_ASK
+    mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
+    workspace_projects: list[dict[str, Any]] = field(default_factory=list)  # [{root, secondary}]
+    skills_enabled: bool = True
+
+    @classmethod
+    def load(cls, start: Path | None = None) -> "Config":
+        load_dotenv(find_env_file(start) if find_env_file(start) else None, override=False)
+        cfg_path = find_config_file(start)
+        raw: dict[str, Any] = {}
+        if cfg_path:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        root = (cfg_path or Path.cwd()).resolve().parent
+        merged_models = {**DEFAULT_MODELS, **(raw.get("models") or {})}
+        models = {alias: ModelSpec.parse(value) for alias, value in merged_models.items()}
+        tools = {**DEFAULT_TOOLS, **(raw.get("tools") or {})}
+        workspace = raw.get("workspace") or {}
+        permission_raw = raw.get("permission", raw.get("permission_mode", PERM_ASK))
+        try:
+            permission_mode = permission_parse(str(permission_raw))
+        except ValueError:
+            permission_mode = PERM_ASK
+        return cls(
+            config_path=cfg_path,
+            root=root,
+            default_model=raw.get("default_model", DEFAULT_CONFIG["default_model"]),
+            models=models,
+            tools=tools,
+            max_tool_result_chars=int(
+                raw.get("max_tool_result_chars", DEFAULT_MAX_TOOL_RESULT_CHARS)
+            ),
+            secondary_roots=list(workspace.get("secondary") or []),
+            extra_safe_dirs=list(workspace.get("extra_safe_dirs") or []),
+            workspace_projects=list(workspace.get("projects") or []),
+            permission_mode=permission_mode,
+            mcp_servers=dict(raw.get("mcp_servers") or {}),
+            max_context_tokens=int(raw.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
+            skills_enabled=_skills_enabled(raw),
+        )
+
+    def resolve_model(self, alias_or_model: str) -> str:
+        """Resolve an alias to a litellm model string.
+
+        Aliases map through ``self.models``; anything containing a provider
+        prefix (``"provider/model"``) is passed through unchanged.
+        """
+        return self.model_spec(alias_or_model).model
+
+    def model_spec(self, alias_or_model: str) -> ModelSpec:
+        """Alias → :class:`ModelSpec`; unknown aliases pass through as literal model."""
+        spec = self.models.get(alias_or_model)
+        if spec is not None:
+            return spec
+        return ModelSpec.parse(alias_or_model)
+
+    def set_model_alias(self, alias: str, model: str | dict[str, Any]) -> None:
+        """Runtime alias override (in-memory); accepts str or {model, key_id}."""
+        self.models[alias] = ModelSpec.parse(model)
+
+    def set_default_model(self, alias: str) -> None:
+        self.default_model = alias
+
+    def path_context(self, root: Path | None = None, secondary: list[Path] | None = None) -> PathContext:
+        """Sandbox context for an agent: config workspace + overrides.
+
+        ``root``/``secondary`` override the config values when given (CLI/Web).
+        Config paths are resolved relative to the config file location;
+        ``~`` is expanded.
+        """
+        primary = (root or self.root).resolve()
+        base = self.config_path.parent if self.config_path else Path.cwd()
+        secondary_resolved: list[Path] = []
+        for raw in secondary if secondary is not None else self.secondary_roots:
+            p = Path(raw).expanduser()
+            if not p.is_absolute():
+                p = base / p
+            secondary_resolved.append(p.resolve())
+        extra: list[Path] = []
+        for raw in self.extra_safe_dirs:
+            p = Path(raw).expanduser()
+            if not p.is_absolute():
+                p = base / p
+            extra.append(p.resolve())
+        return PathContext(primary=primary, secondary=secondary_resolved, extra_safe_dirs=extra)
+
+    def save(self) -> None:
+        """Persist current config to disk."""
+        if not self.config_path:
+            self.config_path = self.root / CONFIG_FILENAME
+        payload = {
+            "default_model": self.default_model,
+            "models": {alias: spec.to_value() for alias, spec in self.models.items()},
+            "tools": self.tools,
+            "max_tool_result_chars": self.max_tool_result_chars,
+            "max_context_tokens": self.max_context_tokens,
+        }
+        workspace_payload: dict[str, Any] = {}
+        if self.secondary_roots or self.extra_safe_dirs:
+            workspace_payload["secondary"] = self.secondary_roots
+            workspace_payload["extra_safe_dirs"] = self.extra_safe_dirs
+        if self.workspace_projects:
+            workspace_payload["projects"] = self.workspace_projects
+        if workspace_payload:
+            payload["workspace"] = workspace_payload
+        if self.permission_mode != PERM_ASK:
+            payload["permission"] = self.permission_mode
+        if self.mcp_servers:
+            payload["mcp_servers"] = self.mcp_servers
+        if not self.skills_enabled:
+            payload["skills"] = {"enabled": False}
+        self.config_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )

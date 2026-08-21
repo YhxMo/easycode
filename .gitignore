@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Env / config (never commit secrets)
+.env
+
+# Tools
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# macOS
+.DS_Store
+._*
+# Local history
+.easycode_history

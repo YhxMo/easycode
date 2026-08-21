@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/commandmenu.tsx","./src/modelpicker.tsx","./src/permissionpicker.tsx","./src/projectpicker.tsx","./src/secondaryeditor.tsx","./src/toolcard.tsx","./src/api.ts","./src/main.tsx","./vite.config.ts"],"version":"5.9.3"}

@@ -1,0 +1,108 @@
+"""Credentials store: ``~/.easycode/credentials.json`` (chmod 600, never committed).
+
+Layout::
+
+    { "<key_id>": {"api_key": "sk-...", "provider": "openai", "base_url": "https://..."} }
+
+Model configs reference a key by ``key_id``; the raw api key never leaves
+this file (web endpoints only expose ``key_id``).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+CREDENTIALS_DIR = ".easycode"
+CREDENTIALS_FILENAME = "credentials.json"
+LEGACY_DATA_DIR = ".myagent"
+
+
+def data_home() -> Path:
+    """Data directory (``~/.easycode``), migrating any pre-rename ``~/.myagent`` once."""
+    new_dir = Path.home() / CREDENTIALS_DIR
+    legacy_dir = Path.home() / LEGACY_DATA_DIR
+    if not new_dir.exists() and legacy_dir.exists():
+        try:
+            legacy_dir.rename(new_dir)
+        except OSError:
+            pass
+    return new_dir
+
+
+@dataclass
+class Credential:
+    key_id: str
+    api_key: str
+    provider: str | None = None
+    base_url: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"api_key": self.api_key}
+        if self.provider:
+            out["provider"] = self.provider
+        if self.base_url:
+            out["base_url"] = self.base_url
+        return out
+
+    def masked(self) -> dict[str, Any]:
+        """Public view: no api key, only a tail-hint for recognition."""
+        tail = self.api_key[-4:] if len(self.api_key) >= 4 else ""
+        return {"key_id": self.key_id, "key_tail": tail, "provider": self.provider, "base_url": self.base_url}
+
+
+def credentials_path(home: Path | None = None) -> Path:
+    if home is not None:
+        return home / CREDENTIALS_DIR / CREDENTIALS_FILENAME
+    return data_home() / CREDENTIALS_FILENAME
+
+
+def load_credentials(path: Path | None = None) -> dict[str, Credential]:
+    """Load all credentials; missing/unreadable/corrupt file → empty dict."""
+    p = path or credentials_path()
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[str, Credential] = {}
+    for key_id, entry in (raw or {}).items():
+        if not isinstance(entry, dict) or not entry.get("api_key"):
+            continue
+        out[str(key_id)] = Credential(
+            key_id=str(key_id),
+            api_key=entry["api_key"],
+            provider=entry.get("provider"),
+            base_url=entry.get("base_url"),
+        )
+    return out
+
+
+def _write(creds: dict[str, Credential], path: Path) -> None:
+    payload = {k: c.to_dict() for k, c in creds.items()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+def save_credential(cred: Credential, path: Path | None = None) -> None:
+    p = path or credentials_path()
+    creds = load_credentials(p)
+    creds[cred.key_id] = cred
+    _write(creds, p)
+
+
+def delete_credential(key_id: str, path: Path | None = None) -> bool:
+    p = path or credentials_path()
+    creds = load_credentials(p)
+    if key_id not in creds:
+        return False
+    del creds[key_id]
+    _write(creds, p)
+    return True

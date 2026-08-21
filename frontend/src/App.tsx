@@ -1,0 +1,670 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  CommandInfo,
+  ModelsInfo,
+  SessionDetail,
+  SessionSummary,
+  WorkspacesInfo,
+} from "./api";
+import {
+  cancelSessionChat,
+  deleteSession,
+  fetchCommands,
+  fetchModels,
+  fetchSession,
+  fetchSessions,
+  fetchWorkspaces,
+  redoSession,
+  setSessionPermission,
+  streamChat,
+  submitApproval,
+  undoSession,
+} from "./api";
+import type { ChatOptions } from "./api";
+import { CommandMenu } from "./CommandMenu";
+import { ModelPicker } from "./ModelPicker";
+import { PermissionPicker } from "./PermissionPicker";
+import { ProjectPicker, basename } from "./ProjectPicker";
+import { SecondaryEditor } from "./SecondaryEditor";
+import { ToolCard } from "./ToolCard";
+
+type Item =
+  | { kind: "user"; text: string }
+  | { kind: "assistant"; text: string }
+  | { kind: "tool"; name: string; args: Record<string, unknown>; result?: string; done: boolean }
+  | { kind: "approval"; id: string; name: string; args: Record<string, unknown>; decided?: boolean }
+  | { kind: "review"; text: string }
+  | { kind: "notice"; text: string }
+  | { kind: "error"; text: string };
+
+type RollbackInfo = {
+  count: number;
+  prompt: string;
+  files: number;
+  messageOnly: boolean;
+};
+
+const EMPTY_MODELS: ModelsInfo = { default: "deepseek-v4flash", models: {} };
+const DEFAULT_PROJECT = "default project";
+
+function FolderIcon() {
+  return (
+    <svg className="project-folder-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M3.5 7.5h6l1.8 2h9.2v7.8a2.7 2.7 0 0 1-2.7 2.7H6.2a2.7 2.7 0 0 1-2.7-2.7V7.5Z" />
+      <path d="M3.5 7.5V6.7A2.7 2.7 0 0 1 6.2 4h3.1l2 2h3.2" />
+    </svg>
+  );
+}
+
+function normalizeToolArgs(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return { input: value };
+    }
+  }
+  return {};
+}
+
+function historyToItems(messages: any[]): Item[] {
+  const items: Item[] = [];
+  for (const m of messages) {
+    if (m.role === "user") {
+      items.push({ kind: "user", text: String(m.content ?? "") });
+    } else if (m.role === "assistant") {
+      if (m.content) items.push({ kind: "assistant", text: String(m.content) });
+      if (m.tool_calls?.length) {
+        for (const tc of m.tool_calls) {
+          if (tc.function) {
+            items.push({
+              kind: "tool",
+              name: tc.function.name,
+              args: normalizeToolArgs(tc.function.arguments),
+              result: "(上次会话中执行)",
+              done: true,
+            });
+          }
+        }
+      }
+    }
+  }
+  return items;
+}
+
+export default function App() {
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [currentId, setCurrentId] = useState<string | null>(null);
+  const [items, setItems] = useState<Item[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
+  const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ default: "", projects: [] });
+  const [chosenRoot, setChosenRoot] = useState<string | null>(null);
+  const [chosenSecondary, setChosenSecondary] = useState<string[]>([]);
+  const [currentSecondary, setCurrentSecondary] = useState<string[]>([]);
+  const [chosenPermission, setChosenPermission] = useState<string>("ask");
+  const [currentPermission, setCurrentPermission] = useState<string>("ask");
+  const [commands, setCommands] = useState<CommandInfo[]>([]);
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const [cmdIndex, setCmdIndex] = useState(0);
+  const [rollbackInfo, setRollbackInfo] = useState<RollbackInfo | null>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  const decideApproval = useCallback(async (index: number, approve: boolean) => {
+    const item = items[index];
+    if (item?.kind !== "approval" || item.decided) return;
+    setItems((prev) =>
+      prev.map((it, i) => (i === index ? { ...it, decided: true } : it)),
+    );
+    try {
+      await submitApproval(item.id, approve);
+    } catch {
+      setItems((prev) =>
+        prev.map((it, i) => (i === index ? { ...it, decided: false } : it)),
+      );
+    }
+  }, [items]);
+
+  const refreshSessions = useCallback(() => {
+    fetchSessions().then(setSessions).catch(() => {});
+    fetchWorkspaces().then(setWorkspaces).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshSessions();
+    fetchModels().then(setModels).catch(() => {});
+    fetchCommands()
+      .then((r) => setCommands(r.commands))
+      .catch(() => {});
+  }, [refreshSessions]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [items]);
+
+  const openSession = useCallback(
+    async (id: string | null) => {
+      setCurrentId(id);
+      setItems([]);
+      setRollbackInfo(null);
+      if (id) {
+        try {
+          const detail: SessionDetail = await fetchSession(id);
+          setItems(historyToItems(detail.messages));
+          setCurrentSecondary(detail.secondary_roots ?? []);
+          setCurrentPermission(detail.permission_mode ?? "ask");
+        } catch {
+          // session gone
+        }
+      } else {
+        setCurrentSecondary([]);
+        setCurrentPermission("ask");
+      }
+    },
+    [],
+  );
+
+  const newSession = useCallback(() => {
+    openSession(null);
+    setChosenRoot(null);
+    setChosenSecondary([]);
+    setChosenPermission("ask");
+    refreshSessions();
+  }, [openSession, refreshSessions]);
+
+  // sessions grouped by project root (null = default project)
+  const groups = useMemo(() => {
+    const map = new Map<string | null, SessionSummary[]>();
+    for (const s of sessions) {
+      const key = s.root ?? null;
+      const list = map.get(key);
+      if (list) list.push(s);
+      else map.set(key, [s]);
+    }
+    return Array.from(map.entries()).sort(
+      (a, b) =>
+        Math.max(...b[1].map((s) => Date.parse(s.created_at))) -
+        Math.max(...a[1].map((s) => Date.parse(s.created_at))),
+    );
+  }, [sessions]);
+
+  const currentRoot = sessions.find((s) => s.id === currentId)?.root ?? null;
+  const projectName = currentRoot ? basename(currentRoot) : DEFAULT_PROJECT;
+
+  const changePermission = useCallback(
+    async (mode: string) => {
+      if (currentId === null) {
+        setChosenPermission(mode);
+        return;
+      }
+      setCurrentPermission(mode);
+      try {
+        const r = await setSessionPermission(currentId, mode);
+        setCurrentPermission(r.permission_mode);
+      } catch {
+        refreshSessions();
+      }
+    },
+    [currentId, refreshSessions],
+  );
+
+  const rollback = useCallback(
+    async (dir: "undo" | "redo", untilUser?: number) => {
+      if (currentId === null) return;
+      const userItems = items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
+      const rollbackCount = untilUser ? Math.max(1, userItems.length - untilUser + 1) : 1;
+      const rollbackPrompt = untilUser
+        ? userItems[Math.max(0, untilUser - 1)]?.text ?? "上一回合"
+        : userItems[userItems.length - 1]?.text ?? "上一回合";
+      setBusy(true);
+      try {
+        const r =
+          dir === "undo" ? await undoSession(currentId, untilUser) : await redoSession(currentId);
+        if (r.ok) {
+          const restored = r.restored ?? [];
+          if (dir === "undo") {
+            setRollbackInfo({
+              count: rollbackCount,
+              prompt: rollbackPrompt,
+              files: restored.length,
+              messageOnly: Boolean(r.message_only),
+            });
+          } else {
+            setRollbackInfo(null);
+          }
+          const detail = await fetchSession(currentId).catch(() => null);
+          if (detail) setItems(historyToItems(detail.messages));
+        }
+      } catch {
+        // nothing to undo/redo
+      } finally {
+        setBusy(false);
+        refreshSessions();
+      }
+    },
+    [currentId, items, refreshSessions],
+  );
+
+  const stop = useCallback(() => {
+    if (currentId) cancelSessionChat(currentId).catch(() => {});
+  }, [currentId]);
+
+  const ranTool = useRef(false);
+  const send = useCallback(async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setInput("");
+    setRollbackInfo(null);
+    setBusy(true);
+    ranTool.current = false;
+    const sessionId = currentId;
+    const opts: ChatOptions = {};
+    if (currentId === null) {
+      if (chosenRoot) opts.root = chosenRoot;
+      if (chosenSecondary.length) opts.secondary_roots = chosenSecondary;
+      opts.permission_mode = chosenPermission;
+    }
+    const patches: Item[] = [
+      { kind: "user", text },
+      { kind: "assistant", text: "" },
+    ];
+    setItems((prev) => [...prev, ...patches]);
+    try {
+      await streamChat(sessionId, text, (ev) => {
+        if (ev.type === "session") {
+          if (ev.session_id) setCurrentId(ev.session_id);
+        } else if (ev.type === "text") {
+          setItems((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.kind === "assistant") last.text += ev.content ?? "";
+            return next;
+          });
+        } else if (ev.type === "cancelled") {
+          setItems((prev) => [...prev, { kind: "notice", text: "⏹ 已中断" }]);
+        } else if (ev.type === "tool_start") {
+          ranTool.current = true;
+          setItems((prev) => [
+            ...prev,
+            {
+              kind: "tool",
+              name: ev.tool_call.name,
+              args: ev.tool_call.arguments,
+              done: false,
+            },
+          ]);
+        } else if (ev.type === "tool_result") {
+          setItems((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.kind === "tool") {
+              last.result = ev.result;
+              last.done = true;
+            }
+            return next;
+          });
+        } else if (ev.type === "done") {
+          // 工具执行后若无最终回复，提示完成状态，避免看起来卡住
+          setItems((prev) => {
+            const last = prev[prev.length - 1];
+            const noReply =
+              ranTool.current &&
+              (last?.kind !== "assistant" || !(last.text ?? "").trim());
+            if (!noReply) return prev;
+            const msg =
+              last?.kind === "tool" && !last.done
+                ? "⚠ 回合已结束但工具未返回结果"
+                : "✓ 已完成（模型未输出文字回复，工具可能已生效）";
+            return [...prev, { kind: "error", text: msg }];
+          });
+        } else if (ev.type === "error") {
+          setItems((prev) => [...prev, { kind: "error", text: ev.error ?? "error" }]);
+        } else if (ev.type === "approval_required") {
+          setItems((prev) => [
+            ...prev,
+            {
+              kind: "approval",
+              id: ev.approval_id,
+              name: ev.tool_call.name,
+              args: ev.tool_call.arguments,
+            },
+          ]);
+        } else if (ev.type === "review") {
+          setItems((prev) => [...prev, { kind: "review", text: ev.content ?? "" }]);
+        }
+      }, opts);
+    } catch (err) {
+      setItems((prev) => [
+        ...prev,
+        { kind: "error", text: err instanceof Error ? err.message : String(err) },
+      ]);
+    } finally {
+      setBusy(false);
+      refreshSessions();
+      if (currentId === null) {
+        // pick up the newly-created session
+        const list = await fetchSessions().catch(() => []);
+        if (list.length) {
+          setCurrentId(list[0].id);
+          setCurrentPermission(list[0].permission_mode ?? chosenPermission);
+        }
+      }
+    }
+  }, [input, busy, currentId, chosenRoot, chosenSecondary, chosenPermission, refreshSessions]);
+
+  return (
+    <div className="app">
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">&gt;_</span>
+          <h1>Easy code</h1>
+        </div>
+        <button className="new-btn" type="button" onClick={newSession}>
+          <span aria-hidden="true">＋</span> 新会话
+        </button>
+        <div className="project-picker">
+          {currentId === null ? (
+            <ProjectPicker
+              workspaces={workspaces}
+              root={chosenRoot}
+              secondary={chosenSecondary}
+              disabled={busy}
+              onRoot={setChosenRoot}
+              onSecondary={setChosenSecondary}
+              onWorkspaces={setWorkspaces}
+            />
+          ) : currentRoot ? (
+            <div className="project-tag" title={currentRoot}>
+              {basename(currentRoot)}
+            </div>
+          ) : (
+            <div className="project-tag default">{DEFAULT_PROJECT}</div>
+          )}
+          {currentId !== null && (
+            <SecondaryEditor
+              root={currentRoot}
+              secondary={currentSecondary}
+              sessionId={currentId}
+              disabled={busy}
+              onSecondary={setCurrentSecondary}
+              onWorkspaces={setWorkspaces}
+            />
+          )}
+        </div>
+        <div className="session-list">
+          {groups.length > 0 && <div className="session-list-label">项目</div>}
+          {groups.map(([root, list]) => (
+            <div key={root ?? "__default__"} className="project-group">
+              <div
+                className="project-group-head"
+                title={root ?? DEFAULT_PROJECT}
+              >
+                <FolderIcon />
+                <span className="project-group-name">{root ? basename(root) : DEFAULT_PROJECT}</span>
+              </div>
+              {list.map((s) => (
+                <div
+                  key={s.id}
+                  className={`session-item ${s.id === currentId ? "active" : ""}`}
+                  onClick={() => openSession(s.id)}
+                >
+                  <span className="session-title">{s.title}</span>
+                  <span
+                    className="session-del"
+                    title="删除"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      await deleteSession(s.id).catch(() => {});
+                      if (currentId === s.id) {
+                        setCurrentId(null);
+                        setItems([]);
+                      }
+                      refreshSessions();
+                    }}
+                  >
+                    ✕
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+          {groups.length === 0 && <div className="session-empty">新会话会保存在这里</div>}
+        </div>
+        <div className="sidebar-foot">
+          <ModelPicker
+            models={models}
+            current={models.default}
+            onChange={setModels}
+          />
+        </div>
+      </aside>
+      <main className="chat">
+        <header className="chat-header">
+          <div className="chat-context">
+            <strong>{currentId ? sessions.find((s) => s.id === currentId)?.title : "新会话"}</strong>
+            <span className="context-path" title={currentRoot ?? DEFAULT_PROJECT}>
+              <span aria-hidden="true">⌘</span> {projectName}
+            </span>
+          </div>
+          <div className="header-actions">
+            <button
+              className="header-action"
+              title="撤销上一回合"
+              disabled={busy || currentId === null || items.every((item) => item.kind !== "user")}
+              onClick={() => rollback("undo")}
+            >
+              ↶ <span>撤销</span>
+            </button>
+            <span className={`connection-state ${busy ? "working" : ""}`}>
+              <span aria-hidden="true" />
+              {busy ? "正在工作" : "已连接"}
+            </span>
+          </div>
+        </header>
+        <div className="chat-main">
+          {items.length === 0 && (
+            <div className="empty">
+              <div className="empty-icon" aria-hidden="true">&gt;_</div>
+              <h2>从一个任务开始</h2>
+              <p>描述你想完成的工作，Easy code 会在当前工作区中协助你。</p>
+            </div>
+          )}
+          {items.map((it, i) => {
+            if (it.kind === "user") {
+              // 该消息在会话历史中的序号（第 n 条用户消息，1-based）
+              const nth = items.filter((x, j) => j <= i && x.kind === "user").length;
+              return (
+                <div key={i} className="msg-row user">
+                  <div className="msg user">{it.text}</div>
+                  <button
+                    className="rb-inline"
+                    title="回滚到这条 prompt 之前（删除其后所有消息与文件改动）"
+                    disabled={busy || currentId === null}
+                    onClick={() => rollback("undo", nth)}
+                  >
+                    <span aria-hidden="true">↶</span> 撤销此消息
+                  </button>
+                </div>
+              );
+            }
+            if (it.kind === "assistant") {
+              if (!it.text) return null;
+              return (
+                <div key={i} className="msg assistant">
+                  {it.text}
+                  {busy && i === items.length - 1 && <span className="cursor" />}
+                </div>
+              );
+            }
+            if (it.kind === "tool") {
+              return (
+                <ToolCard key={i} tool={{ id: String(i), name: it.name, arguments: it.args }} result={it.result} done={it.done} />
+              );
+            }
+            if (it.kind === "approval") {
+              return (
+                <div key={i} className="approval-card">
+                  <div className="approval-title">⚠ 需要批准：{it.name}</div>
+                  <pre className="approval-args">{JSON.stringify(it.args, null, 2)}</pre>
+                  {it.decided ? (
+                    <div className="approval-decided">已提交</div>
+                  ) : (
+                    <div className="approval-actions">
+                      <button className="primary" onClick={() => decideApproval(i, true)}>
+                        允许
+                      </button>
+                      <button onClick={() => decideApproval(i, false)}>拒绝</button>
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            if (it.kind === "review") {
+              return (
+                <details key={i} className="review-card">
+                  <summary>变更汇总（auto-review）</summary>
+                  <pre>{it.text}</pre>
+                </details>
+              );
+            }
+            if (it.kind === "notice") {
+              return (
+                <div key={i} className="msg notice">
+                  {it.text}
+                </div>
+              );
+            }
+            return (
+              <div key={i} className="msg error">
+                {it.text}
+              </div>
+            );
+          })}
+          <div ref={endRef} />
+        </div>
+        <div className="composer-area">
+          {rollbackInfo && (
+            <div className="rollback-banner" role="status">
+              <span className="rollback-icon" aria-hidden="true">↶</span>
+              <div className="rollback-copy">
+                <strong>{rollbackInfo.count} 条已回滚消息</strong>
+                <span title={rollbackInfo.prompt}>{rollbackInfo.prompt}</span>
+                <small>
+                  {rollbackInfo.messageOnly
+                    ? "非 Git 工作区，仅恢复了对话"
+                    : rollbackInfo.files > 0
+                      ? `同时恢复了 ${rollbackInfo.files} 个文件`
+                      : "对话与工作区已回到此处"}
+                </small>
+              </div>
+              <button
+                type="button"
+                className="rollback-restore"
+                disabled={busy}
+                onClick={() => rollback("redo")}
+              >
+                恢复
+              </button>
+            </div>
+          )}
+          <div className="chat-input">
+            <div className="cmd-wrap">
+              <CommandMenu
+                commands={commands}
+                open={cmdOpen}
+                query={input}
+                index={cmdIndex}
+                onPick={(c) => {
+                  setInput(`/${c.name} `);
+                  setCmdOpen(false);
+                  setCmdIndex(0);
+                }}
+                onClose={() => setCmdOpen(false)}
+              />
+              <textarea
+                value={input}
+                aria-label="给 Easy code 发送消息"
+                placeholder="向 Easy code 提问，使用 / 运行命令…"
+                onChange={(e) => {
+                  setInput(e.target.value);
+                  setCmdOpen(e.target.value.startsWith("/"));
+                  setCmdIndex(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setCmdOpen(false);
+                    return;
+                  }
+                  if (cmdOpen) {
+                    const q = input.startsWith("/") ? input.slice(1) : input;
+                    const count = commands.filter(
+                      (c) => c.name.startsWith(q) || (q.length > 0 && c.name.includes(q)),
+                    ).length;
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setCmdIndex((i) => (count ? Math.min(i + 1, count - 1) : i));
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setCmdIndex((i) => Math.max(i - 1, 0));
+                      return;
+                    }
+                    if (e.key === "Enter" && count > 0) {
+                      e.preventDefault();
+                      const filtered = commands
+                        .filter(
+                          (c) => c.name.startsWith(q) || (q.length > 0 && c.name.includes(q)),
+                        )
+                        .slice(0, 12);
+                      const pick = filtered[Math.min(cmdIndex, filtered.length - 1)];
+                      if (pick) {
+                        setInput(`/${pick.name} `);
+                        setCmdOpen(false);
+                        setCmdIndex(0);
+                      }
+                      return;
+                    }
+                  }
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    send();
+                  }
+                }}
+              />
+            </div>
+            <div className="composer-toolbar">
+              <div className="composer-options">
+                <div className="chat-input-perm">
+                  <PermissionPicker
+                    compact
+                    value={currentId === null ? chosenPermission : currentPermission}
+                    disabled={busy}
+                    onChange={changePermission}
+                  />
+                </div>
+                <span className="composer-hint">Enter 发送 · Shift + Enter 换行</span>
+              </div>
+              <button
+                className={`send-btn ${busy ? "stop" : ""}`}
+                aria-label={busy ? "停止生成" : "发送消息"}
+                title={busy ? "停止生成" : "发送消息"}
+                onClick={busy ? stop : send}
+                disabled={!busy && !input.trim()}
+              >
+                {busy ? <span className="stop-square" /> : <span aria-hidden="true">↑</span>}
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
