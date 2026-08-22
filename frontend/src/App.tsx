@@ -6,16 +6,25 @@ import type {
   SessionDetail,
   SessionSummary,
   WorkspacesInfo,
+  WorkspaceProject,
 } from "./api";
 import {
+  archiveProjectChats,
   cancelSessionChat,
+  createWorktree,
   deleteSession,
+  fetchArchivedSessions,
   fetchCommands,
   fetchModels,
   fetchSession,
   fetchSessions,
   fetchWorkspaces,
+  pinProject,
   redoSession,
+  removeProject,
+  revealInFinder,
+  saveProject,
+  setSessionArchived,
   setSessionPermission,
   streamChat,
   submitApproval,
@@ -26,6 +35,8 @@ import { ApprovalSheet } from "./ApprovalSheet";
 import { CommandMenu } from "./CommandMenu";
 import { ModelPicker } from "./ModelPicker";
 import { PermissionPicker } from "./PermissionPicker";
+import { ProjectMenu } from "./ProjectMenu";
+import type { ProjectAction } from "./ProjectMenu";
 import { ProjectPicker, basename } from "./ProjectPicker";
 import { SecondaryEditor } from "./SecondaryEditor";
 import { ToolCard } from "./ToolCard";
@@ -210,6 +221,10 @@ export default function App() {
     fetchWorkspaces().then(setWorkspaces).catch(() => {});
   }, []);
 
+  const refreshArchived = useCallback(() => {
+    fetchArchivedSessions().then(setArchived).catch(() => {});
+  }, []);
+
   useEffect(() => {
     refreshSessions();
     fetchModels().then(setModels).catch(() => {});
@@ -217,6 +232,10 @@ export default function App() {
       .then((r) => setCommands(r.commands))
       .catch(() => {});
   }, [refreshSessions]);
+
+  useEffect(() => {
+    refreshArchived();
+  }, [refreshArchived]);
 
   useEffect(() => {
     // Scroll only the message pane. scrollIntoView can walk up to ancestor
@@ -249,6 +268,12 @@ export default function App() {
     [],
   );
 
+  const projectMeta = useMemo(() => {
+    const map = new Map<string | null, WorkspaceProject>();
+    for (const p of workspaces.projects ?? []) map.set(p.root ?? null, p);
+    return map;
+  }, [workspaces]);
+
   const newSession = useCallback(() => {
     openSession(null);
     setChosenRoot(null);
@@ -257,7 +282,87 @@ export default function App() {
     refreshSessions();
   }, [openSession, refreshSessions]);
 
-  // sessions grouped by project root (null = default project)
+  // ---- project row actions (new chat / more menu) ----
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [editTarget, setEditTarget] = useState<{ root: string | null; name: string } | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<{ root: string | null; count: number } | null>(null);
+  const [archived, setArchived] = useState<SessionSummary[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = useCallback((kind: "ok" | "err", text: string) => {
+    setToast({ kind, text });
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3500);
+  }, []);
+
+  const newChatInProject = useCallback(
+    (root: string | null) => {
+      const proj = root ? projectMeta.get(root) : null;
+      openSession(null);
+      setChosenRoot(root);
+      setChosenSecondary(proj?.secondary ?? []);
+      setChosenPermission("ask");
+      refreshSessions();
+    },
+    [openSession, projectMeta, refreshSessions],
+  );
+
+  const runProjectAction = useCallback(
+    async (root: string | null, action: ProjectAction) => {
+      try {
+        if (action === "edit") {
+          const proj = root ? projectMeta.get(root) : projectMeta.get(null);
+          setEditTarget({ root, name: proj?.name ?? (root ? basename(root) : DEFAULT_PROJECT) });
+        } else if (action === "pin" || action === "unpin") {
+          const r = await pinProject(root, action === "pin");
+          setWorkspaces((w) => ({ ...w, projects: r.projects }));
+          refreshSessions();
+          showToast("ok", action === "pin" ? "已置顶" : "已取消置顶");
+        } else if (action === "reveal") {
+          const r = await revealInFinder(root);
+          if (!r.supported) showToast("err", "当前平台不支持在 Finder 中显示");
+          else if (!r.ok) showToast("err", r.path ? `无法打开: ${r.path}` : "无法打开目录");
+        } else if (action === "worktree") {
+          if (!root) {
+            showToast("err", "默认项目没有目录");
+            return;
+          }
+          const r = await createWorktree(root);
+          setWorkspaces((w) => ({ ...w, projects: r.projects }));
+          refreshSessions();
+          showToast("ok", `已创建永久工作树 ${r.name ?? ""}`);
+        } else if (action === "archive") {
+          const r = await archiveProjectChats(root);
+          refreshSessions();
+          refreshArchived();
+          showToast("ok", `已归档 ${r.archived_sessions} 条聊天`);
+        } else if (action === "remove") {
+          setRemoveTarget({ root, count: sessions.filter((s) => (s.root ?? null) === root).length });
+        }
+      } catch (e) {
+        showToast("err", e instanceof Error ? e.message : String(e));
+      }
+    },
+    [projectMeta, refreshSessions, refreshArchived, sessions, showToast],
+  );
+
+  const confirmRemoveProject = useCallback(async () => {
+    if (!removeTarget) return;
+    try {
+      const r = await removeProject(removeTarget.root);
+      setWorkspaces((w) => ({ ...w, projects: r.projects }));
+      refreshSessions();
+      if (currentId === null && removeTarget.root === chosenRoot) setChosenRoot(null);
+      showToast("ok", `已移除项目（删除 ${r.deleted_sessions} 条会话）`);
+    } catch (e) {
+      showToast("err", e instanceof Error ? e.message : String(e));
+    } finally {
+      setRemoveTarget(null);
+    }
+  }, [removeTarget, refreshSessions, chosenRoot, showToast]);
+
+  // sessions grouped by project root (null = default project); pinned projects first
   const groups = useMemo(() => {
     const map = new Map<string | null, SessionSummary[]>();
     for (const s of sessions) {
@@ -266,12 +371,16 @@ export default function App() {
       if (list) list.push(s);
       else map.set(key, [s]);
     }
-    return Array.from(map.entries()).sort(
-      (a, b) =>
+    return Array.from(map.entries()).sort((a, b) => {
+      const pinnedA = projectMeta.get(a[0]!)?.pinned ?? false;
+      const pinnedB = projectMeta.get(b[0]!)?.pinned ?? false;
+      if (pinnedA !== pinnedB) return pinnedA ? -1 : 1;
+      return (
         Math.max(...b[1].map((s) => Date.parse(s.created_at))) -
-        Math.max(...a[1].map((s) => Date.parse(s.created_at))),
-    );
-  }, [sessions]);
+        Math.max(...a[1].map((s) => Date.parse(s.created_at)))
+      );
+    });
+  }, [sessions, projectMeta]);
 
   const currentRoot = sessions.find((s) => s.id === currentId)?.root ?? null;
   const projectName = currentRoot ? basename(currentRoot) : DEFAULT_PROJECT;
@@ -542,14 +651,44 @@ export default function App() {
         </div>
         <div className="session-list">
           {groups.length > 0 && <div className="session-list-label">项目</div>}
-          {groups.map(([root, list]) => (
+          {groups.map(([root, list]) => {
+            const meta = projectMeta.get(root);
+            const pinned = meta?.pinned ?? false;
+            return (
             <div key={root ?? "__default__"} className="project-group">
               <div
                 className="project-group-head"
                 title={root ?? DEFAULT_PROJECT}
               >
-                <FolderIcon />
-                <span className="project-group-name">{root ? basename(root) : DEFAULT_PROJECT}</span>
+                <button
+                  type="button"
+                  className="group-head-main"
+                  title={root ?? DEFAULT_PROJECT}
+                  onClick={() => newChatInProject(root)}
+                >
+                  <FolderIcon />
+                  <span className="project-group-name">{meta?.name ?? (root ? basename(root) : DEFAULT_PROJECT)}</span>
+                </button>
+                <div className="group-head-actions">
+                  <button
+                    type="button"
+                    className="group-new-btn"
+                    title="在此项目下新建会话"
+                    aria-label="在此项目下新建会话"
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      newChatInProject(root);
+                    }}
+                  >
+                    <span aria-hidden="true">＋</span>
+                  </button>
+                  <ProjectMenu
+                    pinned={pinned}
+                    disabled={busy}
+                    onAction={(action) => runProjectAction(root, action)}
+                  />
+                </div>
               </div>
               {list.map((s) => (
                 <div
@@ -576,8 +715,62 @@ export default function App() {
                 </div>
               ))}
             </div>
-          ))}
+          );
+          })}
           {groups.length === 0 && <div className="session-empty">新会话会保存在这里</div>}
+          {archived.length > 0 && (
+            <div className="archive-section">
+              <button
+                type="button"
+                className="archive-head"
+                onClick={() => setShowArchived(!showArchived)}
+                aria-expanded={showArchived}
+              >
+                <span className="archive-icon" aria-hidden="true">📦</span>
+                <span>已归档</span>
+                <span className="archive-count">{archived.length}</span>
+                <span className="archive-caret" aria-hidden="true">{showArchived ? "⌄" : "›"}</span>
+              </button>
+              {showArchived && (
+                <div className="archive-list">
+                  {archived.map((s) => (
+                    <div key={s.id} className="session-item archived">
+                      <span className="session-title" title={s.title}>{s.title}</span>
+                      <div className="archive-actions">
+                        <button
+                          type="button"
+                          className="archive-restore"
+                          title="恢复"
+                          aria-label="恢复"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await setSessionArchived(s.id, false).catch(() => {});
+                            setArchived((prev) => prev.filter((x) => x.id !== s.id));
+                            refreshSessions();
+                          }}
+                        >
+                          ↥
+                        </button>
+                        <button
+                          type="button"
+                          className="archive-del"
+                          title="彻底删除"
+                          aria-label="彻底删除"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await deleteSession(s.id).catch(() => {});
+                            setArchived((prev) => prev.filter((x) => x.id !== s.id));
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="sidebar-foot">
           <ModelPicker
@@ -872,6 +1065,80 @@ export default function App() {
           }}
           onDismiss={() => setOverlayOpen(false)}
         />
+        {toast && (
+          <div className={`app-toast ${toast.kind}`} role="status">
+            {toast.text}
+          </div>
+        )}
+        {editTarget && (
+          <div className="modal-backdrop" onClick={() => setEditTarget(null)}>
+            <div className="modal project-edit-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-title">编辑项目</div>
+              <label className="modal-field">
+                <span>项目名称</span>
+                <input
+                  type="text"
+                  value={editTarget.name}
+                  onChange={(e) => setEditTarget({ ...editTarget, name: e.target.value })}
+                  autoFocus
+                />
+              </label>
+              <SecondaryEditor
+                root={editTarget.root}
+                secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
+                disabled={false}
+                onSecondary={() => {}}
+                onWorkspaces={setWorkspaces}
+              />
+              <div className="modal-actions">
+                <button type="button" className="modal-cancel" onClick={() => setEditTarget(null)}>
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={async () => {
+                    try {
+                      const r = await saveProject(
+                        editTarget.root,
+                        projectMeta.get(editTarget.root)?.secondary ?? [],
+                        undefined,
+                        editTarget.name,
+                      );
+                      setWorkspaces((w) => ({ ...w, projects: r.projects }));
+                      refreshSessions();
+                      showToast("ok", "已保存项目设置");
+                    } catch (e) {
+                      showToast("err", e instanceof Error ? e.message : String(e));
+                    }
+                    setEditTarget(null);
+                  }}
+                >
+                  保存
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {removeTarget && (
+          <div className="modal-backdrop" onClick={() => setRemoveTarget(null)}>
+            <div className="modal project-remove-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-title">移除项目</div>
+              <p className="modal-desc">
+                将删除「{removeTarget.root ? basename(removeTarget.root) : DEFAULT_PROJECT}」的绑定，
+                并删除其下 {removeTarget.count} 条会话（不可恢复）。
+              </p>
+              <div className="modal-actions">
+                <button type="button" className="modal-cancel" onClick={() => setRemoveTarget(null)}>
+                  取消
+                </button>
+                <button type="button" className="danger" onClick={confirmRemoveProject}>
+                  确认移除
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

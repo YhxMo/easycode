@@ -30,9 +30,10 @@ def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **agent_kwargs):
         provider = FakeProvider(script=[])
-        return Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
+        root = agent_kwargs.get("root") or tmp_path
+        return Agent(provider=provider, registry=build_registry(8000), root=Path(root))
 
     store = SessionStore(cfg, tmp_path, factory)
     return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
@@ -149,3 +150,136 @@ def test_session_persistence(tmp_path, monkeypatch):
     assert restored is not None
     assert restored.title == "persist me"
     assert any("persist me" in str(m.get("content")) for m in restored.messages)
+
+# ---------------------------------------------------------------- project management (对齐 codex)
+
+def _mk_repo(tmp_path: Path, name: str = "repo") -> Path:
+    import subprocess
+
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    return repo
+
+
+def test_pin_project_persists_and_orders(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo(tmp_path, "proj-a")
+    r = client.post("/api/workspaces/pin", json={"root": str(repo), "pinned": True})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["pinned"] is True
+    # pinned project sorts first in the projects list
+    assert data["projects"][0]["root"] == str(repo)
+    assert data["projects"][0].get("pinned") is True
+    # persists into config
+    cfg = Config.load(start=tmp_path)
+    assert cfg.workspace_projects[0].get("pinned") is True
+    # unpin
+    r2 = client.post("/api/workspaces/pin", json={"root": str(repo), "pinned": False})
+    assert r2.json()["projects"][0].get("pinned") is None or r2.json()["projects"][0]["pinned"] is False
+
+
+def test_reveal_unavailable_on_non_darwin(tmp_path):
+    import sys
+
+    client = make_app(tmp_path)
+    repo = _mk_repo(tmp_path, "proj-r")
+    r = client.post("/api/workspaces/reveal", json={"root": str(repo)})
+    assert r.status_code == 200
+    if sys.platform != "darwin":
+        assert r.json() == {"ok": False, "supported": False, "error": "open is only supported on macOS"}
+    else:
+        assert r.json() == {"ok": True, "supported": True, "path": str(repo)}
+
+
+def test_archive_project_chats_hides_them(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo(tmp_path, "proj-a")
+    # create a session under the project root
+    r = client.post("/api/chat", json={"message": "hi", "root": str(repo)})
+    sid = None
+    for line in r.text.splitlines():
+        if line.startswith("data:"):
+            ev = json.loads(line[6:])
+            if ev.get("type") == "session":
+                sid = ev["session_id"]
+    assert sid
+    # visible by default
+    ids = [s["id"] for s in client.get("/api/sessions").json()]
+    assert sid in ids
+    # archive
+    ra = client.post("/api/workspaces/archive", json={"root": str(repo)})
+    assert ra.status_code == 200
+    assert ra.json()["archived_sessions"] == 1
+    ids = [s["id"] for s in client.get("/api/sessions").json()]
+    assert sid not in ids
+    # visible with ?archived=1
+    ids_archived = [s["id"] for s in client.get("/api/sessions?archived=1").json()]
+    assert sid in ids_archived
+    # restore
+    ru = client.post(f"/api/sessions/{sid}/archive", json={"archived": False})
+    assert ru.status_code == 200
+    ids = [s["id"] for s in client.get("/api/sessions").json()]
+    assert sid in ids
+
+
+def test_remove_project_deletes_sessions(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo(tmp_path, "proj-r")
+    r = client.post("/api/chat", json={"message": "hi", "root": str(repo)})
+    sid = None
+    for line in r.text.splitlines():
+        if line.startswith("data:"):
+            ev = json.loads(line[6:])
+            if ev.get("type") == "session":
+                sid = ev["session_id"]
+    rr = client.post("/api/workspaces/projects/remove", json={"root": str(repo)})
+    assert rr.status_code == 200
+    assert rr.json()["deleted_sessions"] == 1
+    assert client.get(f"/api/sessions/{sid}").status_code == 404
+    assert not any(p["root"] == str(repo) for p in rr.json()["projects"])
+
+
+def test_create_worktree_registers_new_project(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo(tmp_path, "proj-wt")
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    wt_root = Path(data["root"])
+    assert wt_root.is_dir()
+    assert data["name"]
+    # registered as a project
+    assert any(p["root"] == str(wt_root.resolve()) for p in data["projects"])
+    # detached HEAD: .git is a file (linked worktree)
+    assert (wt_root / ".git").is_file()
+    # not a git repo case
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    r2 = client.post("/api/workspaces/worktree", json={"root": str(plain)})
+    assert r2.status_code == 422
+
+
+def test_save_project_with_name(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo(tmp_path, "proj-n")
+    r = client.post(
+        "/api/workspaces/projects",
+        json={"root": str(repo), "secondary": [], "name": "我的项目"},
+    )
+    assert r.status_code == 200
+    proj = next(p for p in r.json()["projects"] if p["root"] == str(repo))
+    assert proj.get("name") == "我的项目"
+    # edit rename
+    r2 = client.post(
+        "/api/workspaces/projects",
+        json={"root": str(repo), "secondary": [], "name": "新名字"},
+    )
+    proj = next(p for p in r2.json()["projects"] if p["root"] == str(repo))
+    assert proj.get("name") == "新名字"

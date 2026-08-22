@@ -22,6 +22,7 @@ from easycode.credentials import (
     new_credential_id,
     load_credentials,
     save_credential,
+    data_home,
 )
 from easycode.skills import SkillRegistry
 from easycode.web.bridge import ApprovalBroker, event_to_sse, stream_chat_with_approval
@@ -122,10 +123,33 @@ class SaveProjectRequest(BaseModel):
     root: str | None = None
     secondary: list[str] = []
     session_id: str | None = None
+    name: str | None = None
+
+
+class PinProjectRequest(BaseModel):
+    root: str | None = None
+    pinned: bool = True
+
+
+class RevealRequest(BaseModel):
+    root: str | None = None
+
+
+class WorktreeRequest(BaseModel):
+    root: str = ""
+
+
+class RemoveProjectRequest(BaseModel):
+    root: str | None = None
+    delete_sessions: bool = True
 
 
 class PermissionRequest(BaseModel):
     mode: str
+
+
+class ArchiveRequest(BaseModel):
+    archived: bool = True
 
 
 FINDER_APPLESCRIPT = 'POSIX path of (choose folder with prompt "{prompt}"{multiple})'
@@ -193,20 +217,29 @@ def projects_from_sessions(store: SessionStore, default_root: Path) -> list[dict
 
 
 def merge_projects(base: list[dict], extra: list[dict]) -> list[dict]:
-    """Union project bindings by root key; ``base`` (config) wins ordering."""
-    merged: dict[str, set[str]] = {}
+    """Union project bindings by root key; ``base`` (config) wins ordering.
+
+    Name/pinned metadata is preserved from the config entries (``base``);
+    pinned projects sort above the rest (stable within their groups).
+    """
+    meta: dict[str, dict] = {}
+    secondary: dict[str, set[str]] = {}
     order: list[str] = []
     for source in (base, extra):
         for p in source:
             key = _project_key(p.get("root"))
-            if key not in merged:
+            if key not in order:
                 order.append(key)
-            merged.setdefault(key, set()).update(p.get("secondary") or [])
+            secondary.setdefault(key, set()).update(p.get("secondary") or [])
+            if source is base:
+                meta[key] = {k: p[k] for k in ("name", "pinned") if p.get(k)}
     out = []
     for key in order:
         root = None if not key else key
-        out.append({"root": root, "secondary": sorted(merged[key])})
-    out.sort(key=lambda p: (p["root"] is not None, p["root"] or ""))
+        entry = {"root": root, "secondary": sorted(secondary[key])}
+        entry.update(meta.get(key, {}))
+        out.append(entry)
+    out.sort(key=lambda p: (not p.get("pinned"), p["root"] is not None, p["root"] or ""))
     return out
 
 
@@ -463,8 +496,9 @@ def create_app(
         return models_response()
 
     @app.get("/api/sessions")
-    def list_sessions() -> list[dict]:
-        return [s.summary for s in store.list()]
+    def list_sessions(archived: int = 0) -> list[dict]:
+        """Session summaries. ``archived=1`` returns only archived sessions."""
+        return [s.summary for s in store.list_by_archived(bool(archived))]
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict:
@@ -483,6 +517,13 @@ def create_app(
         if not store.delete(session_id):
             raise HTTPException(404, "session not found")
         return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/archive")
+    def archive_session(session_id: str, req: ArchiveRequest) -> dict:
+        sess = store.set_archived(session_id, req.archived)
+        if sess is None:
+            raise HTTPException(404, "session not found")
+        return {"ok": True, "archived": sess.archived}
 
     @app.post("/api/sessions/{session_id}/permission")
     def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
@@ -556,10 +597,19 @@ def create_app(
             if _project_key(proj.get("root")) == key:
                 proj["root"] = root
                 proj["secondary"] = secondary
+                if req.name is not None:
+                    name = req.name.strip()
+                    if name:
+                        proj["name"] = name
+                    else:
+                        proj.pop("name", None)
                 found = True
                 break
         if not found:
-            cfg.workspace_projects.append({"root": root, "secondary": secondary})
+            entry: dict[str, Any] = {"root": root, "secondary": secondary}
+            if req.name and req.name.strip():
+                entry["name"] = req.name.strip()
+            cfg.workspace_projects.append(entry)
         cfg.save()
         if req.session_id:
             sess = store.get(req.session_id)
@@ -569,6 +619,180 @@ def create_app(
             sess.agent.secondary_roots = [Path(p) for p in secondary]
             store.record_exchange(sess)
         return {"root": root, "secondary": secondary, "projects": build_projects(cfg, store)}
+
+    def _ensure_project_entry(root: str | None, base_secondary: list[str] | None = None) -> dict:
+        """Locate or create a config workspace project entry by root key."""
+        key = _project_key(root)
+        for proj in cfg.workspace_projects:
+            if _project_key(proj.get("root")) == key:
+                return proj
+        secondary = base_secondary
+        if secondary is None:
+            merged = next((p for p in build_projects(cfg, store) if _project_key(p.get("root")) == key), None)
+            secondary = sorted(merged.get("secondary") or []) if merged else []
+        entry: dict[str, Any] = {"root": root, "secondary": secondary}
+        cfg.workspace_projects.append(entry)
+        return entry
+
+    @app.post("/api/workspaces/pin")
+    def pin_project(req: PinProjectRequest) -> dict:
+        root = _normalise_root(req.root, cfg.root)
+        entry = _ensure_project_entry(root)
+        entry["pinned"] = bool(req.pinned)
+        cfg.save()
+        return {"ok": True, "root": root, "pinned": entry.get("pinned"), "projects": build_projects(cfg, store)}
+
+    @app.post("/api/workspaces/reveal")
+    def reveal_in_finder(req: RevealRequest) -> dict:
+        """Reveal the project directory in the system file browser (macOS ``open``)."""
+        import shutil
+
+        if not (req.root or Path(cfg.root).is_dir()):
+            return {"ok": False, "supported": False, "error": "no directory"}
+        path = _normalise_root(req.root, cfg.root) or str(cfg.root)
+        if not Path(path).is_dir():
+            return {"ok": False, "supported": False, "error": f"not a directory: {path}"}
+        if not (sys.platform == "darwin" and shutil.which("open")):
+            return {"ok": False, "supported": False, "error": "open is only supported on macOS"}
+        import subprocess
+
+        try:
+            subprocess.run(["open", path], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired):
+            return {"ok": False, "supported": False, "error": "open failed"}
+        return {"ok": True, "supported": True, "path": path}
+
+    @app.post("/api/workspaces/projects/remove")
+    def remove_project(req: RemoveProjectRequest) -> dict:
+        """Remove a project binding; with ``delete_sessions`` delete its chats too."""
+        root = _normalise_root(req.root, cfg.root)
+        key = _project_key(root)
+        cfg.workspace_projects = [
+            p for p in cfg.workspace_projects if _project_key(p.get("root")) != key
+        ]
+        cfg.save()
+        deleted = 0
+        if req.delete_sessions:
+            deleted = store.delete_root(root)
+        return {"ok": True, "root": root, "deleted_sessions": deleted, "projects": build_projects(cfg, store)}
+
+    @app.post("/api/workspaces/archive")
+    def archive_project_chats(req: RevealRequest) -> dict:
+        """Archive every chat under the project (对齐 codex 归档语义)."""
+        root = _normalise_root(req.root, cfg.root)
+        count = store.archive_root(root)
+        return {"ok": True, "archived_sessions": count, "projects": build_projects(cfg, store)}
+
+    @app.post("/api/workspaces/worktree")
+    def create_worktree(req: WorktreeRequest) -> dict:
+        """Create a permanent Git worktree as its own project (对齐 codex).
+
+        Mirrors Codex's ``$CODEX_HOME/worktrees`` location via our data dir
+        (data_home()/worktrees/<repo>-<slug>), detaches HEAD by resolving the
+        commit sha first (avoids codex's refs/heads/HEAD bug), best-effort
+        applies local changes + ``.worktreeinclude`` files, and runs
+        ``.easycode/setup.sh`` if present.
+        """
+        import shutil
+        import subprocess
+        import uuid
+
+        root = _normalise_root(req.root, cfg.root)
+        if not root:
+            raise HTTPException(422, "default project has no directory to worktree")
+        src = Path(root)
+        if not src.is_dir():
+            raise HTTPException(422, f"not a directory: {root}")
+
+        def run(cmd: list[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
+            )
+
+        if not shutil.which("git"):
+            raise HTTPException(422, "git is not installed")
+        is_repo = run(["git", "rev-parse", "--is-inside-work-tree"], src)
+        if is_repo.returncode != 0 or is_repo.stdout.strip() != "true":
+            raise HTTPException(422, "项目不是 Git 仓库，无法创建 worktree")
+
+        try:
+            head_sha = run(["git", "rev-parse", "HEAD"], src).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            raise HTTPException(422, "cannot resolve HEAD commit")
+        if not head_sha:
+            raise HTTPException(422, "repository has no commits")
+
+        root_home = data_home() / "worktrees"
+        root_home.mkdir(parents=True, exist_ok=True)
+        slug = f"{src.name}-{uuid.uuid4().hex[:5]}"
+        wt = root_home / slug
+        added = run(["git", "worktree", "add", "--detach", str(wt), head_sha], src)
+        if added.returncode != 0 or not (wt.is_dir() and (wt / ".git").exists() or (wt / ".git").is_file()):
+            raise HTTPException(500, f"git worktree add failed: {added.stderr[:200]}")
+
+        notes: list[str] = []
+
+        # best-effort: apply uncommitted changes from the source checkout
+        diff = run(["git", "diff", "HEAD"], src)
+        if diff.returncode == 0 and diff.stdout.strip():
+            # git apply needs stdin; use a temp patch file instead
+            patch = wt.parent / f"{slug}.patch"
+            patch.write_text(diff.stdout, encoding="utf-8")
+            res = run(["git", "apply", str(patch)], wt, timeout=15)
+            if res.returncode == 0:
+                notes.append("applied uncommitted changes")
+            try:
+                patch.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        # .worktreeinclude: copy gitignored files listed at the repo root
+        include_file = src / ".worktreeinclude"
+        if include_file.is_file():
+            for raw in include_file.read_text(encoding="utf-8").splitlines():
+                rel = raw.strip()
+                if not rel or rel.startswith("#") or rel.startswith("!"):
+                    continue
+                s = src / rel
+                if not s.exists() or s.is_symlink():
+                    continue
+                d = wt / rel
+                if d.exists():
+                    continue
+                try:
+                    if s.is_dir():
+                        import shutil as _sh
+
+                        _sh.copytree(s, d, symlinks=False, dirs_exist_ok=False)
+                    else:
+                        d.parent.mkdir(parents=True, exist_ok=True)
+                        import shutil as _sh
+
+                        _sh.copy2(s, d)
+                except OSError:
+                    pass
+            notes.append("copied .worktreeinclude")
+
+        # best-effort setup script (代码对齐 codex 的 .codex/setup.sh)
+        setup = wt / ".easycode" / "setup.sh"
+        if setup.is_file():
+            try:
+                run(["bash", str(setup)], wt, timeout=300)
+                notes.append("ran .easycode/setup.sh")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                notes.append(f"setup.sh failed: {exc}")
+
+        entry = _ensure_project_entry(str(wt.resolve()))
+        if not entry.get("name"):
+            entry["name"] = slug
+        cfg.save()
+        return {
+            "ok": True,
+            "root": str(wt.resolve()),
+            "name": entry.get("name"),
+            "notes": notes,
+            "projects": build_projects(cfg, store),
+        }
 
     @app.post("/api/workspaces/choose")
     def choose_workspace(req: ChooseWorkspaceRequest) -> dict:

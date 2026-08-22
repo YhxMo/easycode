@@ -34,6 +34,7 @@ class Session:
     always_allow: list[str] = field(default_factory=list)  # approval_key() scopes, persists
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
+    archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
 
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
@@ -60,6 +61,8 @@ class Session:
             out["root"] = self.root
         if self.secondary_roots:
             out["secondary_roots"] = list(self.secondary_roots)
+        if self.archived:
+            out["archived"] = True
         return out
 
 
@@ -115,6 +118,34 @@ class SessionStore:
     def list(self) -> list[Session]:
         return sorted(self._sessions.values(), key=lambda s: s.created_at, reverse=True)
 
+    def list_by_archived(self, archived: bool) -> list[Session]:
+        return [s for s in self.list() if s.archived == archived]
+
+    def set_archived(self, session_id: str, archived: bool) -> Session | None:
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            return None
+        sess.archived = archived
+        self._flush(sess)
+        return sess
+
+    def archive_root(self, root: str | None) -> int:
+        count = 0
+        for sess in self._sessions.values():
+            if sess.root == root:
+                sess.archived = True
+                count += 1
+        if count:
+            self._flush_many()
+        return count
+
+    def delete_root(self, root: str | None) -> int:
+        """Delete every session under ``root`` (including archived)."""
+        ids = [s.id for s in self._sessions.values() if s.root == root]
+        for sid in ids:
+            self.delete(sid)
+        return len(ids)
+
     def delete(self, session_id: str) -> bool:
         if session_id not in self._sessions:
             return False
@@ -155,6 +186,7 @@ class SessionStore:
                     always_allow=list(data.get("always_allow") or []),
                     approval_log=list(data.get("approval_log") or []),
                     user_times=list(data.get("user_times") or []),
+                    archived=bool(data.get("archived")),
                 )
                 sess.agent.history.messages = list(sess.messages)
                 self._sessions[sess.id] = sess
@@ -168,6 +200,10 @@ class SessionStore:
         session.user_times = list(session.user_times[:n_user])
         self._flush(session)
 
+    def _flush_many(self) -> None:
+        for sess in self._sessions.values():
+            self._flush(sess)
+
     def _flush(self, session: Session) -> None:
         payload = {
             "id": session.id,
@@ -179,6 +215,7 @@ class SessionStore:
             "always_allow": list(session.always_allow),
             "approval_log": list(session.approval_log),
             "user_times": list(session.user_times),
+            "archived": session.archived,
         }
         if session.root:
             payload["root"] = session.root

@@ -26,6 +26,7 @@ export interface SessionSummary {
   approvals_reviewer?: "user" | "auto-review";
   root?: string | null;
   secondary_roots?: string[];
+  archived?: boolean;
 }
 
 export type PermissionMode = "ask" | "auto-review" | "allow-all";
@@ -65,6 +66,8 @@ export interface ModelsInfo {
 export interface WorkspaceProject {
   root: string | null;
   secondary: string[];
+  name?: string;
+  pinned?: boolean;
 }
 
 export interface WorkspacesInfo {
@@ -138,6 +141,10 @@ export function fetchSessions(): Promise<SessionSummary[]> {
   return fetch("/api/sessions").then((r) => json<SessionSummary[]>(r));
 }
 
+export function fetchArchivedSessions(): Promise<SessionSummary[]> {
+  return fetch("/api/sessions?archived=1").then((r) => json<SessionSummary[]>(r));
+}
+
 export function fetchSession(id: string): Promise<SessionDetail> {
   return fetch(`/api/sessions/${id}`).then((r) => json<SessionDetail>(r));
 }
@@ -156,12 +163,73 @@ export function saveProject(
   root: string | null,
   secondary: string[],
   sessionId?: string | null,
+  name?: string,
 ): Promise<{ root: string | null; secondary: string[]; projects: WorkspaceProject[] }> {
   return fetch("/api/workspaces/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root, secondary, session_id: sessionId ?? null }),
+    body: JSON.stringify({ root, secondary, session_id: sessionId ?? null, name }),
   }).then((r) => json<{ root: string | null; secondary: string[]; projects: WorkspaceProject[] }>(r));
+}
+
+export function pinProject(
+  root: string | null,
+  pinned: boolean,
+): Promise<{ ok: boolean; root: string | null; pinned: boolean; projects: WorkspaceProject[] }> {
+  return fetch("/api/workspaces/pin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, pinned }),
+  }).then((r) => json<{ ok: boolean; root: string | null; pinned: boolean; projects: WorkspaceProject[] }>(r));
+}
+
+export function revealInFinder(root: string | null): Promise<{ ok: boolean; supported: boolean; path?: string }> {
+  return fetch("/api/workspaces/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root }),
+  }).then((r) => json<{ ok: boolean; supported: boolean; path?: string }>(r));
+}
+
+export function createWorktree(
+  root: string,
+): Promise<{ ok: boolean; root: string; name?: string; notes?: string[]; projects: WorkspaceProject[] }> {
+  return fetch("/api/workspaces/worktree", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root }),
+  }).then((r) => json<{ ok: boolean; root: string; name?: string; notes?: string[]; projects: WorkspaceProject[] }>(r));
+}
+
+export function archiveProjectChats(
+  root: string | null,
+): Promise<{ ok: boolean; archived_sessions: number; projects: WorkspaceProject[] }> {
+  return fetch("/api/workspaces/archive", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root }),
+  }).then((r) => json<{ ok: boolean; archived_sessions: number; projects: WorkspaceProject[] }>(r));
+}
+
+export function removeProject(
+  root: string | null,
+): Promise<{ ok: boolean; deleted_sessions: number; projects: WorkspaceProject[] }> {
+  return fetch("/api/workspaces/projects/remove", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ root, delete_sessions: true }),
+  }).then((r) => json<{ ok: boolean; deleted_sessions: number; projects: WorkspaceProject[] }>(r));
+}
+
+export function setSessionArchived(
+  sessionId: string,
+  archived: boolean,
+): Promise<{ ok: boolean; archived: boolean }> {
+  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archived }),
+  }).then((r) => json<{ ok: boolean; archived: boolean }>(r));
 }
 
 export function chooseWorkspace(
