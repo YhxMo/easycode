@@ -219,7 +219,11 @@ export default function App() {
   }, [refreshSessions]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Scroll only the message pane. scrollIntoView can walk up to ancestor
+    // overflow containers (e.g. .app with overflow:hidden), scrolling the
+    // whole UI out of view.
+    const pane = document.querySelector(".chat-main");
+    pane?.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
   }, [items]);
 
   const openSession = useCallback(
