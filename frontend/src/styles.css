@@ -937,23 +937,23 @@ body {
 
 .approval-sheet {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 50%;
+  bottom: 14px;
   z-index: 40;
-  padding: 14px 18px 16px;
+  width: min(660px, calc(100% - 32px));
+  padding: 0;
   background: #191a1a;
-  border-top: 1px solid #2b2c2c;
-  box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.5);
-  border-radius: 16px 16px 0 0;
-  transform: translateY(105%);
+  border: 1px solid #2b2c2c;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  border-radius: 16px;
+  transform: translateX(-50%) translateY(110%);
   opacity: 0;
   pointer-events: none;
   transition: transform 180ms ease, opacity 160ms ease;
 }
 
 .approval-sheet.open {
-  transform: translateY(0);
+  transform: translateX(-50%) translateY(0);
   opacity: 1;
   pointer-events: auto;
 }
@@ -962,7 +962,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  padding: 12px 14px 8px 18px;
 }
 
 .approval-sheet-count {
@@ -992,10 +992,11 @@ body {
 }
 
 .approval-sheet-card {
-  padding: 20px 22px;
+  margin: 0 14px;
+  padding: 18px 20px;
   background: #202121;
   border: 1px solid #363837;
-  border-radius: 14px;
+  border-radius: 12px;
 }
 
 .approval-sheet-title {
@@ -1036,7 +1037,7 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: 14px;
+  padding: 12px 14px 14px 18px;
 }
 
 .approval-sheet-actions button {
@@ -2219,11 +2220,17 @@ input:focus-visible {
 
 @media (max-width: 760px) {
   .approval-sheet {
-    padding: 12px 12px 14px;
+    width: min(660px, calc(100% - 20px));
+    bottom: 10px;
+  }
+
+  .approval-sheet-head {
+    padding: 12px 12px 8px 14px;
   }
 
   .approval-sheet-card {
-    padding: 16px 16px;
+    margin: 0 10px;
+    padding: 14px 16px;
   }
 
   .approval-sheet-reason,
@@ -2237,6 +2244,7 @@ input:focus-visible {
 
   .approval-sheet-actions {
     gap: 8px;
+    padding: 12px 10px 12px 14px;
   }
 
   .approval-sheet-actions button {
