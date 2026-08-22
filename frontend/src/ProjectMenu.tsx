@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface ProjectMenuProps {
   pinned: boolean;
@@ -49,13 +49,33 @@ const ITEMS: {
 export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+
+  const positionMenu = useCallback(() => {
+    const btn = ref.current?.querySelector(".group-more-btn");
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      setAnchor({ x: r.right, y: r.bottom + 4 });
+    }
+  }, []);
 
   useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
+    if (open) positionMenu();
+  }, [open, positionMenu]);
+
+  useEffect(() => {
+    const onDoc = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
     document.addEventListener("pointerdown", onDoc);
-    return () => document.removeEventListener("pointerdown", onDoc);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("pointerdown", onDoc);
+      document.removeEventListener("keydown", onEsc);
+    };
   }, []);
 
   const pick = (action: ProjectAction) => {
@@ -78,13 +98,18 @@ export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
-          setOpen(!open);
+          setOpen((prev) => !prev);
         }}
       >
         <span aria-hidden="true">•••</span>
       </button>
-      {open && (
-        <div className="project-menu" role="menu" aria-label="项目操作">
+      {open && anchor && (
+        <div
+          className="project-menu"
+          role="menu"
+          aria-label="项目操作"
+          style={{ position: "fixed", left: anchor.x - 190, top: anchor.y, zIndex: 400 }}
+        >
           {items.map((it) => (
             <button
               type="button"
