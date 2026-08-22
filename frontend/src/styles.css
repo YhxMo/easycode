@@ -940,7 +940,7 @@ body {
   left: 50%;
   bottom: 14px;
   z-index: 40;
-  width: min(660px, calc(100% - 32px));
+  width: min(860px, calc(100% - 40px));
   padding: 0;
   background: #191a1a;
   border: 1px solid #2b2c2c;
@@ -1041,9 +1041,9 @@ body {
 }
 
 .approval-sheet-actions button {
-  min-height: 40px;
-  min-width: 112px;
-  padding: 8px 20px;
+  min-height: 38px;
+  min-width: 0;
+  padding: 8px 14px;
   border-radius: 8px;
   font-family: inherit;
   font-size: 14px;
@@ -2220,7 +2220,7 @@ input:focus-visible {
 
 @media (max-width: 760px) {
   .approval-sheet {
-    width: min(660px, calc(100% - 20px));
+    width: min(860px, calc(100% - 20px));
     bottom: 10px;
   }
 
