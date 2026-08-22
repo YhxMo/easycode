@@ -841,8 +841,21 @@ export default function App() {
         </div>
         {pendingApproval && !overlayOpen && (
           <div className="approval-pill">
-            <button type="button" onClick={() => setOverlayOpen(true)}>
-              等待批准 · {pendingApprovals.length}
+            <button
+              type="button"
+              onClick={() => setOverlayOpen(true)}
+              aria-label={`重新打开审批（${pendingApprovals.length} 个）`}
+            >
+              <svg
+                className="approval-pill-arrow"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M12 4.5 4.5 12h4.5v7.5h6V12h4.5z" />
+              </svg>
+              <span className="approval-pill-label">等待批准</span>
+              <span className="approval-pill-count">{pendingApprovals.length}</span>
             </button>
           </div>
         )}
