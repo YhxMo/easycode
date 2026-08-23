@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, TypeVar
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from easycode.workspace import PathContext
+    from easycode.workspace import PathContext, ToolGrant
 
 ParamsT = TypeVar("ParamsT", bound=BaseModel)
 
@@ -45,9 +45,10 @@ class Tool:
         root: Path,
         ctx: "PathContext | None" = None,
         force_allowed: bool = False,
+        grant: "ToolGrant | None" = None,
     ) -> Any:
         params = self.params_model.model_validate(arguments)
-        return self.handler(params, root=root, ctx=ctx, force_allowed=force_allowed)
+        return self.handler(params, root=root, ctx=ctx, force_allowed=force_allowed, grant=grant)
 
 
 class ToolRegistry:
@@ -72,11 +73,14 @@ class ToolRegistry:
         root: Path,
         ctx: "PathContext | None" = None,
         force_allowed: bool = False,
+        grant: "ToolGrant | None" = None,
     ) -> str:
         if name not in self._tools:
             raise KeyError(f"unknown tool: {name}")
         try:
-            result = self._tools[name].run(arguments, root=root, ctx=ctx, force_allowed=force_allowed)
+            result = self._tools[name].run(
+                arguments, root=root, ctx=ctx, force_allowed=force_allowed, grant=grant
+            )
             return self._serialize(name, result)
         except Exception as exc:  # noqa: BLE001 - report tool failures as JSON
             return json.dumps(

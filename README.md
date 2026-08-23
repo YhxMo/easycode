@@ -20,7 +20,7 @@ Python CLI 编程助手（类 Claude Code / opencode），带 Web UI。
 需要 [uv](https://docs.astral.sh/uv/)（Python ≥ 3.11）：
 
 ```bash
-uv sync
+uv sync --frozen    # 用 uv.lock 锁定版本，可复现安装
 ```
 
 ## 配置
@@ -64,6 +64,7 @@ uv sync
 - `workspace.secondary`：次要工作目录（与主目录同等免批准，可多个）；`workspace.extra_safe_dirs`：额外免批准目录
 - 路径归属判定：主/次工作目录 + 系统临时目录 + `~/.easycode/` 免批准，其余为 `external`（读取允许，编辑需批准）
 - `permission`：`ask`（默认，外部文件编辑/疑似联网命令事前询问）/ `auto-review`（全自动+事后变更汇总）/ `allow-all`（全放行）；CLI 用 `--permission`
+- `permissions`：可选的工具/参数规则表，动作支持 `allow` / `ask` / `deny`；规则最后匹配优先。例如 `{"execute_shell":{"*":"ask","git status*":"allow","git push*":"deny"}}`。规则只改变批准决策，文件和网络仍受沙箱边界约束
 - `mcp_servers`：外部 MCP server（stdio `{command,args}` 或 `{url}`），工具以 `mcp__<server>__<tool>` 注入 agent
 - `max_context_tokens`：未知模型窗口时的上下文回退预算（默认 32k）；已知模型用 `litellm.get_model_info` 推导 `usable = 窗口 − 输出预留`
 - `compaction`：压缩微调（对齐 opencode）——`auto`（开关）、`buffer`（输出预留，默认 20000）、`preserve_recent_tokens`（保留原文的 token 预算，默认 25% usable，clamp 2k~15k）、`tail_turns`（最多保留轮数）、`prune`（压缩前清理旧工具输出）、`summary_max_chars`（摘要长度上限）
@@ -90,7 +91,7 @@ uv run easycode web            # http://127.0.0.1:8000
 uv run easycode web --port 9000
 ```
 
-- 生产模式自动托管 `frontend/dist`（需先构建：`cd frontend && npm install && npm run build`）
+- 生产模式自动托管 `frontend/dist`（需先构建：`cd frontend && npm ci && npm run build`，`npm ci` 锁定 `package-lock.json` 可复现安装）
 - 开发模式：另起一个终端 `cd frontend && npm run dev`（Vite 代理 `/api` → 8000），改动前端热更新
 - 浏览器打开后：左侧会话列表（多会话隔离，落盘 `~/.easycode/sessions/*.json`，刷新/重启可恢复续聊），按**项目（主工作目录）分组**：新会话时选择项目目录（手动输入或 📁 访达选择），**每个主目录绑定一组次目录**（＋/📁 多选/✕ 维护，绑定持久化到 config 并由会话历史推断合并，主/次目录同样免批准），发出第一条消息后锁定；未选择的项目归入 `default project`（也能挂次目录）；底部可切换 / 添加 / 删除模型
 
@@ -188,8 +189,18 @@ frontend/                 # Vite + React + TS 前端
 
 ## 测试
 
+后端（Python，离线可跑：测试用脚本化 FakeProvider 替代真实 LLM，不与真实 `~/.easycode` 数据交互；`--frozen` 使用 `uv.lock` 锁定依赖）：
+
 ```bash
-uv run pytest        # 134 个测试，离线可跑（FakeProvider 替代真实 LLM，含 Web 接口与 Phase 6 功能测试）
+uv run --frozen pytest        # 228 个测试（含 Web 接口与 Phase 6 功能测试）
+```
+
+前端（Vitest + Testing Library，mock fetch/SSE，不起真实服务）：
+
+```bash
+cd frontend
+npm ci
+npm run test:run
 ```
 
 ## 路线图

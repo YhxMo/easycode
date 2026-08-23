@@ -28,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from easycode.sandbox import sandbox_command
+from easycode.sandbox import child_env, sandbox_command
 from easycode.workspace import PathContext
 
 log = logging.getLogger("easycode.mcp")
@@ -111,7 +111,9 @@ class StdioTransport(_BaseTransport):
         self.proc: asyncio.subprocess.Process | None = None
 
     async def start(self) -> None:
-        merged_env = {**os.environ, **(self.env or {})}
+        # Conservative child env: secret-bearing parent variables are stripped,
+        # while the explicit MCP ``env`` config is layered on top and wins.
+        merged_env = child_env(self.env)
         command = sandbox_command([self.command, *self.args], self.ctx)
         self.proc = await asyncio.create_subprocess_exec(
             *command,
@@ -358,11 +360,21 @@ class MCPSessionManager:
         return None
 
     def requires_approval(self, name: str) -> bool:
+        """Fail-closed MCP approval decision (权限最小化).
+
+        Only a tool that is *explicitly* read-only (``readOnlyHint`` is True
+        and ``destructiveHint`` is not True) is auto-allowed. Missing
+        annotations, ``readOnlyHint`` false, or any ``destructiveHint`` all
+        require approval. An unknown name (not a registered MCP tool scope)
+        is left to the caller's non-MCP policy and returns False here.
+        """
         entry = self._tool_entry(name)
         if entry is None:
             return False
         annotations = entry.get("annotations") or {}
-        return annotations.get("destructiveHint") is True or annotations.get("readOnlyHint") is False
+        if annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True:
+            return False
+        return True
 
     def approval_reason(self, name: str) -> str:
         return f"MCP 工具声明存在副作用: {name}"

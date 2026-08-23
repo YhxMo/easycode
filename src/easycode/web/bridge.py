@@ -10,6 +10,7 @@ from typing import AsyncIterator
 
 from easycode.agent.loop import Agent, AgentEvent
 from easycode.models.base import ToolCall
+from easycode.workspace import ToolGrant
 
 # Throttle knobs for human-friendly streaming: coalesce token-level text into
 # larger chunks (either at least TEXT_FLUSH_CHARS chars, or at most
@@ -148,13 +149,21 @@ async def stream_chat_with_approval(
     async def run_turn() -> None:
         prev = agent.approval_handler
 
-        async def approval_handler(tc: ToolCall) -> bool:
-            from easycode.approval import approval_key, approval_reason, approval_scope
+        async def approval_handler(tc: ToolCall) -> bool | ToolGrant | None:
+            from easycode.approval import (
+                approval_key,
+                approval_reason,
+                approval_scope,
+                grant_for_toolcall,
+            )
 
             scope = approval_scope(tc)
-            key = approval_key(tc)
+            grant = grant_for_toolcall(tc, agent.path_context())
+            key = approval_key(tc, grant=grant)
             if session and key in session.always_allow:
-                return True
+                # 'always allow' keeps its directory/command scope in the stored
+                # key, but at execution we regenerate the precise target grant.
+                return grant if grant else True
             approval_id = uuid.uuid4().hex[:12]
             fut = broker.add(approval_id)
             reason = (
@@ -186,7 +195,7 @@ async def stream_chat_with_approval(
                             "always": bool(always and decision == "approved"),
                         }
                     )
-            return decision == "approved"
+            return grant if decision == "approved" else False
 
         agent.approval_handler = approval_handler
         try:
@@ -209,6 +218,12 @@ async def stream_chat_with_approval(
                 await asyncio.gather(task, return_exceptions=True)
                 if buf:
                     yield give_text()
+                # MS-6: the agent's rollback may not be able to undo shell side
+                # effects; surface the residual risk even though the in-flight
+                # generator's own yield is lost with the cancelled task.
+                note = getattr(agent, "_last_cancel_note", None)
+                if note:
+                    yield ("event", AgentEvent(kind="error", error=note))
                 yield ("event", AgentEvent(kind="cancelled"))
                 break
             if cancel_event is not None:

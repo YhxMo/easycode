@@ -15,6 +15,8 @@ from easycode.approval import (
     PERM_ASK,
     PERM_AUTO_REVIEW,
     approval_reason,
+    definitive_deny_reason,
+    grant_for_toolcall,
     needs_approval,
 )
 from easycode.models.base import Provider, StreamEvent, ToolCall
@@ -23,13 +25,19 @@ from easycode.policy import (
     REVIEWER_AUTO,
     ExecutionPolicy,
     cap_permission,
+    permission_rule_action,
 )
 from easycode.reviewer import ReviewDecision
 from easycode.tools.registry import ToolRegistry
-from easycode.workspace import PathContext
+from easycode.workspace import PathContext, ToolGrant
 
 MAX_TOOL_ITERATIONS = 12
 DEFAULT_MAX_PARALLEL = 4
+
+#: How long a cancellation/abort waits for in-flight ``to_thread`` tool futures
+#: to finish before rolling back, so a late file write lands before the snapshot
+#: pre-state is restored (late-write barrier, MS-6).
+TOOL_DRAIN_TIMEOUT = 10.0
 
 #: Context-compaction defaults (aligned with opencode `compaction` config).
 COMPACTION_DEFAULTS: dict[str, Any] = {
@@ -150,7 +158,8 @@ class Agent:
     secondary_roots: list[Path] = field(default_factory=list)
     extra_safe_dirs: list[Path] = field(default_factory=list)
     permission_mode: str = PERM_ASK
-    approval_handler: Callable[[ToolCall], Awaitable[bool]] | None = None
+    permission_rules: dict[str, Any] = field(default_factory=dict)
+    approval_handler: Callable[[ToolCall], Awaitable[bool | ToolGrant | None]] | None = None
     review_handler: Callable[[ToolCall, str, list[dict]], Awaitable[ReviewDecision | bool]] | None = None
     _review_items: list[dict] = field(default_factory=list)
     _review_decisions: list[bool] = field(default_factory=list)
@@ -166,6 +175,12 @@ class Agent:
     agents: "AgentRegistry | None" = None
     skills: "SkillRegistry | None" = None
     system_override: str | None = None
+    # MS-6: in-flight tool threads + whether a shell ran this turn, so a
+    # cancellation can drain them (late-write barrier) and report the un-doable
+    # shell side effects instead of pretending the turn was cleanly rolled back.
+    _pending_tool_tasks: list[tuple[str, asyncio.Future]] = field(default_factory=list)
+    _shell_tools_ran: bool = False
+    _last_cancel_note: str | None = None
 
     def __post_init__(self) -> None:
         self.compaction = {**COMPACTION_DEFAULTS, **(self.compaction or {})}
@@ -207,6 +222,16 @@ class Agent:
     def execution_policy(self) -> ExecutionPolicy:
         return ExecutionPolicy.from_preset(self.permission_mode)
 
+    def _permission_rule(self, tc: ToolCall) -> str | None:
+        """Resolve configured rules against the command/path/tool identity."""
+        if tc.name == "execute_shell":
+            value = tc.arguments.get("command", "")
+        elif tc.name in {"read_file", "write_file", "edit_file", "glob", "grep"}:
+            value = tc.arguments.get("path", tc.arguments.get("pattern", ""))
+        else:
+            value = tc.name
+        return permission_rule_action(self.permission_rules, tc.name, str(value))
+
     def _tools_desc(self) -> str:
         lines = []
         for schema in self.tool_schemas():
@@ -225,6 +250,18 @@ class Agent:
         if self.mcp_manager and self.include_mcp_tools:
             schemas = [*schemas, *self.mcp_manager.tool_schemas()]
         return schemas
+
+    def _tool_schema_tokens(self) -> int:
+        """Estimated token cost of the tool schemas sent on every completion.
+
+        The budget accounts for these so a large tool set (many MCP tools, a
+        bloated schema) trips compaction instead of silently exceeding the
+        provider window (MS-8).
+        """
+        schemas = self.tool_schemas()
+        if not schemas:
+            return 0
+        return self.history.estimate_text_tokens(json.dumps(schemas, ensure_ascii=False))
 
     def message_payload(self) -> list[dict]:
         return self.history.payload()
@@ -297,10 +334,20 @@ class Agent:
                 m["content"] = PRUNED_OUTPUT
 
     async def _condense_if_over_budget(self) -> None:
-        if not self.history.over_budget():
+        """Compact history when over budget (MS-3: honors ``compaction.auto``).
+
+        When ``auto`` is False the user opted out of automatic compaction, so
+        nothing is summarized or trimmed here even when the budget is exceeded.
+        ``extra`` is the token cost of the tool schemas sent on every call, so a
+        large tool set also counts toward the budget (MS-8).
+        """
+        if not self.compaction.get("auto", True):
+            return
+        extra = self._tool_schema_tokens()
+        if not self.history.over_budget(extra):
             return
         self._prune_tool_outputs()
-        if not self.history.over_budget():
+        if not self.history.over_budget(extra):
             return
         tail_start = self.history.select_tail_start(
             self._preserve_recent_tokens(), self.compaction.get("tail_turns")
@@ -325,19 +372,95 @@ class Agent:
         self._review_items = []
         self._review_decisions = []
         self._consecutive_review_denials = 0
+        # MS-6: per-turn tool tracking must start clean (a prior abort may have
+        # left drained futures in the executor, but nothing pending here).
+        self._pending_tool_tasks = []
+        self._shell_tools_ran = False
+        self._last_cancel_note = None
         try:
             async for ev in self._turn(user_input, max_iterations):
                 yield ev
         except (asyncio.CancelledError, KeyboardInterrupt):
-            # roll back this turn's partial messages so history stays valid
-            del self.history.messages[start_len:]
-            if self.snapshot_manager:
-                self.snapshot_manager.pop_turn()
+            # roll back this turn's partial messages so history stays valid, and
+            # restore file pre-state (MS-6) after draining any in-flight tool thread.
+            restored = await self._abort_turn(start_len)
+            note = self._residual_risk_note()
+            self._last_cancel_note = note
             try:
+                if note:
+                    yield AgentEvent(kind="error", error=note)
                 yield AgentEvent(kind="cancelled")
             except BaseException:
                 pass
             raise
+        except Exception as exc:  # noqa: BLE001 - MS-9: any non-cancel failure must not leave half state
+            # A provider (or any loop step) that raises mid-turn after yielding
+            # tool_calls would otherwise leave [user] in history and a dangling
+            # snapshot record. Roll back the same way cancellation does, surface
+            # the error to the UI, then re-raise so the caller can react.
+            restored = await self._abort_turn(start_len)
+            note = self._residual_risk_note()
+            self._last_cancel_note = note
+            try:
+                yield AgentEvent(
+                    kind="error",
+                    error=f"{type(exc).__name__}: {exc}"
+                    + (f"\n{note}" if note else ""),
+                )
+            except BaseException:
+                pass
+            raise
+
+    async def _abort_turn(self, start_len: int) -> list[str]:
+        """Abandon the current turn: drain in-flight tools, roll back files.
+
+        Waits (bounded) for any ``to_thread`` tool futures so a late write lands
+        before the snapshot pre-state is restored, then restores the pre-state
+        (``rollback_turn``) and drops the turn's partial history. Returns the
+        restored paths (best-effort). MS-6.
+        """
+        await self._drain_pending_tools()
+        restored: list[str] = []
+        if self.snapshot_manager:
+            try:
+                restored = self.snapshot_manager.rollback_turn()
+            except Exception:  # noqa: BLE001 - best-effort rollback must not mask the abort
+                restored = []
+        del self.history.messages[start_len:]
+        return restored
+
+    async def _drain_pending_tools(self) -> None:
+        """Wait (bounded) for in-flight sync tool threads ahead of rollback.
+
+        ``asyncio.to_thread`` / ``run_in_executor`` runs the tool in a worker
+        thread that cannot be cancelled; a cancellation that returns before the
+        thread wrote the file would let that write land *after* the snapshot
+        restore, re-dirtying the file. Draining here turns that race into a
+        deterministic order: thread finishes → write lands → pre-state restored.
+        """
+        if not self._pending_tool_tasks:
+            return
+        pending = [f for _, f in self._pending_tool_tasks]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=TOOL_DRAIN_TIMEOUT,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # A tool that outlives the drain is dropped, not rolled back; the
+            # caller still restores the snapshot and reports the residual risk.
+            pass
+        self._pending_tool_tasks.clear()
+
+    def _residual_risk_note(self) -> str | None:
+        """Explain that an executed shell command's file effects were NOT undone."""
+        if not self._shell_tools_ran:
+            return None
+        return (
+            "cancelled: 本回合已执行 shell 命令，其文件副作用无法自动回滚；"
+            "请手工核对受影响文件 (shell side-effects cannot be rolled back; "
+            "files written by the shell are left as-is)."
+        )
 
     async def _turn(self, user_input: str, max_iterations: int) -> AsyncIterator[AgentEvent]:
         iteration = 0
@@ -391,14 +514,32 @@ class Agent:
                 if self.snapshot_manager:
                     self.snapshot_manager.note_tool(tc.name, tc.arguments, ctx)
                 policy = self.execution_policy
-                requires_approval = policy.approval_policy != APPROVAL_NEVER and (
-                    needs_approval(tc, ctx, self.permission_mode)
-                    or bool(self.mcp_manager and self.mcp_manager.requires_approval(tc.name))
-                )
+                grant: ToolGrant | None = None
+                # SC: a clearly destructive shell command is denied outright and
+                # can never be lifted by a missing approval handler or an
+                # auto-reviewer; approval/review is skipped entirely for it.
+                deny_reason = definitive_deny_reason(tc, ctx)
+                rule_action = self._permission_rule(tc)
+                requires_approval = False
+                if deny_reason is None and rule_action == "deny":
+                    deny_reason = f"权限规则拒绝工具调用: {tc.name}"
+                if deny_reason is None:
+                    requires_approval = policy.approval_policy != APPROVAL_NEVER and (
+                        needs_approval(tc, ctx, self.permission_mode)
+                        or bool(self.mcp_manager and self.mcp_manager.requires_approval(tc.name))
+                    )
+                    if rule_action == "ask":
+                        requires_approval = True
+                    elif rule_action == "allow":
+                        requires_approval = False
+                        grant = grant_for_toolcall(tc, ctx)
                 approved = True
                 denial_reason = "rejected by user"
                 breaker_tripped = False
-                if requires_approval:
+                if deny_reason is not None:
+                    approved = False
+                    denial_reason = deny_reason
+                elif requires_approval:
                     reason = (
                         self.mcp_manager.approval_reason(tc.name)
                         if self.mcp_manager and self.mcp_manager.requires_approval(tc.name)
@@ -424,7 +565,8 @@ class Agent:
                         )
                     else:
                         yield AgentEvent(kind="approval", tool_call=tc, content=reason)
-                        approved = await self.approval_handler(tc) if self.approval_handler else False
+                        decision = await self.approval_handler(tc) if self.approval_handler else False
+                        approved, grant = self._apply_approval_decision(decision, tc, ctx)
                 yield AgentEvent(kind="tool_start", tool_call=tc)
                 if not approved:
                     result = json.dumps(
@@ -432,13 +574,17 @@ class Agent:
                             "status": "error",
                             "message": f"tool call rejected: {tc.name}: {denial_reason}",
                             "rejected": True,
+                            "category": "policy" if rule_action == "deny" else ("destructive" if deny_reason is not None else "approval"),
+                            "reason": denial_reason,
                         },
                         ensure_ascii=False,
                     )
                 elif requires_approval:
-                    result = await self._dispatch_tool(tc, force_allowed=True)
+                    if grant is None:
+                        grant = grant_for_toolcall(tc, ctx)
+                    result = await self._dispatch_tool(tc, grant=grant)
                 else:
-                    result = await self._dispatch_tool(tc)
+                    result = await self._dispatch_tool(tc, grant=grant)
                 if self.hook:
                     self.hook(tc.name, tc, result)
                 if self.permission_mode == PERM_AUTO_REVIEW:
@@ -467,6 +613,22 @@ class Agent:
         diff = data.get("diff")
         if path:
             self._review_items.append({"tool": tc.name, "path": path, "diff": diff or ""})
+
+    def _apply_approval_decision(
+        self, decision: bool | ToolGrant | None, tc: ToolCall, ctx: PathContext
+    ) -> tuple[bool, ToolGrant | None]:
+        """Normalise an approval handler result into (approved, grant).
+
+        ``True``/``False``/``None`` keep the legacy boolean contract (the precise
+        grant is then derived from the tool call by the caller); a :class:`ToolGrant`
+        is passed through verbatim so an approval can convey exactly which
+        capability/writable roots it grants (P0-1).
+        """
+        if decision is None or decision is False:
+            return False, None
+        if decision is True:
+            return True, None
+        return True, decision
 
     async def _auto_review(self, tc: ToolCall, reason: str) -> ReviewDecision:
         if self.review_handler is None:
@@ -510,12 +672,16 @@ class Agent:
             compact["message"] = "preview only, file unchanged"
         return json.dumps(compact, ensure_ascii=False)
 
-    async def _dispatch_tool(self, tc: ToolCall, force_allowed: bool = False) -> str:
+    async def _dispatch_tool(self, tc: ToolCall, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
+        # MS-6: record that a shell ran this turn so cancellation can report the
+        # residual risk (its file side effects cannot be reliably rolled back).
+        if tc.name == "execute_shell":
+            self._shell_tools_ran = True
         if self.mcp_manager and self.mcp_manager.has_tool(tc.name):
             return await self.mcp_manager.call(tc.name, tc.arguments)
         if tc.name in BUILTIN_TOOLS:
             return await self._run_builtin(tc)
-        return await self._run_tool(tc, force_allowed=force_allowed)
+        return await self._run_tool(tc, force_allowed=force_allowed, grant=grant)
 
     async def _run_builtin(self, tc: ToolCall) -> str:
         if tc.name == "parallel_tasks":
@@ -618,6 +784,7 @@ class Agent:
                 secondary_roots=list(self.secondary_roots),
                 extra_safe_dirs=list(self.extra_safe_dirs),
                 permission_mode=self.permission_mode,
+                permission_rules=dict(self.permission_rules),
                 mcp_servers=self.mcp_servers,
                 mcp_manager=self.mcp_manager,
                 max_context_tokens=self.max_context_tokens,
@@ -634,6 +801,7 @@ class Agent:
         sub.mcp_servers = self.mcp_servers
         sub.mcp_manager = self.mcp_manager
         sub.permission_mode = self.permission_mode
+        sub.permission_rules = dict(self.permission_rules)
         sub.approval_handler = self.approval_handler
         sub.review_handler = self.review_handler
         if spec is None:
@@ -721,15 +889,31 @@ class Agent:
             summary["message_only"] = True
         return summary
 
-    async def _run_tool(self, tc: ToolCall, force_allowed: bool = False) -> str:
+    async def _run_tool(self, tc: ToolCall, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(
+            None,
+            self.registry.execute,
+            tc.name,
+            tc.arguments,
+            self.root,
+            self.path_context(),
+            force_allowed,
+            grant,
+        )
+        # MS-6: track the in-flight thread so a cancellation can drain it before
+        # rolling back the snapshot (late-write barrier). The done callback
+        # removes it once the thread actually finishes.
+        entry = (tc.name, fut)
+        self._pending_tool_tasks.append(entry)
+        fut.add_done_callback(lambda _f: self._discard_pending(entry))
         try:
-            return await asyncio.to_thread(
-                self.registry.execute,
-                tc.name,
-                tc.arguments,
-                self.root,
-                self.path_context(),
-                force_allowed,
-            )
+            return await fut
         except Exception as exc:  # noqa: BLE001 - report tool failures to the model
             return json.dumps({"status": "error", "message": f"{type(exc).__name__}: {exc}"})
+
+    def _discard_pending(self, entry: tuple[str, asyncio.Future]) -> None:
+        try:
+            self._pending_tool_tasks.remove(entry)
+        except ValueError:
+            pass

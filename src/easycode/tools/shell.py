@@ -7,8 +7,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from easycode.sandbox import sandbox_command
-from easycode.workspace import PathContext
+from easycode.approval import destructive_command_reason
+from easycode.sandbox import child_env, sandbox_command
+from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
 
 class ExecuteShellArgs(BaseModel):
@@ -19,7 +20,20 @@ class ExecuteShellArgs(BaseModel):
         description="use_default or require_escalated; escalation requires approval",
         pattern="^(use_default|require_escalated)$",
     )
-    justification: str | None = Field(None, description="why sandbox escalation is required")
+    justification: str | None = Field(
+        None,
+        description="why this command needs sandbox escalation / external-write access",
+    )
+    writable_roots: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit absolute directories this command may write to outside the "
+            "workspace. Each must be an existing absolute directory (never a file, "
+            "missing path, or .git/.easycode). Only list directories the task truly "
+            "needs; secondary/extra workspace directories do NOT need to be listed. "
+            "The command string is never parsed to infer these."
+        ),
+    )
 
 
 MAX_OUTPUT_CHARS = 20_000
@@ -31,11 +45,56 @@ def execute_shell(
     root: Path,
     ctx: PathContext | None = None,
     force_allowed: bool = False,
+    grant: ToolGrant | None = None,
 ) -> str:
     scope = ctx or PathContext(primary=root)
+    # SC: a clearly destructive command (rm -rf /, git reset --hard, git clean,
+    # git push --force) is denied outright, before any validation or sandbox, and
+    # cannot be re-enabled by a grant or an approval — even under allow-all.
+    deny = destructive_command_reason(args.command)
+    if deny:
+        return json_out(
+            "error",
+            {
+                "message": f"tool call rejected: execute_shell: {deny}",
+                "rejected": True,
+                "category": "destructive",
+                "reason": deny,
+                "in_allowed": False,
+            },
+        )
+    # Validate the model's explicit writable_roots declaration (P0-1): invalid
+    # entries (relative / missing / plain file / .git / .easycode / data home)
+    # fail closed with a structured error instead of silently dropping them.
+    declared, err = validate_writable_roots(args.writable_roots, None)
+    if err:
+        return json_out(
+            "error",
+            {"message": f"invalid writable_roots: {err}", "in_allowed": False},
+        )
+    # Never trust the model's own declaration: it is only honored when an
+    # approval grant covers it. Any declared root the grant does NOT cover is
+    # rejected, so a shell can never write outside the workspace unprompted.
+    if declared:
+        granted = {str(p.resolve()).rstrip("/") for p in (grant.writable_roots if grant else ())}
+        missing = [str(p) for p in declared if str(p).rstrip("/") not in granted]
+        if missing:
+            return json_out(
+                "error",
+                {
+                    "message": f"writable_roots not granted by approval: {', '.join(missing)}",
+                    "in_allowed": False,
+                },
+            )
     try:
         command = sandbox_command(
-            ["/bin/sh", "-c", args.command], scope, force_allowed=force_allowed
+            ["/bin/sh", "-c", args.command],
+            scope,
+            grant=grant,
+            # Legacy network-only alias; a precise grant supersedes it and is
+            # never widened by the boolean (P0-1: external writes only from
+            # explicit, validated writable_roots, never by parsing the shell).
+            force_allowed=force_allowed if grant is None else False,
         )
         proc = subprocess.run(
             command,
@@ -43,6 +102,7 @@ def execute_shell(
             capture_output=True,
             text=True,
             timeout=args.timeout,
+            env=child_env(),
         )
     except subprocess.TimeoutExpired:
         return json_out("timeout", {"command": args.command[:200]})

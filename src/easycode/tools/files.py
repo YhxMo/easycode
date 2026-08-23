@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from easycode.workspace import PathContext
+from easycode.workspace import PathContext, ToolGrant
 
 SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
 MAX_LINE_LEN = 2000
@@ -39,9 +39,14 @@ class ReadFileArgs(BaseModel):
     limit: int = Field(DEFAULT_READ_LIMIT, description="maximum number of lines to return", ge=1, le=1_000_000)
 
 
-def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False) -> str:
+def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
     scope = _scope(root, ctx)
     p = scope.resolve(args.path)
+    if scope.is_protected(p):
+        return _json(
+            "error",
+            {"message": f"path is protected (credentials): {args.path}", "in_allowed": False},
+        )
     if not p.is_file():
         return _json("error", {"message": f"not a file: {args.path}"})
     text = p.read_text(encoding="utf-8", errors="replace")
@@ -112,11 +117,21 @@ class WriteFileArgs(BaseModel):
     content: str = Field(description="full new file content")
 
 
-def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False) -> str:
+def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
     scope = _scope(root, ctx)
     p = scope.resolve(args.path)
+    if scope.is_protected(p):
+        return _json(
+            "error",
+            {
+                "message": f"path is protected (credentials): {args.path}",
+                "in_allowed": False,
+                "class": scope.classify(p),
+            },
+        )
+    granted = bool(grant and scope.grant_granted(p, grant))
     allowed = scope.in_allowed(p)
-    if not (allowed or force_allowed):
+    if not (allowed or granted):
         return _json(
             "error",
             {
@@ -125,6 +140,39 @@ def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = Non
                 "class": scope.classify(p),
             },
         )
+    # P0-1: an *external* write authorized only by a grant must target a parent
+    # that already exists (relative / missing / file-as-directory requests are
+    # rejected structurally rather than auto-creating anything outside the safe
+    # roots).
+    if granted and not allowed:
+        parent = p.parent
+        if not parent.exists():
+            return _json(
+                "error",
+                {
+                    "message": f"external write target parent does not exist: {parent}",
+                    "in_allowed": False,
+                    "class": scope.classify(p),
+                },
+            )
+        if not parent.is_dir():
+            return _json(
+                "error",
+                {
+                    "message": f"external write target parent is not a directory: {parent}",
+                    "in_allowed": False,
+                    "class": scope.classify(p),
+                },
+            )
+        if p.is_dir():
+            return _json(
+                "error",
+                {
+                    "message": f"cannot overwrite a directory: {args.path}",
+                    "in_allowed": False,
+                    "class": scope.classify(p),
+                },
+            )
     before = ""
     if p.is_file():
         try:
@@ -151,13 +199,23 @@ class EditFileArgs(BaseModel):
     dry_run: bool = Field(False, description="if true, return the unified diff without modifying the file")
 
 
-def edit_file(args: EditFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False) -> str:
+def edit_file(args: EditFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
     scope = _scope(root, ctx)
     p = scope.resolve(args.path)
+    if scope.is_protected(p):
+        return _json(
+            "error",
+            {
+                "message": f"path is protected (credentials): {args.path}",
+                "in_allowed": False,
+                "class": scope.classify(p),
+            },
+        )
     if not p.is_file():
         return _json("error", {"message": f"not a file: {args.path}"})
+    granted = bool(grant and scope.grant_granted(p, grant))
     allowed = scope.in_allowed(p)
-    if not (allowed or force_allowed):
+    if not (allowed or granted):
         return _json(
             "error",
             {
@@ -225,7 +283,7 @@ class GrepArgs(BaseModel):
     max_matches: int = Field(200, description="max matching lines to return", ge=1, le=5000)
 
 
-def grep(args: GrepArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False) -> str:
+def grep(args: GrepArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
     try:
         rx = re.compile(args.pattern)
     except re.error as exc:
@@ -234,6 +292,8 @@ def grep(args: GrepArgs, *, root: Path, ctx: PathContext | None = None, force_al
     matches: list[dict] = []
     for r in scope.roots:
         for p in _iter_files(r, include=args.include):
+            if scope.is_protected(p):
+                continue
             try:
                 lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
@@ -254,7 +314,7 @@ class GlobArgs(BaseModel):
     max_results: int = Field(500, description="max file paths to return", ge=1, le=5000)
 
 
-def glob(args: GlobArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False) -> str:
+def glob(args: GlobArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
     scope = _scope(root, ctx)
     results: set[tuple[str, str | None]] = set()
 
@@ -268,7 +328,7 @@ def glob(args: GlobArgs, *, root: Path, ctx: PathContext | None = None, force_al
     for r in scope.roots:
         for pat in (args.pattern, f"**/{args.pattern}"):
             for p in r.glob(pat):
-                if p.is_file() and not _is_skipped(p, r) and not _is_meta(p):
+                if p.is_file() and not _is_skipped(p, r) and not _is_meta(p) and not scope.is_protected(p):
                     record(p, r)
     ordered = sorted(results, key=lambda x: x[0])[: args.max_results]
     out: list[Any] = []

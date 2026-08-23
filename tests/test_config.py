@@ -66,3 +66,25 @@ def test_tools_enabled_map(tmp_path, monkeypatch):
     cfg = Config.load()
     assert cfg.tools["execute_shell"] is False
     assert cfg.tools["read_file"] is True
+
+
+def test_permission_rules_roundtrip_without_changing_secondary_roots(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(
+        json.dumps(
+            {
+                "permissions": {"execute_shell": {"*": "ask", "git status*": "allow"}},
+                "workspace": {"secondary": ["shared"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    cfg = Config.load()
+    assert cfg.permission_rules["execute_shell"]["git status*"] == "allow"
+    assert cfg.secondary_roots == ["shared"]
+
+    cfg.save()
+    raw = json.loads(cfg_file.read_text(encoding="utf-8"))
+    assert raw["permissions"] == cfg.permission_rules
+    assert raw["workspace"]["secondary"] == ["shared"]

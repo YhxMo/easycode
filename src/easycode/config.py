@@ -142,6 +142,7 @@ class Config:
     default_model: str = "deepseek-v4flash"
     models: dict[str, ModelSpec] = field(default_factory=lambda: {k: ModelSpec(v) for k, v in DEFAULT_MODELS.items()})
     tools: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_TOOLS))
+    permission_rules: dict[str, Any] = field(default_factory=dict)
     max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS
     secondary_roots: list[str] = field(default_factory=list)
     extra_safe_dirs: list[str] = field(default_factory=list)
@@ -176,6 +177,7 @@ class Config:
             default_model=raw.get("default_model", DEFAULT_CONFIG["default_model"]),
             models=models,
             tools=tools,
+            permission_rules=dict(raw.get("permissions") or {}),
             max_tool_result_chars=int(
                 raw.get("max_tool_result_chars", DEFAULT_MAX_TOOL_RESULT_CHARS)
             ),
@@ -279,6 +281,8 @@ class Config:
             "max_tool_result_chars": self.max_tool_result_chars,
             "max_context_tokens": self.max_context_tokens,
         }
+        if self.permission_rules:
+            payload["permissions"] = self.permission_rules
         workspace_payload: dict[str, Any] = {}
         if self.secondary_roots or self.extra_safe_dirs:
             workspace_payload["secondary"] = self.secondary_roots

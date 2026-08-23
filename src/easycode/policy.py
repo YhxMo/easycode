@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fnmatch
+from typing import Any
 
 SANDBOX_READ_ONLY = "read-only"
 SANDBOX_WORKSPACE_WRITE = "workspace-write"
@@ -18,6 +20,44 @@ PERM_ASK = "ask"
 PERM_AUTO_REVIEW = "auto-review"
 PERM_ALLOW_ALL = "allow-all"
 PERMISSIONS = (PERM_ASK, PERM_AUTO_REVIEW, PERM_ALLOW_ALL)
+RULE_ALLOW = "allow"
+RULE_ASK = "ask"
+RULE_DENY = "deny"
+RULE_ACTIONS = (RULE_ALLOW, RULE_ASK, RULE_DENY)
+
+
+def permission_rule_action(
+    rules: dict[str, Any] | None,
+    tool_name: str,
+    argument: str = "",
+) -> str | None:
+    """Resolve an optional per-tool rule using last-match-wins semantics.
+
+    ``rules`` accepts either a flat action (``{"mcp__*": "ask"}``) or a
+    pattern map (``{"execute_shell": {"*": "ask", "git status*": "allow"}}``).
+    The rule layer is intentionally independent from the three legacy presets:
+    it can force a prompt or denial, while the existing sandbox still decides
+    the actual filesystem and network boundary.
+    """
+    if not rules:
+        return None
+    action: str | None = None
+    for tool_pattern, raw in rules.items():
+        if not fnmatch.fnmatchcase(tool_name, str(tool_pattern)):
+            continue
+        if isinstance(raw, str):
+            if raw in RULE_ACTIONS:
+                action = raw
+            continue
+        if isinstance(raw, dict):
+            for pattern, value in raw.items():
+                if (
+                    isinstance(value, str)
+                    and value in RULE_ACTIONS
+                    and fnmatch.fnmatchcase(argument, str(pattern))
+                ):
+                    action = value
+    return action
 
 
 @dataclass(frozen=True)

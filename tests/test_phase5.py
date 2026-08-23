@@ -233,9 +233,9 @@ def test_get_model_detail_returns_editable_credential(tmp_path):
         "key_id": model_key_id(client, "gpt-local"),
         "provider": "openai",
         "base_url": "http://127.0.0.1:9000/v1",
-        "api_key": "sk-lives-here",
         "api_format": "openai_compatible",
         "has_api_key": True,
+        "key_tail": "here",
     }
     assert client.get("/api/models/nope").status_code == 404
 
@@ -255,14 +255,14 @@ def test_get_model_detail_does_not_use_environment_credentials(tmp_path, monkeyp
         "key_id": None,
         "provider": "deepseek",
         "base_url": None,
-        "api_key": "",
         "api_format": "openai_compatible",
         "has_api_key": False,
+        "key_tail": "",
     }
     assert client.get("/api/models/oa").json()["base_url"] is None
     odd = client.get("/api/models/odd").json()
     assert odd["provider"] == "openai"
-    assert odd["api_key"] == ""
+    assert odd["key_tail"] == ""
     assert odd["base_url"] is None
 
 
@@ -620,7 +620,7 @@ def test_web_session_with_secondary_roots(tmp_path):
         )
         assert r.status_code == 200
     assert created
-    assert created[0].secondary_roots == [str(secondary)]
+    assert created[0].secondary_roots == [str(secondary.resolve())]
 
 
 # ---------------------------------------------------------------- P5-2 approval
@@ -1061,6 +1061,10 @@ async def test_agent_routes_mcp_tool(tmp_path):
         registry=build_registry(8000),
         root=tmp_path,
         mcp_servers=mcp_server_config(),
+        # The demo server declares no annotations, so `mcp__demo__add` is not
+        # auto-allowed under the default (ask) mode. This test is about MCP
+        # *routing*, not the fail-closed approval policy, so run under allow-all.
+        permission_mode="allow-all",
     )
     schemas_before = {s["function"]["name"] for s in agent.tool_schemas()}
     assert not any(n.startswith("mcp__") for n in schemas_before)
@@ -1119,6 +1123,56 @@ async def test_mcp_schemas_skip_invalid():
         assert any(n.startswith("mcp__demo__") for n in [s["function"]["name"] for s in mgr.tool_schemas()])
     finally:
         await mgr.close()
+
+
+def test_mcp_requires_approval_is_fail_closed():
+    """item-13: only an explicit read-only tool (readOnlyHint True and
+    destructiveHint not True) is auto-allowed. Missing annotations, readOnly
+    false, and destructive all require approval; unknown names are not an MCP
+    approval scope."""
+    from easycode.mcp import MCPSession, MCPSessionManager
+
+    mgr = MCPSessionManager({})
+    sess = MCPSession("demo", None)
+    sess.tools = {
+        "mcp__demo__readonly": {
+            "name": "readonly",
+            "schema": {"type": "function", "function": {}},
+            "annotations": {"readOnlyHint": True},
+        },
+        "mcp__demo__destructive": {
+            "name": "destructive",
+            "schema": {"type": "function", "function": {}},
+            "annotations": {"destructiveHint": True},
+        },
+        "mcp__demo__plain": {
+            "name": "plain",
+            "schema": {"type": "function", "function": {}},
+            "annotations": {},
+        },
+        "mcp__demo__rw": {
+            "name": "rw",
+            "schema": {"type": "function", "function": {}},
+            "annotations": {"readOnlyHint": False},
+        },
+        "mcp__demo__readonly_destructive": {
+            "name": "readonly_destructive",
+            "schema": {"type": "function", "function": {}},
+            "annotations": {"readOnlyHint": True, "destructiveHint": True},
+        },
+    }
+    mgr._sessions = {"demo": sess}
+
+    assert mgr.requires_approval("mcp__demo__readonly") is False
+    assert mgr.requires_approval("mcp__demo__destructive") is True
+    assert mgr.requires_approval("mcp__demo__plain") is True  # annotation missing → fail-closed
+    assert mgr.requires_approval("mcp__demo__rw") is True  # readOnly false → approval
+    # destructive dominates readOnly: a supposedly read-only tool that is also
+    # destructive must still require approval
+    assert mgr.requires_approval("mcp__demo__readonly_destructive") is True
+    # unknown / non-MCP names are not an MCP approval scope
+    assert mgr.requires_approval("write_file") is False
+    assert mgr.requires_approval("mcp__demo__nope") is False
 
 
 # ---------------------------------------------------------------- P5-5 context condensation
@@ -1529,9 +1583,9 @@ def test_session_secondary_roots_persist(tmp_path):
 
     store1 = SessionStore(cfg, primary, factory)
     s = store1.create(root=str(project), secondary_roots=[str(sec_a)])
-    assert s.secondary_roots == [str(sec_a)]
+    assert s.secondary_roots == [str(sec_a.resolve())]
     assert built[-1].secondary_roots == [sec_a.resolve()]
-    assert s.summary["secondary_roots"] == [str(sec_a)]
+    assert s.summary["secondary_roots"] == [str(sec_a.resolve())]
 
     store2 = SessionStore(cfg, tmp_path / "p2", factory)
     (tmp_path / "p2").mkdir(exist_ok=True)
@@ -1539,7 +1593,7 @@ def test_session_secondary_roots_persist(tmp_path):
     store2.load_all()
     restored = store2.get(s.id)
     assert restored is not None
-    assert restored.secondary_roots == [str(sec_a)]
+    assert restored.secondary_roots == [str(sec_a.resolve())]
     assert restored.root == str(project)
 
 

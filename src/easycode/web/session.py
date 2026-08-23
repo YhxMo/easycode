@@ -11,8 +11,22 @@ from typing import Any, Callable
 
 from easycode.agent.loop import Agent
 from easycode.credentials import data_home
+from easycode.workspace import normalise_secondary
 
 AgentFactory = Callable[[str], Agent]
+
+
+#: Migration for sessions persisted with the *old* system prompt (which was stored
+#: as messages[0]). A freshly built agent already holds the current prompt in
+#: ``history.system``; on restore the embedded base system message is dropped so
+#: ``messages`` contains only the ordinary history (never a base system message, or
+#: it would break compaction / turn-boundary logic). Skill / custom system messages
+#: are preserved in place.
+def migrate_persisted_messages(persisted: list[dict]) -> list[dict]:
+    msgs = list(persisted)
+    if msgs and msgs[0].get("role") == "system":
+        msgs = msgs[1:]
+    return msgs
 
 
 def _now() -> str:
@@ -35,6 +49,9 @@ class Session:
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
+    #: Timestamps popped by a redo-able ``undo_turn`` so ``redo_turn`` can restore
+    #: the alignment of ``user_times`` with the surviving user messages (MS-4).
+    _undone_user_times: list[str] = field(default_factory=list)
 
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
@@ -90,11 +107,11 @@ class SessionStore:
     ) -> Session:
         sid = uuid.uuid4().hex[:12]
         alias = model_alias or self.cfg.default_model
-        secondary = list(secondary_roots or [])
+        secondary = self._resolve_secondary(root, secondary_roots)
         if root is not None:
             agent_kwargs["root"] = root
         if secondary:
-            agent_kwargs["secondary_roots"] = secondary
+            agent_kwargs["secondary_roots"] = [str(p) for p in secondary]
         agent = self.agent_factory(alias, **agent_kwargs) if agent_kwargs else self.agent_factory(alias)
         mode = permission_mode or self.cfg.permission_mode
         agent.permission_mode = mode
@@ -105,12 +122,48 @@ class SessionStore:
             model_alias=alias,
             agent=agent,
             root=root,
-            secondary_roots=secondary,
+            secondary_roots=[str(p) for p in secondary],
             permission_mode=mode,
         )
         self._sessions[sid] = sess
         self._flush(sess)
         return sess
+
+    def _base_dir(self) -> Path:
+        """Anchor for resolving relative workspace paths (config dir, not CWD)."""
+        return self.cfg.config_path.parent if self.cfg.config_path else Path(self.cfg.root)
+
+    @staticmethod
+    def _project_key(root: str | None) -> str:
+        return root or ""
+
+    def _projects_secondary(self, root: str | None) -> list[str]:
+        """cfg.workspace_projects secondary bindings for ``root`` (P1-1).
+
+        When a session is created without explicit secondary roots, the
+        config's persisted project→secondary binding for the matching primary
+        is used, so secondary and extra_safe directories require no approval.
+        """
+        key = self._project_key(root)
+        for proj in self.cfg.workspace_projects:
+            if self._project_key(proj.get("root")) == key:
+                return list(proj.get("secondary") or [])
+        return []
+
+    def _resolve_secondary(
+        self, root: str | None, secondary_roots: list[str] | None
+    ) -> list[Path]:
+        """Resolve + validate secondary roots; fall back to project binding.
+
+        Every entry must be an existing, canonical, non-sensitive directory
+        (P1-1); an invalid entry raises ValueError so the caller can reject the
+        registration with a 4xx instead of silently accepting a bad root.
+        """
+        raw = [str(p) for p in (secondary_roots if secondary_roots is not None else self._projects_secondary(root))]
+        paths, err = normalise_secondary(raw, self._base_dir())
+        if err is not None:
+            raise ValueError(err)
+        return paths
 
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
@@ -173,13 +226,19 @@ class SessionStore:
                     data.get("model_alias") or self.cfg.default_model, **agent_kwargs
                 )
                 agent.permission_mode = permission_mode
+                # Keep the NEW agent's current system prompt (agent_factory already
+                # set it via _build_system, e.g. the execute_shell writable_roots
+                # guidance). Restore only the ordinary history: drop a persisted
+                # embedded base system message, leave skill/custom system messages.
+                migrated = migrate_persisted_messages(list(data.get("messages") or []))
+                agent.history.messages = migrated
                 sess = Session(
                     id=data["id"],
                     title=data.get("title", "新会话"),
                     created_at=data.get("created_at", _now()),
                     model_alias=data.get("model_alias", self.cfg.default_model),
                     agent=agent,
-                    messages=list(data.get("messages") or []),
+                    messages=migrated,
                     root=root,
                     secondary_roots=secondary,
                     permission_mode=permission_mode,
@@ -188,16 +247,34 @@ class SessionStore:
                     user_times=list(data.get("user_times") or []),
                     archived=bool(data.get("archived")),
                 )
-                sess.agent.history.messages = list(sess.messages)
                 self._sessions[sess.id] = sess
             except (OSError, KeyError, ValueError, json.JSONDecodeError):
                 continue
 
     def record_exchange(self, session: Session) -> None:
-        """Persist current history after a turn."""
+        """Persist current history after a turn.
+
+        MS-7/SC-7: a session that was deleted while its chat stream was still
+        in flight must not be re-persisted by the stream's ``finally`` — that
+        would resurrect it on disk (and a later ``load_all``). If the session is
+        no longer tracked this is a no-op.
+
+        MS-4: keep ``user_times`` aligned with the user messages that survive in
+        ``history``. During a turn, compaction drops the OLDEST user messages
+        (front), so the surviving timestamps are the most-recent ``n_user``
+        entries. Undo/redo shift the count from the back and are handled at the
+        undo/redo endpoints (pop/stash + restore); once a redo is no longer
+        possible (a new turn or a batch undo invalidated the redo stack) any
+        stashed timestamps are dropped so they cannot be mis-reapplied later.
+        """
+        if session.id not in self._sessions:
+            return
         session.messages = list(session.agent.history.messages)
         n_user = sum(1 for m in session.messages if m.get("role") == "user")
-        session.user_times = list(session.user_times[:n_user])
+        if not session.agent.redo_available():
+            session._undone_user_times.clear()
+        if len(session.user_times) > n_user:
+            session.user_times = list(session.user_times[-n_user:]) if n_user else []
         self._flush(session)
 
     def _flush_many(self) -> None:
@@ -205,6 +282,9 @@ class SessionStore:
             self._flush(sess)
 
     def _flush(self, session: Session) -> None:
+        # MS-7/SC-7: never write a session that is no longer tracked (deleted).
+        if session.id not in self._sessions:
+            return
         payload = {
             "id": session.id,
             "title": session.title,

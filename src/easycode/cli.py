@@ -149,6 +149,7 @@ def make_agent(
         secondary_roots=list(secondary_roots or []),
         extra_safe_dirs=list(extra_safe_dirs or []),
         permission_mode=cfg.permission_mode,
+        permission_rules=dict(cfg.permission_rules),
         mcp_servers=cfg.mcp_servers,
         max_context_tokens=cfg.max_context_tokens,
         compaction=dict(cfg.compaction),
