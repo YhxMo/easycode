@@ -9,7 +9,7 @@ from litellm import acompletion
 
 from easycode.models.base import Message
 
-Summarizer = Callable[[list[Message]], Awaitable[str]]
+Summarizer = Callable[[list[Message]], Awaitable[str | None]]
 
 TOOL_OUTPUT_MAX_CHARS = 2_000
 
@@ -102,7 +102,9 @@ class LLMSummarizer:
         self.max_chars = max_chars
         self.kwargs = kwargs
 
-    async def summarize(self, messages: list[Message], previous_summary: str | None = None) -> str:
+    async def summarize(
+        self, messages: list[Message], previous_summary: str | None = None
+    ) -> str | None:
         context = self._to_transcript(messages)
         prompt = build_prompt(previous_summary, context)
         try:
@@ -115,8 +117,11 @@ class LLMSummarizer:
                 **self.kwargs,
             )
             content = resp.choices[0].message.content or ""
-        except Exception as exc:  # noqa: BLE001 - degrade to a fallback note
-            content = f"(summary unavailable: {type(exc).__name__})"
+        except Exception:  # noqa: BLE001 - MS-5: never fabricate a summary
+            # Returning None lets the caller fall back (e.g. trim) without
+            # replacing the original messages with a fake "(summary
+            # unavailable...)"" note — that note would corrupt the transcript.
+            return None
         if len(content) > self.max_chars:
             content = content[: self.max_chars] + "…[truncated]"
         return content

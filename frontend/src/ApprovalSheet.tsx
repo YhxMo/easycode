@@ -19,8 +19,19 @@ export function ApprovalSheet({
   onDecide,
   onDismiss,
 }: ApprovalSheetProps) {
+  // Closed sheet stays mounted so the slide-up/down animation is preserved,
+  // but it is removed from the accessibility tree and keyboard tab order so a
+  // hidden allow/deny control can never be activated by accident (UI-5).
+  const interactiveTab = open ? undefined : -1;
   return (
-    <div className={`approval-sheet ${open ? "open" : ""}`} role="alertdialog" aria-modal="false" aria-label="需要权限">
+    <div
+      className={`approval-sheet ${open ? "open" : ""}`}
+      role="alertdialog"
+      aria-modal="false"
+      aria-label="需要权限"
+      aria-hidden={open ? undefined : true}
+      inert={open ? undefined : true}
+    >
       <div className="approval-sheet-head">
         <span className="approval-sheet-count">
           {position}/{total} 个问题
@@ -30,6 +41,7 @@ export function ApprovalSheet({
           className="approval-sheet-close"
           aria-label="收起"
           title="收起"
+          tabIndex={interactiveTab}
           onClick={onDismiss}
         >
           ×
@@ -44,13 +56,13 @@ export function ApprovalSheet({
         {scope && <pre className="approval-sheet-scope">{scope}</pre>}
       </div>
       <div className="approval-sheet-actions">
-        <button type="button" className="deny" onClick={() => onDecide(false, false)}>
+        <button type="button" className="deny" tabIndex={interactiveTab} onClick={() => onDecide(false, false)}>
           拒绝
         </button>
-        <button type="button" className="always" onClick={() => onDecide(true, true)}>
+        <button type="button" className="always" tabIndex={interactiveTab} onClick={() => onDecide(true, true)}>
           始终允许
         </button>
-        <button type="button" className="allow" onClick={() => onDecide(true, false)}>
+        <button type="button" className="allow" tabIndex={interactiveTab} onClick={() => onDecide(true, false)}>
           允许一次
         </button>
       </div>

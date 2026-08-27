@@ -34,8 +34,13 @@ class History:
 
     def add(self, message: Message) -> None:
         self.messages.append(message)
+        # Trim in whole turns so a single pop never lands mid-turn on an
+        # assistant ``tool_calls`` message or a ``tool`` result (MS-1): a
+        # boundary can only break a tool_call/result pairing, which would
+        # leave an orphan tool in the payload.
         while len(self.messages) > self.max_messages:
-            self.messages.pop(0)
+            if not self._drop_oldest_turn():
+                break
 
     def add_user(self, content: str) -> None:
         self.add({"role": "user", "content": content})
@@ -67,16 +72,33 @@ class History:
         return total
 
     def estimate_tokens(self) -> int:
-        """Token estimate via litellm if possible, else the cheap heuristic."""
+        """Token estimate via litellm if possible, else the cheap heuristic.
+
+        Both paths count the system prompt (the payload includes it), so a
+        large system consumes budget rather than being hidden behind the
+        message-only count (MS-8).
+        """
         try:
             import litellm
 
             return litellm.token_counter(messages=self.payload() or [{"role": "user", "content": ""}])
         except Exception:  # noqa: BLE001 - heuristic fallback
-            return max(1, self._estimate_tokens_cheap())
+            return max(1, self._estimate_tokens_cheap() + self._system_tokens())
 
     def _estimate_tokens_cheap(self) -> int:
         return self.estimate_messages_tokens(self.messages)
+
+    def _system_tokens(self) -> int:
+        if not self.system:
+            return 0
+        return self.estimate_messages_tokens([self.system])
+
+    @staticmethod
+    def estimate_text_tokens(text: str) -> int:
+        """Tokenizer-aware char heuristic for a raw string."""
+        non_ascii = sum(1 for ch in text if ord(ch) > 127)
+        ascii_chars = len(text) - non_ascii
+        return non_ascii + (ascii_chars + 3) // 4
 
     @staticmethod
     def estimate_messages_tokens(messages: list[Message]) -> int:
@@ -93,23 +115,26 @@ class History:
             for m in messages
             for tc in (m.get("tool_calls") or [])
         )
-        non_ascii = sum(1 for ch in text if ord(ch) > 127)
-        ascii_chars = len(text) - non_ascii
-        return non_ascii + (ascii_chars + 3) // 4
+        return History.estimate_text_tokens(text)
 
-    def over_budget(self) -> bool:
-        """Cheap-gated budget check; avoid a full token count on every loop iteration.
+    def over_budget(self, extra: int = 0) -> bool:
+        """Cheap-gated budget check for the completion payload.
 
-        estimate_chars()/_estimate_tokens_cheap() are O(message text) while
-        litellm.token_counter is comparatively expensive, so only run the exact
-        count when the cheap estimate approaches ~70% of the token budget.
+        ``extra`` is the estimated token cost of the non-message content sent
+        with every call — the tool schemas. Both the cheap pre-gate and the
+        exact count now account for the system prompt and ``extra``, so a large
+        system or a large tool set trips over-budget instead of being hidden by
+        an empty conversation (MS-8). Without this, only ``estimate_chars``
+        (messages only) and the message-only cheap gate were consulted and a
+        big system/schema never triggered compaction.
         """
         chars = self.estimate_chars()
         if chars > self.max_chars:
             return True
-        if self._estimate_tokens_cheap() <= int(self.max_tokens * 0.7):
+        system_tokens = self._system_tokens()
+        if self._estimate_tokens_cheap() + system_tokens + extra <= int(self.max_tokens * 0.7):
             return False
-        return self.estimate_tokens() > self.max_tokens
+        return self.estimate_tokens() + extra > self.max_tokens
 
     @staticmethod
     def is_summary(message: Message) -> bool:
@@ -126,18 +151,21 @@ class History:
         return None
 
     def trim(self) -> None:
-        """Drop oldest messages beyond the limits (no summarization)."""
+        """Drop oldest messages beyond the limits (no summarization).
+
+        Trims whole user turns so an assistant ``tool_calls`` message and its
+        ``tool`` results are never split across the trim boundary (MS-1).
+        """
         while len(self.messages) > self.max_messages:
-            if self._drop_oldest() is None:
+            if not self._drop_oldest_turn():
                 break
         total = self.estimate_chars()
         while total > self.max_chars and len(self.messages) > 2:
-            dropped = self._drop_oldest()
-            if dropped is None:
+            if not self._drop_oldest_turn():
                 break
-            total -= len(str(dropped.get("content") or ""))
+            total = self.estimate_chars()
         while self.estimate_tokens() > self.max_tokens and len(self.messages) > 2:
-            if self._drop_oldest() is None:
+            if not self._drop_oldest_turn():
                 break
 
     def condense(self, summary: str, keep_recent: int = 20) -> bool:
@@ -153,9 +181,15 @@ class History:
     def condense_from(self, summary: str, tail_start: int) -> bool:
         """Replace messages before ``tail_start`` with a summary; keep the tail.
 
+        ``tail_start`` is first snapped to a non-tool boundary so the kept
+        tail never begins with an orphaned ``tool`` result (MS-2).
+
         Records ``summary`` so the next compaction can merge into it.
         """
         if tail_start <= 0 or tail_start >= len(self.messages):
+            return False
+        tail_start = self._coalesce_tail_start(tail_start)
+        if tail_start <= 0:
             return False
         old = self.messages[:tail_start]
         if not old:
@@ -168,6 +202,19 @@ class History:
         self.messages = [summary_msg, *recent]
         self.summary = summary
         return True
+
+    def _coalesce_tail_start(self, idx: int) -> int:
+        """Snap a tail index back so the suffix never begins with a tool result.
+
+        When ``idx`` points at a ``role=tool`` message, walk back to the
+        assistant message that declared the call so the whole tool group is
+        retained together — a suffix starting with a bare ``tool`` would be an
+        orphan (MS-2).
+        """
+        i = idx
+        while i >= 0 and self.messages[i].get("role") == "tool":
+            i -= 1
+        return i if i >= 0 else idx
 
     def turns(self) -> list[tuple[int, int]]:
         """``(start, end)`` index pairs, one per user turn (end exclusive)."""
@@ -182,11 +229,49 @@ class History:
             result.append((start, len(self.messages)))
         return result
 
+    def _drop_oldest_turn(self) -> bool:
+        """Drop the oldest complete user turn (never a partial tool pair).
+
+        A turn runs from one ``role=user`` message up to (not including) the
+        next ``role=user`` message. Dropping the oldest turn therefore never
+        separates an assistant ``tool_calls`` message from its ``tool``
+        results. When fewer than two turns exist we only drop messages that
+        precede the first user message (defensive) — a single in-flight turn
+        is never removed, so tool results are not orphaned.
+
+        Returns True when at least one message was dropped.
+        """
+        turns = self.turns()
+        if len(turns) >= 2:
+            start = turns[0][0]
+            end = turns[1][0]
+            del self.messages[start:end]
+            return True
+        first_user = next(
+            (i for i, m in enumerate(self.messages) if m.get("role") == "user"), None
+        )
+        if first_user is None:
+            # No user boundary: drop a single leading orphaned message.
+            if self.messages:
+                self.messages.pop(0)
+                return True
+            return False
+        # Exactly one turn remains; dropping it could orphan tool results.
+        return False
+
     def _split_turn_start(self, start: int, end: int, remaining: int) -> int | None:
-        """First index in ``[start, end)`` whose suffix fits ``remaining`` tokens."""
+        """First index in ``[start, end)`` whose suffix fits ``remaining`` tokens.
+
+        Only cuts at a message that can begin a suffix without orphaning a
+        ``tool`` result: a cut that lands on a ``role=tool`` message is
+        skipped because its preceding assistant (which declared the call)
+        would be dropped, leaving an unpaired tool (MS-2).
+        """
         if end - start <= 1:
             return None
         for s in range(start + 1, end):
+            if self.messages[s].get("role") == "tool":
+                continue  # a cut here would orphan the tool result
             if self.estimate_messages_tokens(self.messages[s:end]) <= remaining:
                 return s
         return None

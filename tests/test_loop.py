@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from easycode.agent.loop import Agent, AgentEvent
+from easycode.models.base import StreamEvent, ToolCall
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 
@@ -97,6 +100,114 @@ async def test_provider_error_reported(tmp_path):
     assert errs and "boom" in errs[0].error
 
 
+# ---------------------------------------------------------------- item-10 (MS-8)
+
+
+async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
+    """MS-8: a large tool schema (sent on every completion) counts toward the
+    context budget, so compaction fires even though the message history is tiny."""
+    agent, _ = make_agent(tmp_path, [])
+    agent.history.max_tokens = 1000
+    agent.history.max_chars = 10_000_000
+    big = {
+        "type": "function",
+        "function": {
+            "name": "huge",
+            "description": "x" * 20_000,
+            "parameters": {"type": "object"},
+        },
+    }
+    monkeypatch.setattr(agent, "tool_schemas", lambda: [big])
+
+    assert agent._tool_schema_tokens() > 0
+
+    called: list[str] = []
+    agent.summarizer = fake_summarizer_that_marks(called)
+    monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
+    await agent._condense_if_over_budget()
+
+    assert called, "a large tool schema must count toward the budget and trip compaction"
+
+
+# ---------------------------------------------------------------- item-05 (MS-3)
+
+
+async def test_compaction_auto_false_skips_condense(tmp_path, monkeypatch):
+    """MS-3: `compaction.auto=False` must suppress automatic compaction even
+    when the history is well over budget — neither summarize nor trim fires."""
+    agent, _ = make_agent(tmp_path, [])
+    agent.compaction["auto"] = False
+    agent.history.max_tokens = 10
+    agent.history.max_chars = 10
+    agent.history.add_user("x" * 1000)
+    assert agent.history.over_budget() is True
+
+    called: list[str] = []
+    agent.summarizer = fake_summarizer_that_marks(called)
+    monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
+    before = list(agent.history.messages)
+
+    await agent._condense_if_over_budget()
+
+    assert called == []  # no summarize, no trim
+    assert agent.history.messages == before  # history untouched
+
+
+def fake_summarizer_that_marks(called: list[str]):
+    async def _summarize(messages, previous_summary=None):
+        called.append("summarize")
+        return "S"
+    return _summarize
+
+
+async def test_compaction_auto_true_still_condenses(tmp_path, monkeypatch):
+    """MS-3: default `auto=True` keeps compacting when over budget
+    (compaction must fire through summarize or trim)."""
+    agent, _ = make_agent(tmp_path, [])
+    agent.compaction["auto"] = True
+    agent.history.max_tokens = 10
+    agent.history.max_chars = 10
+    agent.history.add_user("x" * 1000)
+
+    called: list[str] = []
+    agent.summarizer = fake_summarizer_that_marks(called)
+    monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
+    await agent._condense_if_over_budget()
+
+    assert called, "expected compaction to fire when auto=True and over budget"
+
+
+# ---------------------------------------------------------------- item-06 (MS-5)
+
+
+async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_path):
+    """MS-5: when the summarizer returns None (LLM failure) the loop must NOT
+    replace original messages with a fabricated summary note; it falls back to
+    the conservative trim path instead."""
+    agent, _ = make_agent(tmp_path, [])
+    agent.history.max_tokens = 8000
+    agent.history.max_chars = 10_000_000
+    for i in range(12):
+        agent.history.add_user(f"u{i}" + "x" * 3000)
+        agent.history.add_assistant("a" + "y" * 1000)
+    assert agent.history.over_budget() is True
+
+    log: list[str] = []
+
+    async def failing_summarize(messages, previous_summary=None):
+        log.append("summarize")
+        return None  # simulate provider failure surfaced as None
+
+    agent.summarizer = failing_summarize
+    await agent._condense_if_over_budget()
+
+    assert "summarize" in log  # compaction attempted
+    # no fabricated "(summary unavailable...)" note, and no injected summary
+    for m in agent.history.messages:
+        assert "summary unavailable" not in str(m.get("content") or "")
+    assert agent.history.summary is None
+
+
 async def test_max_iterations_guard(tmp_path):
     agent, _ = make_agent(tmp_path, [])
     agent.provider.script = [
@@ -165,3 +276,41 @@ async def test_edit_file_model_view_strips_diff_review_keeps(tmp_path):
     assert reviews
     changes = _json.loads(reviews[0].content)["changes"]
     assert "return 42" in changes[0]["diff"]
+
+
+# ---------------------------------------------------------------- item-07 (MS-9)
+
+
+class _RaiseAfterToolProvider(FakeProvider):
+    """Yields a ``tool_calls`` batch, then raises mid-stream (provider bug)."""
+
+    async def stream(self, messages, tools=None):
+        self.calls.append(list(messages))
+        yield StreamEvent(kind="tool_calls", tool_calls=[ToolCall(id="t1", name="glob", arguments={"pattern": "*.py"})])
+        yield StreamEvent(kind="text", content="full")
+        raise RuntimeError("provider blew up mid-turn")
+
+
+async def test_provider_exception_rolls_back_history_and_snapshot(tmp_path):
+    """MS-9: a generic (non-cancel) provider exception must roll history and the
+    snapshot stack back to the turn start and surface an error event — it must
+    not leave ``[user]`` in history or a dangling snapshot record."""
+    from easycode.snapshot import FileSnapshotManager
+
+    provider = _RaiseAfterToolProvider()
+    agent = Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
+    agent.snapshot_manager = FileSnapshotManager("s", agent.path_context().roots)
+
+    events: list[AgentEvent] = []
+    with pytest.raises(RuntimeError, match="provider blew up"):
+        async for ev in agent.respond("hello"):
+            events.append(ev)
+
+    # history rolled back to turn start (empty, since this was the first turn)
+    assert agent.history.messages == []
+    assert agent.history.last_user_index() == -1
+    # snapshot stack has no dangling turn record
+    assert agent.snapshot_manager.stack == []
+    # an error event was surfaced to the UI before re-raising
+    errs = [e for e in events if e.kind == "error"]
+    assert errs and "provider blew up" in errs[0].error

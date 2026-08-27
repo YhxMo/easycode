@@ -161,7 +161,10 @@ class Config:
         raw: dict[str, Any] = {}
         if cfg_path:
             raw = json.loads(cfg_path.read_text(encoding="utf-8"))
-        root = (cfg_path or Path.cwd()).resolve().parent
+        # With a config file the workspace anchors at its directory; without
+        # one it anchors at CWD itself (never CWD's parent — that would widen
+        # the sandbox and write easycode.config.json outside the project).
+        root = cfg_path.parent.resolve() if cfg_path else Path.cwd().resolve()
         merged_models = {**DEFAULT_MODELS, **(raw.get("models") or {})}
         models = {alias: ModelSpec.parse(value) for alias, value in merged_models.items()}
         tools = {**DEFAULT_TOOLS, **(raw.get("tools") or {})}

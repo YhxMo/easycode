@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import BackgroundTasks, Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -27,6 +28,7 @@ from easycode.credentials import (
 from easycode.skills import SkillRegistry
 from easycode.web.bridge import ApprovalBroker, event_to_sse, stream_chat_with_approval
 from easycode.web.session import Session, SessionStore
+from easycode.workspace import normalise_secondary, resolve_workspace_path
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
@@ -56,6 +58,65 @@ def _derive_api_format(model: str) -> str:
     chat completions.
     """
     return infer_api_format(model)
+
+
+#: Hosts a state-change request may legitimately originate from.
+_ALLOWED_ORIGIN_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _origin_is_local(origin: str | None, host: str | None) -> bool:
+    """True when a state-change request is same-origin or local-origin.
+
+    Missing Origin/Referer (curl, non-browser tooling, and our own tests) is
+    accepted; a *present* Origin/Referer that is neither a loopback host nor
+    the Host the request was addressed to is rejected. This is the minimal
+    CSRF defence for a localhost-first tool: it blocks cross-origin browser
+    POSTs without introducing a full authentication system.
+    """
+    if not origin:
+        return True
+    try:
+        parts = urllib.parse.urlsplit(origin)
+    except ValueError:
+        return False
+    origin_host = (parts.hostname or "").strip().lower()
+    if origin_host in ("", "null"):
+        return False
+    if origin_host in _ALLOWED_ORIGIN_HOSTS:
+        return True
+    if host:
+        hostname = host.split(":")[0].strip()
+        if hostname.startswith("[") and hostname.endswith("]"):
+            hostname = hostname[1:-1]
+        hostname = hostname.lower()
+        if origin_host == hostname:
+            return True
+    return False
+
+
+class _LocalOriginMiddleware:
+    """Reject cross-origin state-changing requests (POST/PUT/PATCH/DELETE)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] in ("POST", "PUT", "PATCH", "DELETE"):
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            origin = headers.get(b"origin")
+            referer = headers.get(b"referer")
+            host = headers.get(b"host")
+            source = None
+            if origin:
+                source = origin.decode("latin-1")
+            elif referer:
+                source = referer.decode("latin-1")
+            host_str = host.decode("latin-1") if host else None
+            if not _origin_is_local(source, host_str):
+                response = JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def _attach_snapshot(sess: Session) -> None:
@@ -205,6 +266,26 @@ def _project_key(root: str | None) -> str:
     return root or ""
 
 
+def _config_dir(cfg: Config) -> Path:
+    return cfg.config_path.parent if cfg.config_path else cfg.root
+
+
+def _session_primary(sess: Session, cfg: Config) -> str | None:
+    """Canonical primary root for a session ('default' → cfg.root key)."""
+    return _normalise_root(sess.root, cfg.root)
+
+
+def _session_secondary(sess: Session, cfg: Config) -> list[str]:
+    """Canonical, sorted secondary roots for a session."""
+    return sorted(
+        str(resolve_workspace_path(p, _config_dir(cfg))) for p in (sess.secondary_roots or [])
+    )
+
+
+def _secondary_request_roots(raw: list[str], cfg: Config) -> list[str]:
+    return sorted(str(resolve_workspace_path(p, _config_dir(cfg))) for p in raw if str(p).strip())
+
+
 def projects_from_sessions(store: SessionStore, default_root: Path) -> list[dict]:
     """Infer project → secondary bindings from conversation history."""
     by_key: dict[str, set[str]] = {}
@@ -337,6 +418,8 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Outermost: reject cross-origin state-change requests before CORS sees them.
+    app.add_middleware(_LocalOriginMiddleware)
 
     @app.get("/api/models")
     def get_models() -> dict:
@@ -386,10 +469,10 @@ def create_app(
     def get_model_detail(alias: str) -> dict:
         """Return one model's editable configuration.
 
-        Unlike the collection endpoint, this returns the raw API key because
-        the localhost-only edit dialog must be able to reveal it on demand.
-        Models without a stored credential fall back to provider env vars so
-        the dialog shows the effective configuration (masked until revealed).
+        The raw API key is never returned to the browser — only a ``key_tail``
+        hint (readability) and whether a key is configured (``has_api_key``).
+        This keeps the localhost edit dialog usable without ever exposing the
+        secret, matching what the collection endpoint already promises.
         """
         spec = cfg.models.get(alias)
         if spec is None:
@@ -405,9 +488,9 @@ def create_app(
             "key_id": spec.key_id,
             "provider": provider,
             "base_url": base_url,
-            "api_key": api_key,
             "api_format": api_format,
             "has_api_key": bool(api_key),
+            "key_tail": (cred.masked().get("key_tail") or "") if cred else "",
         }
 
     @app.put("/api/models/{alias}")
@@ -463,7 +546,12 @@ def create_app(
                 continue
             from easycode.cli import _rebind_agent
 
-            _rebind_agent(sess.agent, cfg, target_alias)
+            # Editing a model may leave it without a usable credential; keep
+            # such sessions on the old binding instead of failing the save.
+            try:
+                _rebind_agent(sess.agent, cfg, target_alias)
+            except ValueError:
+                continue
             sess.model_alias = target_alias
             store.record_exchange(sess)
 
@@ -486,13 +574,22 @@ def create_app(
     def set_model(req: ModelRequest) -> dict:
         if req.alias not in cfg.models:
             raise HTTPException(404, f"unknown alias: {req.alias}")
-        cfg.set_default_model(req.alias)
-        cfg.save()
-        for sess in store.list():
-            from easycode.cli import _rebind_agent
+        from easycode.cli import _rebind_agent, provider_kwargs
 
+        # Validate the target model BEFORE mutating anything: switching to a
+        # model without a usable credential must fail atomically — no default
+        # flip on disk, no partially rebound sessions.
+        try:
+            provider_kwargs(cfg, req.alias)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        for sess in store.list():
             _rebind_agent(sess.agent, cfg, req.alias)
             sess.model_alias = req.alias
+            # Flush per-session alias so a restart cannot silently revert it.
+            store.record_exchange(sess)
+        cfg.set_default_model(req.alias)
+        cfg.save()
         return models_response()
 
     @app.get("/api/sessions")
@@ -552,6 +649,22 @@ def create_app(
         _attach_snapshot(sess)
         return sess
 
+    def _assert_session_workspace_match(
+        session_id: str, root_raw: str | None, secondary_raw: list[str] | None
+    ) -> None:
+        """409 when a caller claims a different project for an existing session (P1-2)."""
+        sess = store.get(session_id)
+        if sess is None:
+            return  # _get_session surfaces the 404
+        if root_raw:
+            request_root = _normalise_root(root_raw, cfg.root)
+            if _project_key(request_root) != _project_key(_session_primary(sess, cfg)):
+                raise HTTPException(409, "workspace root does not match session primary")
+        if secondary_raw:
+            request_sec = _secondary_request_roots(secondary_raw, cfg)
+            if request_sec != _session_secondary(sess, cfg):
+                raise HTTPException(409, "secondary roots do not match session")
+
     @app.get("/api/workspaces")
     def list_workspaces() -> dict:
         """Project bindings: main root → its secondary roots.
@@ -590,7 +703,19 @@ def create_app(
         root = _normalise_root(req.root, cfg.root)
         if root and not Path(root).is_dir():
             raise HTTPException(422, f"not a directory: {root}")
-        secondary = sorted({str(Path(p).expanduser().resolve()) for p in req.secondary if p.strip()})
+        # Validate every secondary before mutating anything (P1-1): all-or-nothing.
+        sec_paths, sec_err = normalise_secondary(req.secondary, _config_dir(cfg))
+        if sec_err is not None:
+            raise HTTPException(422, sec_err)
+        secondary = sorted({str(p) for p in sec_paths})
+        sess = None
+        if req.session_id:
+            sess = store.get(req.session_id)
+            if sess is None:
+                raise HTTPException(404, "session not found")
+            # P1-2: the requested root must match the session's valid primary.
+            if _project_key(root) != _project_key(_session_primary(sess, cfg)):
+                raise HTTPException(409, "project root does not match session primary")
         key = _project_key(root)
         found = False
         for proj in cfg.workspace_projects:
@@ -611,10 +736,7 @@ def create_app(
                 entry["name"] = req.name.strip()
             cfg.workspace_projects.append(entry)
         cfg.save()
-        if req.session_id:
-            sess = store.get(req.session_id)
-            if sess is None:
-                raise HTTPException(404, "session not found")
+        if sess is not None:
             sess.secondary_roots = list(secondary)
             sess.agent.secondary_roots = [Path(p) for p in secondary]
             store.record_exchange(sess)
@@ -826,9 +948,21 @@ def create_app(
             raise HTTPException(404, "session not found")
         try:
             if req is not None and req.until_user:
+                # Batch undo to a prior user message discards redo state (cannot be
+                # re-applied in one step), so the removed timestamps are dropped.
+                before = sum(1 for m in sess.agent.history.messages if m.get("role") == "user")
                 summary = sess.agent.undo_to_user(req.until_user)
+                removed = before - sum(
+                    1 for m in sess.agent.history.messages if m.get("role") == "user"
+                )
+                for _ in range(min(removed, len(sess.user_times))):
+                    sess.user_times.pop()
             else:
+                # Single-turn undo is redo-able: pop the most recent timestamp and
+                # stash it so `redo_turn` can restore the user_times alignment.
                 summary = sess.agent.undo_turn()
+                if sess.user_times:
+                    sess._undone_user_times.append(sess.user_times.pop())
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
         store.record_exchange(sess)
@@ -848,6 +982,10 @@ def create_app(
             summary = sess.agent.redo_turn()
         except RuntimeError as exc:
             raise HTTPException(400, str(exc)) from exc
+        # Restore the timestamp(s) popped by the matching undo so user_times
+        # re-aligns with the re-applied user message(s) (MS-4).
+        while sess._undone_user_times:
+            sess.user_times.append(sess._undone_user_times.pop())
         store.record_exchange(sess)
         return {
             "ok": True,
@@ -877,7 +1015,17 @@ def create_app(
             kwargs["root"] = str(Path(req.root).expanduser().resolve())
         if perm_mode and not req.session_id:
             kwargs["permission_mode"] = perm_mode
-        sess = _get_session(req.session_id, **kwargs) if kwargs else _get_session(req.session_id)
+        # P1-2: an existing session must answer its own project — a root/secondary
+        # the caller claims for it must match, else 409 (never silently ignore).
+        if req.session_id:
+            _assert_session_workspace_match(req.session_id, req.root, req.secondary_roots)
+        try:
+            sess = _get_session(req.session_id, **kwargs) if kwargs else _get_session(req.session_id)
+        except ValueError as exc:
+            # Session creation can fail while building the agent (e.g. the
+            # default model has no credential configured) or while validating
+            # secondary roots. Surface the reason instead of a bare 500.
+            raise HTTPException(422, str(exc)) from exc
         if perm_mode and req.session_id:
             sess.permission_mode = perm_mode
             sess.agent.permission_mode = perm_mode
@@ -932,7 +1080,11 @@ def create_app(
             finally:
                 if sess.cancel_event is cancel_event:
                     sess.cancel_event = None
-                store.record_exchange(sess)
+                # MS-7/SC-7: do not resurrect a session the user deleted while
+                # the stream was in flight; record_exchange is also gated, but
+                # check here so the StreamResponse settles cleanly either way.
+                if store.get(sess.id) is not None:
+                    store.record_exchange(sess)
 
         return StreamingResponse(
             gen(),

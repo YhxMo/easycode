@@ -1,0 +1,58 @@
+# CI gate (easycode-audit item-22 / TE-1).
+#
+# Reproducible, offline, no secrets, no real LLM:
+#   - Python: locked deps via `uv sync --frozen` + `uv run --frozen`; pytest only
+#     uses the FakeProvider (never a real model / ~/.easycode).
+#   - Frontend: locked deps via `npm ci`; `npm run build` (tsc -b && vite build)
+#     + `npm run test:run` (vitest run) — all mocked, no live service.
+#
+# Linux runner: the 7 macOS-only Seatbelt tests are skip-guarded
+# (`@pytest.mark.skipif(sys.platform != "darwin")`), so they are skipped here
+# rather than failing; the remaining suite is platform-independent.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # setup-uv installs both uv and the interpreter; `uv` provisions Python
+      # 3.14 deterministically so the runner's tool cache is not a factor.
+      # Pinned to an immutable semver tag (setup-uv@v8+ dropped floating
+      # major tags for supply-chain security), not `@v5`/`@v9`.
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - name: Install Python dependencies (locked)
+        run: uv sync --frozen
+      - name: Run backend tests
+        run: PYTHONDONTWRITEBYTECODE=1 uv run --frozen pytest -q -p no:cacheprovider
+
+  frontend:
+    name: Frontend (build + tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22 = active LTS (Node 20 is past EOL); vite 6 / vitest 4
+          # both support it. lockfileVersion 3 is compatible with npm 10+.
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies (locked)
+        run: npm ci
+      - name: Type-check and build (tsc -b && vite build)
+        run: npm run build
+      - name: Run frontend tests
+        run: npm run test:run

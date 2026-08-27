@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface ProjectMenuProps {
   pinned: boolean;
@@ -49,19 +49,29 @@ const ITEMS: {
 export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
-  const positionMenu = useCallback(() => {
-    const btn = ref.current?.querySelector(".group-more-btn");
-    if (btn) {
-      const r = btn.getBoundingClientRect();
-      setAnchor({ x: r.right, y: r.bottom + 4 });
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
     }
-  }, []);
-
-  useEffect(() => {
-    if (open) positionMenu();
-  }, [open, positionMenu]);
+    const btn = ref.current?.querySelector(".group-more-btn");
+    const menu = menuRef.current;
+    if (!btn || !menu) return;
+    const b = btn.getBoundingClientRect();
+    const m = menu.getBoundingClientRect();
+    const left = Math.min(
+      Math.max(8, b.right - m.width),
+      Math.max(8, window.innerWidth - m.width - 8)
+    );
+    const top = Math.min(
+      Math.max(8, b.bottom + 4),
+      Math.max(8, window.innerHeight - m.height - 8)
+    );
+    setPos({ left, top });
+  }, [open]);
 
   useEffect(() => {
     const onDoc = (e: PointerEvent) => {
@@ -103,12 +113,19 @@ export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
       >
         <span aria-hidden="true">•••</span>
       </button>
-      {open && anchor && (
+      {open && (
         <div
-          className="project-menu"
+          ref={menuRef}
+          className="project-menu project-action-menu"
           role="menu"
           aria-label="项目操作"
-          style={{ position: "fixed", left: anchor.x - 190, top: anchor.y, zIndex: 400 }}
+          style={{
+            position: "fixed",
+            left: pos?.left ?? 0,
+            top: pos?.top ?? 0,
+            zIndex: 400,
+            visibility: pos ? "visible" : "hidden",
+          }}
         >
           {items.map((it) => (
             <button

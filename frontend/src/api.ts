@@ -79,6 +79,8 @@ export interface ChatOptions {
   root?: string;
   secondary_roots?: string[];
   permission_mode?: string;
+  /** Abort the in-flight chat stream (e.g. on session switch / explicit stop). */
+  signal?: AbortSignal;
 }
 
 export interface CommandInfo {
@@ -345,8 +347,18 @@ export async function streamChat(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: opts.signal,
   });
-  if (!resp.ok) throw new Error(`chat HTTP ${resp.status}`);
+  if (!resp.ok) {
+    let detail = `chat HTTP ${resp.status}`;
+    try {
+      const errBody = (await resp.json()) as { detail?: string };
+      if (errBody.detail) detail = String(errBody.detail);
+    } catch {
+      // Keep the HTTP status when the server did not return JSON.
+    }
+    throw new Error(detail);
+  }
   if (!resp.body) throw new Error("no body");
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();

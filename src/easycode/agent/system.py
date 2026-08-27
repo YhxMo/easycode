@@ -50,9 +50,15 @@ Guidelines:
 - Use execute_shell to run tests, build, or inspect the environment. Run
   commands in the workspace root. Avoid destructive commands (rm -rf, git
   push --force, etc.) unless the user explicitly asks.
-- Shell commands run without network and can write only the primary and bound
-  secondary workspace roots. When an essential action must cross that boundary,
-  set sandbox_permissions="require_escalated" and provide a concise justification.
+- Shell commands run without network and can write the primary, the bound
+  secondary roots, and any extra-safe directories. When an essential action
+  must write outside those roots, set
+  sandbox_permissions="require_escalated" AND pass the target directories
+  through writable_roots: list each existing absolute directory the command
+  needs to touch (never a file, a missing path, or .git/.easycode), and provide
+  a concise justification. Never let the sandbox infer writable paths from the
+  command string; if a path is not in both the command and writable_roots it
+  will be denied.
 - Tool JSON results may be truncated; rely on the status field.
 - Keep answers concise and cite file paths when relevant.
 """

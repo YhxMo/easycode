@@ -75,6 +75,39 @@ class FileSnapshotManager:
         if self.stack:
             self.stack.pop()
 
+    def rollback_turn(self) -> list[str]:
+        """Restore the newest turn's file pre-state, then drop it (MS-6).
+
+        Used when a turn is cancelled or aborts so write tools that already
+        executed are rolled back to their pre-state. Unlike :meth:`undo_turn`
+        this does NOT record a ``post`` state for redo: the turn is being
+        abandoned, not undone. ``execute_shell`` side effects (files written by
+        shell commands, which are never snapshotted) are NOT rolled back — the
+        caller reports that residual risk and must not pretend the turn was
+        cleanly un-done.
+
+        Returns the list of paths that were restored (best-effort).
+        """
+        if not self.stack:
+            return []
+        rec = self.stack.pop()
+        restored: list[str] = []
+        for rel, data in rec.pre.items():
+            p = Path(rel)
+            try:
+                if data is None:
+                    # file did not exist before this turn -> it was created -> delete it
+                    if p.is_file():
+                        p.unlink()
+                        restored.append(rel)
+                elif not p.is_file() or p.read_bytes() != data:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(data)
+                    restored.append(rel)
+            except OSError:
+                continue  # best-effort rollback; do not let one failure abort the rest
+        return restored
+
     # --- undo / redo --------------------------------------------------------
 
     def undo_turn(self) -> dict:

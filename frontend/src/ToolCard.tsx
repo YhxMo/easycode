@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { ToolCall } from "./api";
 
 type ToolResult = {
@@ -61,7 +61,7 @@ export function ToolCard({
   result?: string;
   done: boolean;
 }) {
-  const [open, setOpen] = useState(!done);
+  const [open, setOpen] = useState(false);
   const parsed = useMemo(() => parseResult(result), [result]);
   const command = typeof tool.arguments.command === "string" ? tool.arguments.command : null;
   const path = typeof tool.arguments.path === "string" ? tool.arguments.path : parsed?.path;
@@ -70,10 +70,6 @@ export function ToolCard({
     .filter(([key]) => key !== "old_string" && key !== "new_string" && key !== "command")
     .map(([key, value]) => `${key}=${compactValue(value)}`)
     .join(" ");
-
-  useEffect(() => {
-    if (!done) setOpen(true);
-  }, [done]);
 
   const detail = command ?? path ?? args;
   const failed =

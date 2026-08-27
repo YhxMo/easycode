@@ -14,6 +14,12 @@ def test_defaults_when_no_file(tmp_path, monkeypatch):
     assert cfg.resolve_model("deepseek-v4flash") == "deepseek/deepseek-v4-flash"
     assert cfg.resolve_model("openai/gpt-4o") == "openai/gpt-4o"
     assert cfg.max_tool_result_chars == 8000
+    # No config file anywhere → the workspace anchors at CWD itself,
+    # never at CWD's parent (which would widen the sandbox and save
+    # easycode.config.json outside the project).
+    assert cfg.root == tmp_path
+    cfg.save()
+    assert (tmp_path / "easycode.config.json").is_file()
 
 
 def test_merges_file_over_defaults(tmp_path, monkeypatch):

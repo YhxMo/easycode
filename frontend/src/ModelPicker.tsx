@@ -154,7 +154,9 @@ export function ModelPicker({
     setBusy(true);
     try {
       onChange(await switchModel(alias));
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "请求失败";
+      flash("error", `切换失败：${message}`);
       fetchModels().then(onChange).catch(() => {});
     } finally {
       setBusy(false);

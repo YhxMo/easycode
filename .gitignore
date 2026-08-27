@@ -29,3 +29,6 @@ credentials.json
 
 # Local browser/test records
 .playwright-mcp/
+
+# Multi-agent audit artifacts
+.audit/

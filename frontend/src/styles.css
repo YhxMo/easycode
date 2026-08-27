@@ -3651,7 +3651,7 @@ body {
   transform: rotate(180deg);
 }
 
-.sidebar .project-menu {
+.sidebar .project-picker .project-menu {
   position: absolute;
   top: 56px;
   left: 0;
@@ -3959,9 +3959,19 @@ body {
 .project-group-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-height: 44px;
-  padding: 0 6px;
+  padding: 0 4px;
+  border-radius: 8px;
+}
+
+.project-collapse-caret {
+  font-size: 13px;
+  line-height: 1;
+  color: #8e918e;
+  margin-right: -2px;
+  user-select: none;
+  transition: color 120ms ease;
 }
 
 .group-head-main {
@@ -3970,18 +3980,24 @@ body {
   gap: 8px;
   flex: 1;
   min-width: 0;
-  padding: 4px;
+  padding: 6px 4px;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--text, #e4e5e2);
   font-family: inherit;
   font-size: inherit;
   cursor: pointer;
   text-align: left;
+  transition: color 120ms ease;
 }
 
 .group-head-main:hover {
   color: #ffffff;
+}
+
+.group-head-main:hover .project-collapse-caret {
+  color: #eeeeeb;
 }
 
 .project-group-name {
@@ -3989,6 +4005,29 @@ body {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-weight: 650;
+}
+
+.project-pin-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: #e5a84b;
+  margin-left: 2px;
+}
+
+.project-pin-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+}
+
+.project-group.collapsed {
+  margin-bottom: 2px;
 }
 
 .group-head-actions {
@@ -4044,6 +4083,14 @@ body {
   border: 1px solid #3b3c3b;
   border-radius: 12px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+.project-action-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: max-content;
+  max-width: calc(100vw - 16px);
 }
 
 .project-menu-item {
@@ -4317,5 +4364,95 @@ body {
   to {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* ---------------------------------------------------------------- mobile sidebar drawer (item-18 / UI-4)
+   On <=760px the sidebar is display:none (see earlier media query) which left
+   session/project/model controls unreachable. A hamburger toggle + overlay
+   re-exposes the sidebar as a left drawer. The closed state uses display:none
+   (inherited from the earlier block) so the hidden drawer never takes focus,
+   never intercepts pointer events and cannot cause horizontal overflow; the
+   open state is fixed within the viewport so 390x844 / 360x640 stay free of
+   horizontal scroll. */
+
+/* Hamburger toggle: hidden on desktop, shown only on mobile. */
+.sidebar-toggle {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 44px;          /* ≥44px touch target */
+    height: 44px;
+    margin-right: 4px;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .sidebar-toggle:active {
+    background: var(--surface-hover);
+  }
+
+  .sidebar-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+}
+
+/* Overlay / scrim: only rendered when the drawer is open (JS state), fixed so
+   it never widens the layout. Desktop keeps the normal static sidebar. */
+.sidebar-overlay {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 300; /* above header/content, below the drawer (310) */
+    background: rgba(0, 0, 0, 0.55);
+  }
+  .app.sidebar-open .sidebar-overlay {
+    display: block;
+  }
+}
+
+/* Drawer: keeps the sidebar's own inner scroll (session-list) and caps width. */
+@media (max-width: 760px) {
+  .app.sidebar-open .sidebar {
+    display: flex;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 86vw);
+    min-width: min(320px, 86vw);
+    max-width: calc(100vw - 24px); /* hard cap: no horizontal overflow at 390/360 */
+    z-index: 310;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+    animation: sidebar-drawer-in 160ms ease;
+  }
+}
+
+@keyframes sidebar-drawer-in {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
   }
 }

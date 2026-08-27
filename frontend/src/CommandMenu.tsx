@@ -30,6 +30,16 @@ function BuiltinIcon() {
   );
 }
 
+export function filterCommands(commands: CommandInfo[], query: string): CommandInfo[] {
+  const q = (query.startsWith("/") ? query.slice(1) : query).toLowerCase();
+  return commands.filter(
+    (c) =>
+      c.name.startsWith(q) ||
+      (q.length > 0 && c.name.includes(q)) ||
+      c.description.toLowerCase().includes(q),
+  );
+}
+
 export function CommandMenu({
   commands,
   open,
@@ -45,13 +55,7 @@ export function CommandMenu({
   onPick: (c: CommandInfo) => void;
   onClose: () => void;
 }) {
-  const q = (query.startsWith("/") ? query.slice(1) : query).toLowerCase();
-
-  const filtered = useMemo(() => {
-    return commands.filter(
-      (c) => c.name.startsWith(q) || (q.length > 0 && c.name.includes(q)) || c.description.toLowerCase().includes(q)
-    );
-  }, [commands, q]);
+  const filtered = useMemo(() => filterCommands(commands, query), [commands, query]);
 
   if (!open || filtered.length === 0) return null;
   const idx = Math.min(index, filtered.length - 1);

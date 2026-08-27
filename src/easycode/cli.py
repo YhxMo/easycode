@@ -89,7 +89,10 @@ def provider_kwargs(cfg: Config, alias: str) -> tuple[str, dict]:
     if spec.api_format not in API_FORMATS:
         raise ValueError(f"invalid api_format '{spec.api_format}' for model '{alias}'")
     if not spec.key_id:
-        raise ValueError(f"model '{alias}' has no credential configured")
+        raise ValueError(
+            f"model '{alias}' has no credential configured"
+            "（请在该模型的编辑对话框中填写 API Key）"
+        )
     cred = load_credentials().get(spec.key_id)
     if cred is None:
         raise ValueError(
