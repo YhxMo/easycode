@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 import uuid
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from easycode.agent.loop import Agent, AgentEvent
 from easycode.models.base import ToolCall
@@ -24,7 +24,12 @@ def _tool_call_dict(tc: ToolCall) -> dict:
     return {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
 
 
-def event_to_sse(ev: AgentEvent) -> str:
+def _sse_line(payload: dict) -> str:
+    """Single authority: serialize a JSON payload into one SSE ``data:`` line."""
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _event_payload(ev: AgentEvent) -> dict:
     payload: dict = {"type": ev.kind}
     if ev.kind == "text" and ev.content:
         payload["content"] = ev.content
@@ -41,7 +46,39 @@ def event_to_sse(ev: AgentEvent) -> str:
         payload["content"] = ev.content
     elif ev.kind == "cancelled":
         payload["content"] = "cancelled"
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return payload
+
+
+def event_to_sse(ev: AgentEvent | dict[str, Any]) -> str:
+    """Serialize an agent event — or an already-built payload dict — into one SSE
+    ``data:`` line.
+
+    B3: this is the single serialization authority. ``stream_chat``,
+    ``stream_chat_with_approval`` and the web chat route all build their lines
+    here; no second ``f"data: {json.dumps(...)}"`` copy lives in the route.
+    """
+    payload = _event_payload(ev) if isinstance(ev, AgentEvent) else dict(ev)
+    return _sse_line(payload)
+
+
+def session_sse(session_id: str) -> str:
+    return event_to_sse({"type": "session", "session_id": session_id})
+
+
+def approval_required_sse(approval_id: str, tc: ToolCall, reason: str, scope: str) -> str:
+    return event_to_sse(
+        {
+            "type": "approval_required",
+            "approval_id": approval_id,
+            "reason": reason,
+            "scope": scope,
+            "tool_call": _tool_call_dict(tc),
+        }
+    )
+
+
+def cancelled_sse() -> str:
+    return event_to_sse({"type": "cancelled"})
 
 
 class ApprovalBroker:
@@ -202,7 +239,13 @@ async def stream_chat_with_approval(
             async for ev in agent.respond(message):
                 await q.put(("agent", ev))
         finally:
-            agent.approval_handler = prev
+            # Only restore the previous handler if this turn's
+            # handler is STILL the current one. A concurrent turn (or a foreign
+            # set) may have replaced it; unconditionally writing ``prev`` back
+            # would clobber that owner and let approvals leak across turns. The
+            # closure identity acts as the ownership token.
+            if agent.approval_handler is approval_handler:
+                agent.approval_handler = prev
             await q.put(("end", None))
 
     task = asyncio.create_task(run_turn())
@@ -218,7 +261,7 @@ async def stream_chat_with_approval(
                 await asyncio.gather(task, return_exceptions=True)
                 if buf:
                     yield give_text()
-                # MS-6: the agent's rollback may not be able to undo shell side
+                # the agent's rollback may not be able to undo shell side
                 # effects; surface the residual risk even though the in-flight
                 # generator's own yield is lost with the cancelled task.
                 note = getattr(agent, "_last_cancel_note", None)

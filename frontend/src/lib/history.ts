@@ -1,0 +1,98 @@
+// Module-level pure helper block extracted from App.tsx (B5). Historical-message
+// reconstruction, tool-args normalization and the small clock/time formatters are
+// pure functions shared by App and the stream layer.
+import type { ApprovalRecord } from "../api";
+import type { Item } from "../types";
+
+export function normalizeToolArgs(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return { input: value };
+    }
+  }
+  return {};
+}
+
+export function currentTimeLabel(): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date());
+}
+
+export function formatClock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return currentTimeLabel();
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(d);
+}
+
+/** "4 分 19 秒" / "19 秒" — wall-clock label for the assistant reply meta row. */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes > 0 ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`;
+}
+
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException ? err.name === "AbortError" : (err as Error)?.name === "AbortError";
+}
+
+export function historyToItems(
+  messages: any[],
+  approvals: ApprovalRecord[] = [],
+  userTimes: string[] = [],
+): Item[] {
+  const items: Item[] = [];
+  const toolResults = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role === "tool" && m.tool_call_id) toolResults.set(String(m.tool_call_id), String(m.content ?? ""));
+  }
+  const approvalByCall = new Map<string, ApprovalRecord>();
+  for (const a of approvals) approvalByCall.set(String(a.tool_call_id), a);
+  let userIndex = 0;
+  for (const m of messages) {
+    if (m.role === "user") {
+      items.push({ kind: "user", text: String(m.content ?? ""), time: userTimes[userIndex] });
+      userIndex += 1;
+    } else if (m.role === "assistant") {
+      if (m.content) items.push({ kind: "assistant", text: String(m.content) });
+      if (m.tool_calls?.length) {
+        for (const tc of m.tool_calls) {
+          if (!tc.function) continue;
+          const id = String(tc.id ?? "");
+          const approval = approvalByCall.get(id);
+          if (approval) {
+            items.push({
+              kind: "approval",
+              id: `hist-${id}`,
+              toolCallId: id,
+              name: approval.name,
+              args: approval.args ?? {},
+              reason: approval.reason,
+              scope: approval.scope,
+              state: approval.decision,
+            });
+          }
+          items.push({
+            kind: "tool",
+            id,
+            name: tc.function.name,
+            args: normalizeToolArgs(tc.function.arguments),
+            result: toolResults.get(id),
+            done: true,
+          });
+        }
+      }
+    }
+  }
+  return items;
+}

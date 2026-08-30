@@ -1126,7 +1126,7 @@ async def test_mcp_schemas_skip_invalid():
 
 
 def test_mcp_requires_approval_is_fail_closed():
-    """item-13: only an explicit read-only tool (readOnlyHint True and
+    """Only an explicit read-only tool (readOnlyHint True and
     destructiveHint not True) is auto-allowed. Missing annotations, readOnly
     false, and destructive all require approval; unknown names are not an MCP
     approval scope."""

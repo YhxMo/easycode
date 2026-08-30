@@ -10,6 +10,7 @@ from easycode.agent.loop import Agent, AgentEvent
 from easycode.models.base import StreamEvent, ToolCall
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
+from tests.helpers_history import ValidatingFakeProvider, assert_valid_tool_protocol
 
 
 async def collect(agent: Agent, user_input: str) -> list[AgentEvent]:
@@ -100,11 +101,11 @@ async def test_provider_error_reported(tmp_path):
     assert errs and "boom" in errs[0].error
 
 
-# ---------------------------------------------------------------- item-10 (MS-8)
+# ----------------------------------------------------------------
 
 
 async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
-    """MS-8: a large tool schema (sent on every completion) counts toward the
+    """a large tool schema (sent on every completion) counts toward the
     context budget, so compaction fires even though the message history is tiny."""
     agent, _ = make_agent(tmp_path, [])
     agent.history.max_tokens = 1000
@@ -129,11 +130,11 @@ async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
     assert called, "a large tool schema must count toward the budget and trip compaction"
 
 
-# ---------------------------------------------------------------- item-05 (MS-3)
+# ----------------------------------------------------------------
 
 
 async def test_compaction_auto_false_skips_condense(tmp_path, monkeypatch):
-    """MS-3: `compaction.auto=False` must suppress automatic compaction even
+    """`compaction.auto=False` must suppress automatic compaction even
     when the history is well over budget — neither summarize nor trim fires."""
     agent, _ = make_agent(tmp_path, [])
     agent.compaction["auto"] = False
@@ -161,7 +162,7 @@ def fake_summarizer_that_marks(called: list[str]):
 
 
 async def test_compaction_auto_true_still_condenses(tmp_path, monkeypatch):
-    """MS-3: default `auto=True` keeps compacting when over budget
+    """default `auto=True` keeps compacting when over budget
     (compaction must fire through summarize or trim)."""
     agent, _ = make_agent(tmp_path, [])
     agent.compaction["auto"] = True
@@ -177,11 +178,11 @@ async def test_compaction_auto_true_still_condenses(tmp_path, monkeypatch):
     assert called, "expected compaction to fire when auto=True and over budget"
 
 
-# ---------------------------------------------------------------- item-06 (MS-5)
+# ----------------------------------------------------------------
 
 
 async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_path):
-    """MS-5: when the summarizer returns None (LLM failure) the loop must NOT
+    """when the summarizer returns None (LLM failure) the loop must NOT
     replace original messages with a fabricated summary note; it falls back to
     the conservative trim path instead."""
     agent, _ = make_agent(tmp_path, [])
@@ -278,7 +279,7 @@ async def test_edit_file_model_view_strips_diff_review_keeps(tmp_path):
     assert "return 42" in changes[0]["diff"]
 
 
-# ---------------------------------------------------------------- item-07 (MS-9)
+# ----------------------------------------------------------------
 
 
 class _RaiseAfterToolProvider(FakeProvider):
@@ -292,7 +293,7 @@ class _RaiseAfterToolProvider(FakeProvider):
 
 
 async def test_provider_exception_rolls_back_history_and_snapshot(tmp_path):
-    """MS-9: a generic (non-cancel) provider exception must roll history and the
+    """a generic (non-cancel) provider exception must roll history and the
     snapshot stack back to the turn start and surface an error event — it must
     not leave ``[user]`` in history or a dangling snapshot record."""
     from easycode.snapshot import FileSnapshotManager
@@ -314,3 +315,67 @@ async def test_provider_exception_rolls_back_history_and_snapshot(tmp_path):
     # an error event was surfaced to the UI before re-raising
     errs = [e for e in events if e.kind == "error"]
     assert errs and "provider blew up" in errs[0].error
+
+
+# ---------------------------------------------- tool protocol one-to-one check
+# Validate every payload the loop hands to the provider at the FakeProvider
+# exit; each recorded call must satisfy the one-to-one tool protocol.
+
+
+async def test_loop_payloads_are_valid_one_to_one(tmp_path):
+    """A full tool round-trip must hand the provider payloads in which
+    every assistant tool_call id is matched by exactly one in-order result."""
+    (tmp_path / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+    script = [
+        {
+            "tool_calls": [
+                ("c1", "glob", {"pattern": "*.py"}),
+                ("c2", "grep", {"pattern": "def f"}),
+            ],
+            "text": "",
+        },
+        {"text": "done"},
+    ]
+    provider = ValidatingFakeProvider(script=script)
+    agent = Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
+    events = await collect(agent, "find and inspect")
+
+    assert len(provider.calls) == 2  # first call: [system,user]; second: with tools
+    # every payload was validated at the provider exit already (no raise), and
+    # the retained history is itself a fully-paired sequence.
+    assert_valid_tool_protocol(agent.history.messages)
+    final = "".join(e.content or "" for e in events if e.kind == "text")
+    assert final == "done"
+
+
+async def test_validating_provider_rejects_missing_result_at_exit(tmp_path):
+    """The validating provider refuses a malformed payload (a declared
+    call with no matching result) at the FakeProvider exit boundary."""
+    provider = ValidatingFakeProvider(script=[])
+    bad = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+            ],
+        },
+    ]
+    with pytest.raises(AssertionError):
+        [ev async for ev in provider.stream(bad)]
+
+
+async def test_validating_provider_rejects_duplicate_result_at_exit(tmp_path):
+    """The validating provider refuses a payload with a duplicated
+    result at the FakeProvider exit boundary."""
+    provider = ValidatingFakeProvider(script=[])
+    bad = [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "a", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "a", "name": "f", "content": "1"},
+        {"role": "tool", "tool_call_id": "a", "name": "f", "content": "2"},
+    ]
+    with pytest.raises(AssertionError):
+        [ev async for ev in provider.stream(bad)]

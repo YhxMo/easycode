@@ -16,7 +16,7 @@ const MODES = [
   {
     value: "allow-all",
     label: "完全访问",
-    hint: "关闭沙箱与审批，允许宿主机完整访问",
+    hint: "关闭沙箱与审批，允许宿主机完整访问（破坏性命令不再拦截）",
     icon: "∞",
   },
 ] as const;

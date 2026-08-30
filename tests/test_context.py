@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from easycode.agent.context import History
+from tests.helpers_history import assert_valid_tool_protocol, validated_payload
 
 
 def _tc(tid: str, args: str = "{}") -> dict:
@@ -88,11 +91,11 @@ def test_trim_preserves_summary_message() -> None:
     assert History.is_summary(h.messages[0])
 
 
-# ---------------------------------------------------------------- item-10 (MS-8)
+# ----------------------------------------------------------------
 
 
 def test_over_budget_large_system_trips() -> None:
-    """MS-8: the system prompt counts toward the budget. A big system body must
+    """the system prompt counts toward the budget. A big system body must
     trip over-budget on its own, not be hidden behind an empty conversation."""
     h = History(max_tokens=1000)
     h.set_system("S" * 20_000)  # ~5000 tokens heuristic, system only
@@ -101,7 +104,7 @@ def test_over_budget_large_system_trips() -> None:
 
 
 def test_over_budget_tool_schemas_trips() -> None:
-    """MS-8: the tool schemas sent on every call count toward the budget via the
+    """the tool schemas sent on every call count toward the budget via the
     ``extra`` term. Same conversation is in-budget without schemas but trips once
     a large schema is accounted for."""
     h = History(max_tokens=1000)
@@ -112,7 +115,7 @@ def test_over_budget_tool_schemas_trips() -> None:
 
 
 def test_over_budget_cheap_gate_counts_system_and_extra() -> None:
-    """MS-8: a large system / schema must defeat the early-exit cheap gate
+    """a large system / schema must defeat the early-exit cheap gate
     (``messages + system + extra <= 0.7 * max``) so the exact count is consulted."""
     h = History(max_tokens=1000)
     h.set_system("S" * 6_000)
@@ -120,11 +123,11 @@ def test_over_budget_cheap_gate_counts_system_and_extra() -> None:
     assert h.over_budget(2000) is True
 
 
-# ---------------------------------------------------------------- item-04 (MS-1+MS-2)
+# ----------------------------------------------------------------
 
 
 def test_add_trims_by_whole_turn_not_single_message() -> None:
-    """MS-1: popping past ``max_messages`` must never split a tool_call from
+    """popping past ``max_messages`` must never split a tool_call from
     its result. Old code popped one message at a time (pop(0)), which could
     leave an orphaned ``tool`` result behind (leaving ``[tool, u2, a2]``)."""
     h = History(max_messages=3)
@@ -143,7 +146,7 @@ def test_add_trims_by_whole_turn_not_single_message() -> None:
 
 
 def test_trim_never_orphans_tool_results() -> None:
-    """MS-1: hard character/token trim also drops whole turns."""
+    """hard character/token trim also drops whole turns."""
     h = History(max_tokens=1_000_000, max_chars=50)
     h.add_user("u1")
     h.add({"role": "assistant", "content": "", "tool_calls": [_tc("b")]})
@@ -155,7 +158,7 @@ def test_trim_never_orphans_tool_results() -> None:
 
 
 def test_select_tail_start_split_does_not_orphan_tool() -> None:
-    """MS-2: a large assistant ``tool_calls`` + small result must cause the
+    """a large assistant ``tool_calls`` + small result must cause the
     token split to land on the assistant (not the ``tool``), so condensing
     never leaves an orphaned tool result."""
     h = History()
@@ -177,7 +180,7 @@ def test_select_tail_start_split_does_not_orphan_tool() -> None:
 
 
 def test_condense_from_coalesces_tool_boundary() -> None:
-    """MS-2: a raw tool index passed to ``condense_from`` is snapped back so the
+    """a raw tool index passed to ``condense_from`` is snapped back so the
     kept tail never starts with an orphaned tool result."""
     h = History()
     h.add_user("u0")
@@ -192,3 +195,131 @@ def test_condense_from_coalesces_tool_boundary() -> None:
     assert h.messages[1]["role"] == "assistant"
     assert h.messages[1].get("tool_calls")
     assert h.messages[2]["role"] == "tool"
+
+
+#
+# Strict one-to-one tool protocol: every assistant tool_call id must be matched
+# by exactly one tool result, consumed in declaration order, with no duplicate /
+# missing / old-turn / pre-declaration result. System messages are exempt.
+
+
+def _tool_result(tid: str, content: str = "r") -> dict:
+    return {"role": "tool", "tool_call_id": tid, "name": "f", "content": content}
+
+
+def test_protocol_accepts_simple_paired_turn() -> None:
+    messages = [
+        {"role": "user", "content": "list files"},
+        {"role": "assistant", "content": "", "tool_calls": [_tc("a")]},
+        _tool_result("a", "ok"),
+        {"role": "assistant", "content": "done"},
+    ]
+    assert_valid_tool_protocol(messages)
+    # the payload (with a system message prepended) must also validate
+    assert_valid_tool_protocol(
+        [{"role": "system", "content": "sys"}, *messages]
+    )
+    assert validated_payload(messages) is messages
+
+
+def test_protocol_accepts_multi_call_batch_in_order() -> None:
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [_tc("a"), _tc("b")]},
+        _tool_result("a", "1"),
+        _tool_result("b", "2"),
+        {"role": "assistant", "content": "both done"},
+    ]
+    assert_valid_tool_protocol(messages)
+
+
+def test_protocol_system_messages_exempt() -> None:
+    messages = [
+        {"role": "system", "content": "Previous conversation summary (older messages were condensed):\n- x"},
+        {"role": "system", "content": "[skill: check]\nbody"},
+        {"role": "user", "content": "hi"},
+    ]
+    assert_valid_tool_protocol(messages)
+
+
+def test_protocol_rejects_missing_result_for_second_call() -> None:
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [_tc("a"), _tc("b")]},
+        _tool_result("a", "1"),
+    ]
+    with pytest.raises(AssertionError):
+        assert_valid_tool_protocol(messages)
+
+
+def test_protocol_rejects_duplicate_result() -> None:
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [_tc("a")]},
+        _tool_result("a", "1"),
+        _tool_result("a", "2"),
+    ]
+    with pytest.raises(AssertionError):
+        assert_valid_tool_protocol(messages)
+
+
+def test_protocol_rejects_old_turn_id_reuse() -> None:
+    """A result that re-uses an already-fulfilled id from an older turn must be
+    rejected rather than silently matched to the new declaration."""
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [_tc("a")]},
+        _tool_result("a", "1"),
+        {"role": "assistant", "content": "", "tool_calls": [_tc("b")]},
+        _tool_result("a", "old-turn id"),
+    ]
+    with pytest.raises(AssertionError):
+        assert_valid_tool_protocol(messages)
+
+
+def test_protocol_rejects_result_before_declaring_assistant() -> None:
+    """Interleaving: a result that appears before the assistant that declared it
+    must be rejected (no pending declaration)."""
+    messages = [
+        _tool_result("a", "early"),
+        {"role": "assistant", "content": "", "tool_calls": [_tc("a")]},
+    ]
+    with pytest.raises(AssertionError):
+        assert_valid_tool_protocol(messages)
+
+
+def test_protocol_rejects_out_of_order_results_within_batch() -> None:
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [_tc("a"), _tc("b")]},
+        _tool_result("b", "2"),
+        _tool_result("a", "1"),
+    ]
+    with pytest.raises(AssertionError):
+        assert_valid_tool_protocol(messages)
+
+
+def test_protocol_survives_trim_of_adjacent_batches() -> None:
+    """Whole-turn trimming that cuts across adjacent multi-call batches
+    must keep the one-to-one pairing intact (never an unpaired call/result)."""
+    h = History(max_messages=8)
+    for i in range(3):
+        h.add_user(f"u{i}")
+        h.add({"role": "assistant", "content": "", "tool_calls": [_tc(f"a{i}"), _tc(f"b{i}")]})
+        h.add_tool(f"a{i}", "f", f"ra{i}")
+        h.add_tool(f"b{i}", "f", f"rb{i}")
+    assert len(h.messages) <= 8
+    assert_valid_tool_protocol(h.messages)
+    assert_valid_tool_protocol(h.payload())
+
+
+def test_protocol_survives_condense_cut_between_adjacent_batches() -> None:
+    """A token-selected tail cut (condense_from) that lands between two
+    adjacent multi-call batches must leave a fully paired tail, with the
+    summary system message exempt."""
+    h = History()
+    for i in range(5):
+        h.add_user(f"u{i}")
+        h.add({"role": "assistant", "content": "", "tool_calls": [_tc(f"a{i}"), _tc(f"b{i}")]})
+        h.add_tool(f"a{i}", "f", f"ra{i}")
+        h.add_tool(f"b{i}", "f", f"rb{i}")
+    start = h.select_tail_start(10_000, tail_turns=2)
+    assert start is not None
+    assert h.condense_from("SUMMARY", start) is True
+    assert_valid_tool_protocol(h.messages)
+    assert History.is_summary(h.messages[0])  # summary exempt, but present

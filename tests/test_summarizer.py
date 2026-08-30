@@ -22,11 +22,11 @@ def test_build_prompt_merges_prior_summary() -> None:
     assert "Do not mention the summary process" in p
 
 
-# ---------------------------------------------------------------- item-06 (MS-5)
+# ----------------------------------------------------------------
 
 
 async def test_summarize_returns_none_on_provider_error(monkeypatch) -> None:
-    """MS-5: an LLM failure must surface as ``None`` so the caller can fall back,
+    """an LLM failure must surface as ``None`` so the caller can fall back,
     never as a fabricated ``(summary unavailable...)`` note that would replace
     the original conversation text."""
     import easycode.agent.summarizer as sm

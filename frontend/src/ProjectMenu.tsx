@@ -88,6 +88,21 @@ export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
     };
   }, []);
 
+  // While the menu is open, a scroll (capture: also fires for inner
+  // overflow containers) or a window resize would leave the position:fixed menu
+  // drifting away from its trigger. Closing on either is more robust than
+  // recomputing the coordinates, so the popup never floats misaligned.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
+
   const pick = (action: ProjectAction) => {
     setOpen(false);
     onAction(action);

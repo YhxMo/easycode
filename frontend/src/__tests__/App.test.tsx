@@ -78,7 +78,7 @@ beforeEach(() => {
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.streamChat.mockResolvedValue(undefined);
   // Echo the requested mode back so the App's optimistic update is confirmed
-  // rather than being reverted to a stale value (UI-2).
+  // rather than being reverted to a stale value.
   m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "s1", permission_mode: mode }));
   m.undoSession.mockResolvedValue({ ok: true });
   m.redoSession.mockResolvedValue({ ok: true });
@@ -86,7 +86,7 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-  it("UI-2: 权限改动后发送请求使用最新 currentPermission", async () => {
+  it("权限改动后发送请求使用最新 currentPermission", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
@@ -112,7 +112,7 @@ describe("App", () => {
     );
   });
 
-  it("UI-3: fetchSession 乱序响应最终只显示最后点击的会话", async () => {
+  it("fetchSession 乱序响应最终只显示最后点击的会话", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A"), session("s2", "会话B")]);
     const d1 = deferred<api.SessionDetail>();
@@ -141,7 +141,7 @@ describe("App", () => {
     expect(screen.getByText("B-内容")).toBeTruthy();
   });
 
-  it("UI-1: 旧 SSE 回调在切换会话后不污染新会话", async () => {
+  it("旧 SSE 回调在切换会话后不污染新会话", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A"), session("s2", "会话B")]);
     m.fetchSession.mockImplementation((id: string) =>
@@ -176,7 +176,7 @@ describe("App", () => {
     expect(screen.getByText("B-视图")).toBeTruthy();
   });
 
-  it("UI-6: rollback 失败显示错误提示", async () => {
+  it("rollback 失败显示错误提示", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "问题1" }]));
@@ -192,7 +192,7 @@ describe("App", () => {
     await screen.findByText(/回滚失败.*undo failed/);
   });
 
-  it("UI-9: 多审批显示动态 position/total", async () => {
+  it("多审批显示动态 position/total", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
@@ -233,7 +233,7 @@ describe("App", () => {
     await screen.findByText("2/2 个问题");
   });
 
-  it("UI-4: 移动端侧栏抽屉——按钮存在、点击显示、遮罩/Escape 关闭、点会话或新会话关闭", async () => {
+  it("移动端侧栏抽屉——按钮存在、点击显示、遮罩/Escape 关闭、点会话或新会话关闭", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
@@ -280,7 +280,7 @@ describe("App", () => {
     expect(app().classList.contains("sidebar-open")).toBe(false);
   });
 
-  it("UI-5: 项目置顶标记与项目折叠/展开功能正常", async () => {
+  it("项目置顶标记与项目折叠/展开功能正常", async () => {
     const user = userEvent.setup();
     const s1 = { ...session("s1", "会话A"), root: "/workspace/projA" };
     m.fetchSessions.mockResolvedValue([s1]);

@@ -76,7 +76,7 @@ class FileSnapshotManager:
             self.stack.pop()
 
     def rollback_turn(self) -> list[str]:
-        """Restore the newest turn's file pre-state, then drop it (MS-6).
+        """Restore the newest turn's file pre-state, then drop it.
 
         Used when a turn is cancelled or aborts so write tools that already
         executed are rolled back to their pre-state. Unlike :meth:`undo_turn`

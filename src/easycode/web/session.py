@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from easycode.agent.context import SUMMARY_PREFIX, History
 from easycode.agent.loop import Agent
 from easycode.credentials import data_home
 from easycode.workspace import normalise_secondary
@@ -22,11 +25,30 @@ AgentFactory = Callable[[str], Agent]
 #: ``messages`` contains only the ordinary history (never a base system message, or
 #: it would break compaction / turn-boundary logic). Skill / custom system messages
 #: are preserved in place.
+#:
+#: The single leading system message is dropped UNLESS it is a rolling-compaction
+#: summary: ``condense_from`` injects a system message stamped with
+#: ``SUMMARY_PREFIX`` at the head, and that condensed context must survive a
+#: refresh/restart (crash-loop/regression: the summary was treated as a stale base
+#: prompt and silently stripped on every reload, losing all old context).
 def migrate_persisted_messages(persisted: list[dict]) -> list[dict]:
     msgs = list(persisted)
-    if msgs and msgs[0].get("role") == "system":
+    if msgs and msgs[0].get("role") == "system" and not History.is_summary(msgs[0]):
         msgs = msgs[1:]
     return msgs
+
+
+def _summary_text(msg: dict) -> str:
+    """Extract the rolling-compaction summary body from a summary system message.
+
+    ``History.condense_from`` writes the summary as
+    ``f"{SUMMARY_PREFIX}\n{summary}"``, so ``summary`` is the exact text after the
+    prefix (and its following newline). Used to rebuild ``history.summary`` on
+    reload so the next compaction can roll the prior summary forward instead of
+    starting from scratch.
+    """
+    content = str(msg.get("content") or "")
+    return content[len(SUMMARY_PREFIX):].lstrip()
 
 
 def _now() -> str:
@@ -50,8 +72,14 @@ class Session:
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
     #: Timestamps popped by a redo-able ``undo_turn`` so ``redo_turn`` can restore
-    #: the alignment of ``user_times`` with the surviving user messages (MS-4).
+    #: the alignment of ``user_times`` with the surviving user messages.
     _undone_user_times: list[str] = field(default_factory=list)
+    #: Per-session serialization. A chat stream holds this
+    #: for its whole lifecycle (including approval waits); concurrent chat / undo /
+    #: redo / permission / archive are rejected with 409 "session busy". The lock
+    #: is created lazily and is intentionally NOT serialized to disk (it is a
+    #: runtime-only primitive and is excluded from the manual ``_flush`` payload).
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
@@ -59,6 +87,36 @@ class Session:
         if evt is None or evt.is_set():
             return False
         evt.set()
+        return True
+
+    def stash_undo_time(self) -> None:
+        """Pop the most recent user_timestamp and stash it for a redo.
+
+        A single-turn undo is redo-able, so the popped timestamp is
+        kept in ``_undone_user_times`` — a LIFO parallel of the agent's
+        ``_redo_stack`` — so a later ``redo_turn`` can restore exactly one
+        matching timestamp instead of draining the whole stash. When there is no
+        timestamp to pop (frontend compressed them away) this is a no-op.
+        """
+        if self.user_times:
+            self._undone_user_times.append(self.user_times.pop())
+
+    def drop_user_times(self, count: int) -> None:
+        """Drop ``count`` trailing user_timestamps (a batch undo discards redo)."""
+        for _ in range(min(count, len(self.user_times))):
+            self.user_times.pop()
+
+    def restore_redo_time(self) -> bool:
+        """Restore exactly ONE stashed timestamp (the most recently undone).
+
+        Returns True when a timestamp was restored. A single
+        ``redo_turn`` re-applies one user turn, so restore exactly one timestamp
+        from the LIFO stash (its end) — never drain the whole stash. A guard keeps
+        this a safe no-op when the stash is empty (nothing was undone).
+        """
+        if not self._undone_user_times:
+            return False
+        self.user_times.append(self._undone_user_times.pop())
         return True
 
     @property
@@ -232,6 +290,12 @@ class SessionStore:
                 # embedded base system message, leave skill/custom system messages.
                 migrated = migrate_persisted_messages(list(data.get("messages") or []))
                 agent.history.messages = migrated
+                # Rebuild the rolling-compaction summary from the head
+                # summary system message (if any) so the next compaction can merge
+                # into the prior summary instead of starting from nothing. Kept in
+                # sync with messages[0] because both derive from the same source.
+                if migrated and History.is_summary(migrated[0]):
+                    agent.history.summary = _summary_text(migrated[0])
                 sess = Session(
                     id=data["id"],
                     title=data.get("title", "新会话"),
@@ -254,12 +318,12 @@ class SessionStore:
     def record_exchange(self, session: Session) -> None:
         """Persist current history after a turn.
 
-        MS-7/SC-7: a session that was deleted while its chat stream was still
+        a session that was deleted while its chat stream was still
         in flight must not be re-persisted by the stream's ``finally`` — that
         would resurrect it on disk (and a later ``load_all``). If the session is
         no longer tracked this is a no-op.
 
-        MS-4: keep ``user_times`` aligned with the user messages that survive in
+        keep ``user_times`` aligned with the user messages that survive in
         ``history``. During a turn, compaction drops the OLDEST user messages
         (front), so the surviving timestamps are the most-recent ``n_user``
         entries. Undo/redo shift the count from the back and are handled at the
@@ -282,7 +346,7 @@ class SessionStore:
             self._flush(sess)
 
     def _flush(self, session: Session) -> None:
-        # MS-7/SC-7: never write a session that is no longer tracked (deleted).
+        # never write a session that is no longer tracked (deleted).
         if session.id not in self._sessions:
             return
         payload = {
@@ -301,6 +365,19 @@ class SessionStore:
             payload["root"] = session.root
         if session.secondary_roots:
             payload["secondary_roots"] = list(session.secondary_roots)
-        tmp = self._path(session.id).with_suffix(".tmp")
+        tmp = self._tmp_path(session.id)
         tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self._path(session.id))
+
+    def _tmp_path(self, session_id: str) -> Path:
+        """A per-flush temp path unique to this process/call.
+
+        Concurrent ``_flush`` calls for the same session must never write to a
+        shared ``.tmp`` file (two ``write_text`` to one path can interleave and
+        move a corrupt/partial file into place). A unique suffix — pid + fresh
+        uuid — makes every flush write to its own temp file; the atomic
+        ``replace`` then leaves a complete, valid session file.
+        """
+        return self._path(session_id).with_name(
+            f"{session_id}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        )

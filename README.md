@@ -63,7 +63,9 @@ uv sync --frozen    # 用 uv.lock 锁定版本，可复现安装
 
 - `workspace.secondary`：次要工作目录（与主目录同等免批准，可多个）；`workspace.extra_safe_dirs`：额外免批准目录
 - 路径归属判定：主/次工作目录 + 系统临时目录 + `~/.easycode/` 免批准，其余为 `external`（读取允许，编辑需批准）
-- `permission`：`ask`（默认，外部文件编辑/疑似联网命令事前询问）/ `auto-review`（全自动+事后变更汇总）/ `allow-all`（全放行）；CLI 用 `--permission`
+- `permission`：`ask`（默认，外部文件编辑/疑似联网命令事前询问）/ `auto-review`（全自动+事后变更汇总）/ `allow-all`（关闭沙箱与审批，对齐 Codex `danger-full-access`）；CLI 用 `--permission`
+  - `ask` / `auto-review` 下，明显破坏性命令（`git reset --hard`、`git clean`、`git push --force`、`rm -rf /` 或 `~`）在任何批准之前直接拒绝
+  - `allow-all` 下该拒绝列表关闭；仍保留的限制：`~/.easycode/credentials.json` 等凭据文件始终禁止读写、`permission_rules` 规则表继续生效（可用 `deny` 规则选择性禁止特定命令）
 - `permissions`：可选的工具/参数规则表，动作支持 `allow` / `ask` / `deny`；规则最后匹配优先。例如 `{"execute_shell":{"*":"ask","git status*":"allow","git push*":"deny"}}`。规则只改变批准决策，文件和网络仍受沙箱边界约束
 - `mcp_servers`：外部 MCP server（stdio `{command,args}` 或 `{url}`），工具以 `mcp__<server>__<tool>` 注入 agent
 - `max_context_tokens`：未知模型窗口时的上下文回退预算（默认 32k）；已知模型用 `litellm.get_model_info` 推导 `usable = 窗口 − 输出预留`
@@ -91,6 +93,8 @@ uv run easycode web            # http://127.0.0.1:8000
 uv run easycode web --port 9000
 ```
 
+- Web 安全模型（SC-100）：控制面默认绑定回环 `127.0.0.1`。此时浏览器发起的**状态变更请求**（POST/PUT/PATCH/DELETE）必须与监听地址精确同源（http/https + 相同主机与端口），或属于已登记的前端开发源（`http://localhost:5173` 等）；缺失 `Origin`/`Referer`（CLI/curl、非浏览器工具）**仅对回环绑定放行**。若 `--host` 改为非回环（如 `0.0.0.0`），按安全优先 **fail-closed**：无 `Origin` 的一律拒绝，且每个状态变更请求都必须携带 `Authorization: Bearer $EASYCODE_WEB_TOKEN`；未设置该变量时启动即打印警告日志并拒绝所有此类请求，绝不无认证暴露控制面
+- 工作树安全（SC-104）：创建永久工作树（`POST /api/workspaces/worktree`）时，仓库内 `.easycode/setup.sh` 与模型命令同等受 Seatbelt 沙箱边界约束（与 `execute_shell` 同边界，**无未经沙箱的逃逸口**；平台不支持 Seatbelt 时明确拒绝运行预设脚本并说明原因）；`.worktreeinclude` 逐行做 resolve 后的源/工作树包含校验，含绝对路径或 `..`/符号链接逃逸的行会被拒绝并记录 warning，绝不把仓库根外的宿主文件拷入工作树
 - 生产模式自动托管 `frontend/dist`（需先构建：`cd frontend && npm ci && npm run build`，`npm ci` 锁定 `package-lock.json` 可复现安装）
 - 开发模式：另起一个终端 `cd frontend && npm run dev`（Vite 代理 `/api` → 8000），改动前端热更新
 - 浏览器打开后：左侧会话列表（多会话隔离，落盘 `~/.easycode/sessions/*.json`，刷新/重启可恢复续聊），按**项目（主工作目录）分组**：新会话时选择项目目录（手动输入或 📁 访达选择），**每个主目录绑定一组次目录**（＋/📁 多选/✕ 维护，绑定持久化到 config 并由会话历史推断合并，主/次目录同样免批准），发出第一条消息后锁定；未选择的项目归入 `default project`（也能挂次目录）；底部可切换 / 添加 / 删除模型
@@ -192,7 +196,7 @@ frontend/                 # Vite + React + TS 前端
 后端（Python，离线可跑：测试用脚本化 FakeProvider 替代真实 LLM，不与真实 `~/.easycode` 数据交互；`--frozen` 使用 `uv.lock` 锁定依赖）：
 
 ```bash
-uv run --frozen pytest        # 228 个测试（含 Web 接口与 Phase 6 功能测试）
+uv run --frozen pytest        # 311 个测试（含 Web 接口、序列化与压缩保真契约测试）
 ```
 
 前端（Vitest + Testing Library，mock fetch/SSE，不起真实服务）：

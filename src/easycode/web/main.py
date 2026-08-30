@@ -3,176 +3,181 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import sys
+import hmac
+import logging
+import os
 import urllib.parse
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Any
 
-from fastapi import BackgroundTasks, Body, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from easycode.config import API_FORMATS, DEFAULT_API_FORMAT, Config, infer_api_format
-from easycode.credentials import (
-    Credential,
-    delete_credential,
-    new_credential_id,
-    load_credentials,
-    save_credential,
-    data_home,
-)
+from easycode.config import API_FORMATS, DEFAULT_API_FORMAT, Config
+from easycode.sandbox import sandbox_command
 from easycode.skills import SkillRegistry
-from easycode.web.bridge import ApprovalBroker, event_to_sse, stream_chat_with_approval
+from easycode.web import services
+from easycode.web.bridge import ApprovalBroker
+from easycode.web.platform import (
+    FINDER_PROMPT_MAX_LEN,
+    WorktreeAddError,
+    _sanitize_finder_prompt,
+    choose_folders_via_finder,
+    create_worktree as platform_create_worktree,
+    finder_supported,
+    reveal_in_finder as platform_reveal,
+)
+from easycode.web.routes_chat import _build_web_commands, register_chat
 from easycode.web.session import Session, SessionStore
-from easycode.workspace import normalise_secondary, resolve_workspace_path
+from easycode.workspace import normalise_secondary
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
-FORMAT_PROVIDERS = {
-    "openai_responses": "openai",
-    "openai_compatible": "openai",
-    "anthropic": "anthropic",
-    "bedrock": "bedrock",
-    "gemini": "gemini",
+
+#: Known frontend serving origins (dev Vite server) that a state-change request
+#: may legitimately originate from, in addition to the listener's exact same
+#: origin. These are loopback-only and mirror the CORS allow-list below.
+_KNOWN_FRONTEND_ORIGINS = {
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
 }
 
-
-def infer_provider(model: str, api_format: str) -> str:
-    """Infer the supplier independently from the wire API format."""
-    prefix = model.split("/", 1)[0].strip().lower() if "/" in model else ""
-    if prefix and prefix != "responses":
-        return prefix
-    return FORMAT_PROVIDERS.get(api_format, "custom")
+logger = logging.getLogger(__name__)
 
 
-def _derive_api_format(model: str) -> str:
-    """API format for a model when the credential stores none.
+def _normalise_host(host: str) -> str:
+    """Lowercase a host, strip an IPv6 ``[]`` wrapper and any zone id."""
+    h = (host or "").strip().lower()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    if "%" in h:  # IPv6 zone id, e.g. fe80::1%lo0
+        h = h.split("%", 1)[0]
+    return h
 
-    Recognises OpenAI Responses (``responses/`` route), and the native
-    Anthropic / Bedrock / Gemini formats from the wire provider (``provider``
-    or the model-string prefix); everything else defaults to OpenAI-compatible
-    chat completions.
+
+def _is_loopback_host(host: str) -> bool:
+    """True for loopback hostnames/addresses (localhost, 127.0.0.0/8, ::1)."""
+    h = _normalise_host(host)
+    return h.startswith("127.") or h in ("localhost", "::1", "0:0:0:0:0:0:0:1")
+
+
+def _bind_is_loopback(bind_host: str) -> bool:
+    """True when the *listening* address is loopback-only.
+
+    ``0.0.0.0`` and any non-loopback address bind the control plane to the
+    network, so they count as non-loopback (they demand a bearer token).
     """
-    return infer_api_format(model)
+    return _is_loopback_host(bind_host)
 
 
-#: Hosts a state-change request may legitimately originate from.
-_ALLOWED_ORIGIN_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+def _origin_is_local(origin: str | None, bind_host: str = "127.0.0.1", bind_port: int = 8000) -> bool:
+    """True when a state-change request may proceed on origin geometry alone.
 
-
-def _origin_is_local(origin: str | None, host: str | None) -> bool:
-    """True when a state-change request is same-origin or local-origin.
-
-    Missing Origin/Referer (curl, non-browser tooling, and our own tests) is
-    accepted; a *present* Origin/Referer that is neither a loopback host nor
-    the Host the request was addressed to is rejected. This is the minimal
-    CSRF defence for a localhost-first tool: it blocks cross-origin browser
-    POSTs without introducing a full authentication system.
+    Tightened rules:
+    - Missing Origin/Referer (curl, non-browser tooling, our own tests) is
+      accepted ONLY when the listener is bound to loopback.
+    - A present Origin/Referer is accepted only when it is the exact same origin
+      as the listener (http/https + same host family + same port), or it is one
+      of the known dev-frontend origins.
+    - The old equivalences are removed: an Origin whose host equals the Host
+      header hostname (the DNS-rebinding channel) and any loopback host on an
+      arbitrary port no longer pass.
     """
     if not origin:
+        return _bind_is_loopback(bind_host)
+    norm = origin.strip().rstrip("/")
+    if norm in _KNOWN_FRONTEND_ORIGINS:
+        return True
+    # A Referer fallback may carry a path (e.g. http://localhost:5173/chat) that
+    # still belongs to a known dev frontend source.
+    if any(norm.startswith(k + "/") for k in _KNOWN_FRONTEND_ORIGINS):
         return True
     try:
-        parts = urllib.parse.urlsplit(origin)
+        parts = urllib.parse.urlsplit(norm)
     except ValueError:
+        return False
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ("http", "https"):
         return False
     origin_host = (parts.hostname or "").strip().lower()
     if origin_host in ("", "null"):
         return False
-    if origin_host in _ALLOWED_ORIGIN_HOSTS:
-        return True
-    if host:
-        hostname = host.split(":")[0].strip()
-        if hostname.startswith("[") and hostname.endswith("]"):
-            hostname = hostname[1:-1]
-        hostname = hostname.lower()
-        if origin_host == hostname:
-            return True
-    return False
+    origin_port = parts.port or (443 if scheme == "https" else 80)
+    if origin_port != bind_port:
+        return False
+    if _bind_is_loopback(bind_host):
+        # Keep localhost<->127.0.0.1 interchangeable for real local use (the
+        # built frontend is served at either), while rejecting any non-loopback
+        # or cross-port origin.
+        return _is_loopback_host(origin_host)
+    # Non-loopback bind: bearer-token auth (checked in the middleware) is the
+    # real gate. Reaching here means a well-formed http(s) origin on the bound
+    # port; requests without a token never get this far on a remote bind anyway.
+    return True
 
 
 class _LocalOriginMiddleware:
-    """Reject cross-origin state-changing requests (POST/PUT/PATCH/DELETE)."""
+    """Reject cross-origin state-changing requests (POST/PUT/PATCH/DELETE).
 
-    def __init__(self, app):
+    On a non-loopback bind a valid ``Authorization: Bearer $EASYCODE_WEB_TOKEN``
+    is additionally required. If ``EASYCODE_WEB_TOKEN`` is unset the control
+    plane is deliberately **fail-closed** — every state-change request is
+    rejected and a warning is logged at startup (security first: never expose
+    the credentialed control plane to the network without an explicit token).
+    """
+
+    def __init__(self, app, bind_host: str = "127.0.0.1", bind_port: int = 8000):
         self.app = app
+        self.bind_host = bind_host
+        self.bind_port = bind_port
+        if not _bind_is_loopback(bind_host) and not os.environ.get("EASYCODE_WEB_TOKEN"):
+            logger.warning(
+                "Web control plane bound to non-loopback host %r without "
+                "EASYCODE_WEB_TOKEN set; state-changing requests are FAIL-CLOSED "
+                "(all rejected). To use the control plane over a non-loopback "
+                "bind, set EASYCODE_WEB_TOKEN and send 'Authorization: Bearer "
+                "<token>' on every state-change request.",
+                bind_host,
+            )
+
+    @staticmethod
+    def _token_ok(headers: dict[bytes, bytes]) -> bool:
+        expected = os.environ.get("EASYCODE_WEB_TOKEN")
+        if not expected:
+            return False
+        auth = headers.get(b"authorization")
+        if not auth:
+            return False
+        auth = auth.decode("latin-1")
+        scheme, _, cred = auth.partition(" ")
+        if scheme.lower() != "bearer" or not cred.strip():
+            return False
+        return hmac.compare_digest(cred.strip(), expected)
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and scope["method"] in ("POST", "PUT", "PATCH", "DELETE"):
             headers = {k.lower(): v for k, v in scope.get("headers", [])}
             origin = headers.get(b"origin")
             referer = headers.get(b"referer")
-            host = headers.get(b"host")
             source = None
             if origin:
                 source = origin.decode("latin-1")
             elif referer:
                 source = referer.decode("latin-1")
-            host_str = host.decode("latin-1") if host else None
-            if not _origin_is_local(source, host_str):
+            if not _origin_is_local(source, self.bind_host, self.bind_port):
                 response = JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
                 await response(scope, receive, send)
                 return
+            if not _bind_is_loopback(self.bind_host) and not self._token_ok(headers):
+                response = JSONResponse({"detail": "bearer token required"}, status_code=401)
+                await response(scope, receive, send)
+                return
         await self.app(scope, receive, send)
-
-
-def _attach_snapshot(sess: Session) -> None:
-    """Give a session its file snapshot manager (no-op if already attached)."""
-    if sess.agent.snapshot_manager is None:
-        from easycode.snapshot import FileSnapshotManager
-
-        sess.agent.snapshot_manager = FileSnapshotManager(
-            sess.id, sess.agent.path_context().roots
-        )
-
-
-def _session_roots(sess: Session, cfg: Config) -> list[Path]:
-    raw = [sess.root, *sess.secondary_roots] if sess.root else [str(cfg.root), *sess.secondary_roots]
-    return [Path(p) for p in raw if p]
-
-
-def _expand_command(message: str, sess: Session, cfg: Config) -> str:
-    """Resolve a leading '/' message: templates/skills expand, builtins rejected."""
-    from easycode.commands import CommandRegistry
-
-    reg = _build_web_commands(_session_roots(sess, cfg), sess.agent.skills)
-    resolved = reg.resolve(message)
-    if resolved is None:
-        raise HTTPException(400, f"unknown command: {message.split()[0]}")
-    cmd, rest = resolved
-    if cmd.kind in ("template", "skill"):
-        return cmd.expand(rest)
-    raise HTTPException(400, f"/{cmd.name} 是终端内置命令，模板命令（.easycode/commands/*.md）与 skill 可在 Web 使用")
-
-
-def _build_web_commands(roots: list[Path], skills) -> "CommandRegistry":
-    """Registry for the Web UI: templates + skill commands (+ builtin placeholders)."""
-    from easycode.commands import Command, CommandRegistry
-
-    reg = CommandRegistry()
-    for name, desc, hint in (
-        ("run", "一键改代码并汇总 diff", "[任务描述]"),
-        ("undo", "撤销上一回合（消息 + 文件回滚）", ""),
-        ("redo", "重做被撤销的回合", ""),
-        ("skills", "列出可用 skills", ""),
-        ("agents", "列出可委派的 agents", ""),
-    ):
-        reg.register(Command(name=name, description=desc, kind="builtin", arg_hint=hint))
-    reg.discover_templates(roots)
-    if skills:
-        reg.add_skill_commands(skills)
-    return reg
-
-
-class ChatRequest(BaseModel):
-    message: str
-    session_id: str | None = None
-    secondary_roots: list[str] | None = None
-    permission_mode: str | None = None
-    root: str | None = None
 
 
 class ChooseWorkspaceRequest(BaseModel):
@@ -213,48 +218,6 @@ class ArchiveRequest(BaseModel):
     archived: bool = True
 
 
-FINDER_APPLESCRIPT = 'POSIX path of (choose folder with prompt "{prompt}"{multiple})'
-FINDER_MULTIPLE_SUFFIX = " with multiple selections allowed"
-
-
-def finder_supported() -> bool:
-    import shutil
-
-    return sys.platform == "darwin" and shutil.which("osascript") is not None
-
-
-def choose_folders_via_finder(multiple: bool = False, prompt: str = "选择目录") -> list[str]:
-    """Open a macOS Finder folder picker via osascript; [] when cancelled/unavailable."""
-    import subprocess
-
-    if not finder_supported():
-        return []
-    script = FINDER_APPLESCRIPT.format(
-        prompt=prompt.replace('"', '\\"'),
-        multiple=FINDER_MULTIPLE_SUFFIX if multiple else "",
-    )
-    try:
-        proc = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if proc.returncode != 0:
-        return []
-    out = (proc.stdout or "").strip()
-    if not out:
-        return []
-    paths: list[str] = []
-    for line in out.splitlines():
-        p = line.strip().strip('"')
-        if p:
-            paths.append(p)
-    return paths
-
-
 def _normalise_root(root: str | None, default: Path) -> str | None:
     """Resolve a project root string; empty/'-' mean default project."""
     if not root or root in ("-", "default"):
@@ -273,17 +236,6 @@ def _config_dir(cfg: Config) -> Path:
 def _session_primary(sess: Session, cfg: Config) -> str | None:
     """Canonical primary root for a session ('default' → cfg.root key)."""
     return _normalise_root(sess.root, cfg.root)
-
-
-def _session_secondary(sess: Session, cfg: Config) -> list[str]:
-    """Canonical, sorted secondary roots for a session."""
-    return sorted(
-        str(resolve_workspace_path(p, _config_dir(cfg))) for p in (sess.secondary_roots or [])
-    )
-
-
-def _secondary_request_roots(raw: list[str], cfg: Config) -> list[str]:
-    return sorted(str(resolve_workspace_path(p, _config_dir(cfg))) for p in raw if str(p).strip())
 
 
 def projects_from_sessions(store: SessionStore, default_root: Path) -> list[dict]:
@@ -365,10 +317,19 @@ def create_app(
     session_store: SessionStore | None = None,
     static_dir: Path | None = None,
     approval_broker: ApprovalBroker | None = None,
+    bind_host: str = "127.0.0.1",
+    bind_port: int = 8000,
 ) -> FastAPI:
-    """App factory. ``session_store``/``approval_broker`` injectable for tests."""
+    """App factory. ``session_store``/``approval_broker`` injectable for tests.
+
+    ``bind_host``/``bind_port`` are the values ``cli.web`` passes to uvicorn; the
+    origin guard uses them to decide whether a state-change request is same-origin
+    and whether a bearer token is required (non-loopback bind -> token required).
+    They default to the loopback CLI values. To be safe this should match the
+    actual listener; the CLI passes the resolved host/port through to uvicorn.
+    """
     from easycode.agent.loop import Agent  # noqa: F401
-    from easycode.cli import make_agent
+    from easycode.agentfactory import make_agent
 
     cfg = cfg or Config.load()
     broker = approval_broker or ApprovalBroker()
@@ -391,25 +352,6 @@ def create_app(
     store = session_store or SessionStore(cfg, cfg.root, factory)
     store.load_all()
 
-    def models_response() -> dict:
-        providers: dict[str, str] = {}
-        limits: dict[str, dict[str, int] | None] = {}
-        credentials = load_credentials()
-        for alias, spec in cfg.models.items():
-            credential = credentials.get(spec.key_id) if spec.key_id else None
-            providers[alias] = (
-                spec.provider
-                or (credential.provider if credential else None)
-                or infer_provider(spec.model, spec.api_format)
-            )
-            limits[alias] = cfg.get_model_limits(alias)
-        return {
-            "default": cfg.default_model,
-            "models": {alias: spec.to_value() for alias, spec in cfg.models.items()},
-            "providers": providers,
-            "limits": limits,
-        }
-
     app = FastAPI(title="Easy code", version="0.1.0")
     app.state.store = store
     app.add_middleware(
@@ -419,7 +361,9 @@ def create_app(
         allow_headers=["*"],
     )
     # Outermost: reject cross-origin state-change requests before CORS sees them.
-    app.add_middleware(_LocalOriginMiddleware)
+    app.add_middleware(
+        _LocalOriginMiddleware, bind_host=bind_host, bind_port=bind_port
+    )
 
     @app.get("/api/models")
     def get_models() -> dict:
@@ -427,7 +371,7 @@ def create_app(
         reloaded = Config.load(start=cfg.root)
         cfg.models = reloaded.models
         cfg.default_model = reloaded.default_model
-        return models_response()
+        return services.models_response(cfg)
 
     @app.post("/api/models/add")
     def add_model(req: AddModelRequest) -> dict:
@@ -440,30 +384,15 @@ def create_app(
             raise HTTPException(422, f"unsupported api_format: {api_format}")
         if alias in cfg.models:
             raise HTTPException(409, f"model alias already exists: {alias}")
-
-        api_key = (req.api_key or "").strip()
-        base_url = (req.base_url or "").strip() or None
-        key_id = None
-        if api_key or base_url:
-            key_id = new_credential_id()
-            save_credential(
-                Credential(
-                    key_id=key_id,
-                    api_key=api_key,
-                    provider=req.provider,
-                    base_url=base_url,
-                )
-            )
-        entry: dict[str, str] = {"model": model, "api_format": api_format}
-        if req.provider and req.provider.strip():
-            entry["provider"] = req.provider.strip()
-        if key_id:
-            entry["key_id"] = key_id
-        cfg.set_model_alias(alias, entry)
-        if cfg.default_model not in cfg.models:
-            cfg.set_default_model(alias)
-        cfg.save()
-        return models_response()
+        return services.add_model(
+            cfg,
+            alias=alias,
+            model=model,
+            provider=req.provider,
+            base_url=req.base_url,
+            api_key=req.api_key,
+            api_format=api_format,
+        )
 
     @app.get("/api/models/{alias}")
     def get_model_detail(alias: str) -> dict:
@@ -474,24 +403,9 @@ def create_app(
         This keeps the localhost edit dialog usable without ever exposing the
         secret, matching what the collection endpoint already promises.
         """
-        spec = cfg.models.get(alias)
-        if spec is None:
+        if cfg.models.get(alias) is None:
             raise HTTPException(404, f"unknown alias: {alias}")
-        cred = load_credentials().get(spec.key_id) if spec.key_id else None
-        api_format = spec.api_format or _derive_api_format(spec.model)
-        provider = spec.provider or (cred.provider if cred and cred.provider else infer_provider(spec.model, api_format))
-        api_key = cred.api_key if cred else ""
-        base_url = cred.base_url if cred else None
-        return {
-            "alias": alias,
-            "model": spec.model,
-            "key_id": spec.key_id,
-            "provider": provider,
-            "base_url": base_url,
-            "api_format": api_format,
-            "has_api_key": bool(api_key),
-            "key_tail": (cred.masked().get("key_tail") or "") if cred else "",
-        }
+        return services.get_model_detail(cfg, alias)
 
     @app.put("/api/models/{alias}")
     def update_model(alias: str, req: UpdateModelRequest) -> dict:
@@ -508,89 +422,36 @@ def create_app(
         api_format = req.api_format or spec.api_format
         if api_format not in API_FORMATS:
             raise HTTPException(422, f"unsupported api_format: {api_format}")
-
-        current_cred = load_credentials().get(spec.key_id) if spec.key_id else None
-        if req.clear_key:
-            if spec.key_id:
-                delete_credential(spec.key_id)
-            key_id = None
-        else:
-            next_api_key = (req.api_key if req.api_key is not None else (current_cred.api_key if current_cred else "")).strip()
-            next_base_url = req.base_url if req.base_url is not None else (current_cred.base_url if current_cred else None)
-            if spec.key_id or next_api_key or next_base_url:
-                key_id = spec.key_id or new_credential_id()
-                save_credential(
-                    Credential(
-                        key_id=key_id,
-                        api_key=next_api_key,
-                        provider=req.provider if req.provider is not None else (current_cred.provider if current_cred else None),
-                        base_url=next_base_url,
-                    )
-                )
-            else:
-                key_id = None
-
-        if target_alias != alias:
-            cfg.rename_model_alias(alias, target_alias)
-        provider = req.provider.strip() if req.provider is not None else spec.provider
-        entry: dict[str, str] = {"model": model, "api_format": api_format}
-        if provider:
-            entry["provider"] = provider
-        if key_id:
-            entry["key_id"] = key_id
-        cfg.set_model_alias(target_alias, entry)
-        cfg.save()
-
-        for sess in store.list():
-            if sess.model_alias != alias:
-                continue
-            from easycode.cli import _rebind_agent
-
-            # Editing a model may leave it without a usable credential; keep
-            # such sessions on the old binding instead of failing the save.
-            try:
-                _rebind_agent(sess.agent, cfg, target_alias)
-            except ValueError:
-                continue
-            sess.model_alias = target_alias
-            store.record_exchange(sess)
-
-        return models_response()
+        return services.update_model(
+            cfg,
+            store,
+            alias=alias,
+            target_alias=target_alias,
+            model=model,
+            provider=req.provider,
+            base_url=req.base_url,
+            api_key=req.api_key,
+            clear_key=req.clear_key,
+            api_format=api_format,
+        )
 
     @app.delete("/api/models/{alias}")
     def delete_model(alias: str) -> dict:
         if alias not in cfg.models:
             raise HTTPException(404, f"unknown alias: {alias}")
-        spec = cfg.models[alias]
-        del cfg.models[alias]
-        if spec.key_id:
-            delete_credential(spec.key_id)
-        if cfg.default_model == alias:
-            cfg.set_default_model(next(iter(cfg.models), "deepseek-v4flash"))
-        cfg.save()
-        return models_response()
+        return services.delete_model(cfg, alias=alias)
 
     @app.post("/api/models")
     def set_model(req: ModelRequest) -> dict:
         if req.alias not in cfg.models:
             raise HTTPException(404, f"unknown alias: {req.alias}")
-        from easycode.cli import _rebind_agent, provider_kwargs
-
         # Validate the target model BEFORE mutating anything: switching to a
         # model without a usable credential must fail atomically — no default
-        # flip on disk, no partially rebound sessions.
+        # flip on disk, no partially rebound sessions (ValueError -> 422).
         try:
-            provider_kwargs(cfg, req.alias)
+            return services.switch_default(cfg, store, alias=req.alias)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        for sess in store.list():
-            _rebind_agent(sess.agent, cfg, req.alias)
-            sess.model_alias = req.alias
-            # Flush per-session alias so a restart cannot silently revert it.
-            store.record_exchange(sess)
-        cfg.set_default_model(req.alias)
-        cfg.save()
-        return models_response()
 
     @app.get("/api/sessions")
     def list_sessions(archived: int = 0) -> list[dict]:
@@ -616,54 +477,42 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/sessions/{session_id}/archive")
-    def archive_session(session_id: str, req: ArchiveRequest) -> dict:
-        sess = store.set_archived(session_id, req.archived)
+    async def archive_session(session_id: str, req: ArchiveRequest) -> dict:
+        sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
-        return {"ok": True, "archived": sess.archived}
+        if sess._lock.locked():
+            raise HTTPException(409, "session busy")
+        await sess._lock.acquire()
+        try:
+            sess = store.set_archived(session_id, req.archived)
+            if sess is None:
+                raise HTTPException(404, "session not found")
+            return {"ok": True, "archived": sess.archived}
+        finally:
+            sess._lock.release()
 
     @app.post("/api/sessions/{session_id}/permission")
-    def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
+    async def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
         from easycode.approval import permission_parse
 
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
+        if sess._lock.locked():
+            raise HTTPException(409, "session busy")
+        await sess._lock.acquire()
         try:
-            mode = permission_parse(req.mode)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        sess.permission_mode = mode
-        sess.agent.permission_mode = mode
-        store.record_exchange(sess)
-        return {"id": sess.id, "permission_mode": mode}
-
-    def _get_session(session_id: str | None, **agent_kwargs: object) -> Session:
-        if session_id:
-            sess = store.get(session_id)
-            if sess is None:
-                raise HTTPException(404, "session not found")
-            _attach_snapshot(sess)
-            return sess
-        sess = store.create(**agent_kwargs)
-        _attach_snapshot(sess)
-        return sess
-
-    def _assert_session_workspace_match(
-        session_id: str, root_raw: str | None, secondary_raw: list[str] | None
-    ) -> None:
-        """409 when a caller claims a different project for an existing session (P1-2)."""
-        sess = store.get(session_id)
-        if sess is None:
-            return  # _get_session surfaces the 404
-        if root_raw:
-            request_root = _normalise_root(root_raw, cfg.root)
-            if _project_key(request_root) != _project_key(_session_primary(sess, cfg)):
-                raise HTTPException(409, "workspace root does not match session primary")
-        if secondary_raw:
-            request_sec = _secondary_request_roots(secondary_raw, cfg)
-            if request_sec != _session_secondary(sess, cfg):
-                raise HTTPException(409, "secondary roots do not match session")
+            try:
+                mode = permission_parse(req.mode)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            sess.permission_mode = mode
+            sess.agent.permission_mode = mode
+            store.record_exchange(sess)
+            return {"id": sess.id, "permission_mode": mode}
+        finally:
+            sess._lock.release()
 
     @app.get("/api/workspaces")
     def list_workspaces() -> dict:
@@ -767,22 +616,10 @@ def create_app(
     @app.post("/api/workspaces/reveal")
     def reveal_in_finder(req: RevealRequest) -> dict:
         """Reveal the project directory in the system file browser (macOS ``open``)."""
-        import shutil
-
         if not (req.root or Path(cfg.root).is_dir()):
             return {"ok": False, "supported": False, "error": "no directory"}
         path = _normalise_root(req.root, cfg.root) or str(cfg.root)
-        if not Path(path).is_dir():
-            return {"ok": False, "supported": False, "error": f"not a directory: {path}"}
-        if not (sys.platform == "darwin" and shutil.which("open")):
-            return {"ok": False, "supported": False, "error": "open is only supported on macOS"}
-        import subprocess
-
-        try:
-            subprocess.run(["open", path], capture_output=True, text=True, timeout=15)
-        except (OSError, subprocess.TimeoutExpired):
-            return {"ok": False, "supported": False, "error": "open failed"}
-        return {"ok": True, "supported": True, "path": path}
+        return platform_reveal(path)
 
     @app.post("/api/workspaces/projects/remove")
     def remove_project(req: RemoveProjectRequest) -> dict:
@@ -815,104 +652,28 @@ def create_app(
         applies local changes + ``.worktreeinclude`` files, and runs
         ``.easycode/setup.sh`` if present.
         """
-        import shutil
-        import subprocess
-        import uuid
-
         root = _normalise_root(req.root, cfg.root)
         if not root:
             raise HTTPException(422, "default project has no directory to worktree")
         src = Path(root)
         if not src.is_dir():
             raise HTTPException(422, f"not a directory: {root}")
-
-        def run(cmd: list[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
-            return subprocess.run(
-                cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
-            )
-
-        if not shutil.which("git"):
-            raise HTTPException(422, "git is not installed")
-        is_repo = run(["git", "rev-parse", "--is-inside-work-tree"], src)
-        if is_repo.returncode != 0 or is_repo.stdout.strip() != "true":
-            raise HTTPException(422, "项目不是 Git 仓库，无法创建 worktree")
-
         try:
-            head_sha = run(["git", "rev-parse", "HEAD"], src).stdout.strip()
-        except (OSError, subprocess.TimeoutExpired):
-            raise HTTPException(422, "cannot resolve HEAD commit")
-        if not head_sha:
-            raise HTTPException(422, "repository has no commits")
-
-        root_home = data_home() / "worktrees"
-        root_home.mkdir(parents=True, exist_ok=True)
-        slug = f"{src.name}-{uuid.uuid4().hex[:5]}"
-        wt = root_home / slug
-        added = run(["git", "worktree", "add", "--detach", str(wt), head_sha], src)
-        if added.returncode != 0 or not (wt.is_dir() and (wt / ".git").exists() or (wt / ".git").is_file()):
-            raise HTTPException(500, f"git worktree add failed: {added.stderr[:200]}")
-
-        notes: list[str] = []
-
-        # best-effort: apply uncommitted changes from the source checkout
-        diff = run(["git", "diff", "HEAD"], src)
-        if diff.returncode == 0 and diff.stdout.strip():
-            # git apply needs stdin; use a temp patch file instead
-            patch = wt.parent / f"{slug}.patch"
-            patch.write_text(diff.stdout, encoding="utf-8")
-            res = run(["git", "apply", str(patch)], wt, timeout=15)
-            if res.returncode == 0:
-                notes.append("applied uncommitted changes")
-            try:
-                patch.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-        # .worktreeinclude: copy gitignored files listed at the repo root
-        include_file = src / ".worktreeinclude"
-        if include_file.is_file():
-            for raw in include_file.read_text(encoding="utf-8").splitlines():
-                rel = raw.strip()
-                if not rel or rel.startswith("#") or rel.startswith("!"):
-                    continue
-                s = src / rel
-                if not s.exists() or s.is_symlink():
-                    continue
-                d = wt / rel
-                if d.exists():
-                    continue
-                try:
-                    if s.is_dir():
-                        import shutil as _sh
-
-                        _sh.copytree(s, d, symlinks=False, dirs_exist_ok=False)
-                    else:
-                        d.parent.mkdir(parents=True, exist_ok=True)
-                        import shutil as _sh
-
-                        _sh.copy2(s, d)
-                except OSError:
-                    pass
-            notes.append("copied .worktreeinclude")
-
-        # best-effort setup script (代码对齐 codex 的 .codex/setup.sh)
-        setup = wt / ".easycode" / "setup.sh"
-        if setup.is_file():
-            try:
-                run(["bash", str(setup)], wt, timeout=300)
-                notes.append("ran .easycode/setup.sh")
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                notes.append(f"setup.sh failed: {exc}")
-
-        entry = _ensure_project_entry(str(wt.resolve()))
+            result = platform_create_worktree(src, sandbox_command=sandbox_command)
+        except WorktreeAddError as exc:
+            raise HTTPException(500, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        entry = _ensure_project_entry(result["root"])
         if not entry.get("name"):
-            entry["name"] = slug
+            entry["name"] = result["slug"]
         cfg.save()
         return {
             "ok": True,
-            "root": str(wt.resolve()),
+            "root": result["root"],
             "name": entry.get("name"),
-            "notes": notes,
+            "notes": result["notes"],
+            "warnings": result["warnings"],
             "projects": build_projects(cfg, store),
         }
 
@@ -942,30 +703,34 @@ def create_app(
         return {"ok": True, "cancelled": cancelled}
 
     @app.post("/api/sessions/{session_id}/undo")
-    def undo_session(session_id: str, req: UndoRequest | None = None) -> dict:
+    async def undo_session(session_id: str, req: UndoRequest | None = None) -> dict:
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
+        if sess._lock.locked():
+            raise HTTPException(409, "session busy")
+        await sess._lock.acquire()
         try:
-            if req is not None and req.until_user:
-                # Batch undo to a prior user message discards redo state (cannot be
-                # re-applied in one step), so the removed timestamps are dropped.
-                before = sum(1 for m in sess.agent.history.messages if m.get("role") == "user")
-                summary = sess.agent.undo_to_user(req.until_user)
-                removed = before - sum(
-                    1 for m in sess.agent.history.messages if m.get("role") == "user"
-                )
-                for _ in range(min(removed, len(sess.user_times))):
-                    sess.user_times.pop()
-            else:
-                # Single-turn undo is redo-able: pop the most recent timestamp and
-                # stash it so `redo_turn` can restore the user_times alignment.
-                summary = sess.agent.undo_turn()
-                if sess.user_times:
-                    sess._undone_user_times.append(sess.user_times.pop())
-        except RuntimeError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        store.record_exchange(sess)
+            try:
+                if req is not None and req.until_user:
+                    # Batch undo to a prior user message discards redo state (cannot be
+                    # re-applied in one step), so the removed timestamps are dropped.
+                    before = sum(1 for m in sess.agent.history.messages if m.get("role") == "user")
+                    summary = sess.agent.undo_to_user(req.until_user)
+                    removed = before - sum(
+                        1 for m in sess.agent.history.messages if m.get("role") == "user"
+                    )
+                    sess.drop_user_times(removed)
+                else:
+                    # Single-turn undo is redo-able: pop the most recent timestamp and
+                    # stash it so `redo_turn` can restore the user_times alignment.
+                    summary = sess.agent.undo_turn()
+                    sess.stash_undo_time()
+            except RuntimeError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            store.record_exchange(sess)
+        finally:
+            sess._lock.release()
         return {
             "ok": True,
             "undo_available": sess.agent.undo_available(),
@@ -974,19 +739,31 @@ def create_app(
         }
 
     @app.post("/api/sessions/{session_id}/redo")
-    def redo_session(session_id: str) -> dict:
+    async def redo_session(session_id: str) -> dict:
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
+        if sess._lock.locked():
+            raise HTTPException(409, "session busy")
+        await sess._lock.acquire()
         try:
-            summary = sess.agent.redo_turn()
-        except RuntimeError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        # Restore the timestamp(s) popped by the matching undo so user_times
-        # re-aligns with the re-applied user message(s) (MS-4).
-        while sess._undone_user_times:
-            sess.user_times.append(sess._undone_user_times.pop())
-        store.record_exchange(sess)
+            try:
+                summary = sess.agent.redo_turn()
+            except RuntimeError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            # A single ``redo_turn()`` re-applies exactly ONE user turn, so
+            # restore exactly ONE timestamp — the one matching that re-applied
+            # turn. ``_undone_user_times`` is a LIFO parallel of the agent's
+            # ``_redo_stack`` (each single-turn undo appends one timestamp; the
+            # most recent undo's entry sits at the end and is the first redo),
+            # so pop from the end. Draining the whole stash over-restored and
+            # shifted ``user_times``: 3 turns → 2 undos → 1 redo was
+            # producing ``[t2,t3]`` for the surviving ``['one','two']`` instead
+            # of ``[t1,t2]``, wrongly merging t3 in and losing t1.
+            sess.restore_redo_time()
+            store.record_exchange(sess)
+        finally:
+            sess._lock.release()
         return {
             "ok": True,
             "undo_available": sess.agent.undo_available(),
@@ -994,107 +771,7 @@ def create_app(
             **summary,
         }
 
-    @app.post("/api/chat")
-    def chat(req: ChatRequest, background: BackgroundTasks) -> StreamingResponse:
-        if not req.message.strip():
-            raise HTTPException(422, "empty message")
-        if req.root and not Path(req.root).expanduser().is_dir():
-            raise HTTPException(422, f"workspace root is not a directory: {req.root}")
-        from easycode.approval import permission_parse
-
-        perm_mode: str | None = None
-        if req.permission_mode:
-            try:
-                perm_mode = permission_parse(req.permission_mode)
-            except ValueError as exc:
-                raise HTTPException(422, str(exc)) from exc
-        kwargs: dict = {}
-        if req.secondary_roots:
-            kwargs["secondary_roots"] = req.secondary_roots
-        if req.root:
-            kwargs["root"] = str(Path(req.root).expanduser().resolve())
-        if perm_mode and not req.session_id:
-            kwargs["permission_mode"] = perm_mode
-        # P1-2: an existing session must answer its own project — a root/secondary
-        # the caller claims for it must match, else 409 (never silently ignore).
-        if req.session_id:
-            _assert_session_workspace_match(req.session_id, req.root, req.secondary_roots)
-        try:
-            sess = _get_session(req.session_id, **kwargs) if kwargs else _get_session(req.session_id)
-        except ValueError as exc:
-            # Session creation can fail while building the agent (e.g. the
-            # default model has no credential configured) or while validating
-            # secondary roots. Surface the reason instead of a bare 500.
-            raise HTTPException(422, str(exc)) from exc
-        if perm_mode and req.session_id:
-            sess.permission_mode = perm_mode
-            sess.agent.permission_mode = perm_mode
-            store.record_exchange(sess)
-        raw_message = req.message
-        if raw_message.strip().startswith("/"):
-            req.message = _expand_command(req.message, sess, cfg)
-        if sess.title == "新会话":
-            sess.title = raw_message.strip()[:30]
-            store.record_exchange(sess)
-        sess.user_times.append(datetime.now(timezone.utc).isoformat())
-
-        async def gen():
-            cancel_event = asyncio.Event()
-            sess.cancel_event = cancel_event
-            try:
-                yield "data: " + json.dumps(
-                    {"type": "session", "session_id": sess.id}, ensure_ascii=False
-                ) + "\n\n"
-                gen_it = stream_chat_with_approval(
-                    sess.agent, req.message, broker, cancel_event=cancel_event, session=sess
-                )
-                async for kind, payload in gen_it:
-                    if kind == "approval":
-                        approval_id, tc, reason, scope = payload
-                        data = json.dumps(
-                            {
-                                "type": "approval_required",
-                                "approval_id": approval_id,
-                                "reason": reason,
-                                "scope": scope,
-                                "tool_call": {
-                                    "id": tc.id,
-                                    "name": tc.name,
-                                    "arguments": tc.arguments,
-                                },
-                            },
-                            ensure_ascii=False,
-                        )
-                        yield f"data: {data}\n\n"
-                    elif kind == "text":
-                        data = json.dumps({"type": "text", "content": payload}, ensure_ascii=False)
-                        yield f"data: {data}\n\n"
-                    else:
-                        yield event_to_sse(payload)
-            except asyncio.CancelledError:
-                try:
-                    yield "data: " + json.dumps({"type": "cancelled"}, ensure_ascii=False) + "\n\n"
-                except BaseException:
-                    pass
-                raise
-            finally:
-                if sess.cancel_event is cancel_event:
-                    sess.cancel_event = None
-                # MS-7/SC-7: do not resurrect a session the user deleted while
-                # the stream was in flight; record_exchange is also gated, but
-                # check here so the StreamResponse settles cleanly either way.
-                if store.get(sess.id) is not None:
-                    store.record_exchange(sess)
-
-        return StreamingResponse(
-            gen(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+    register_chat(app, cfg, store, broker)
 
     dist = static_dir or FRONTEND_DIST
     if dist.is_dir():

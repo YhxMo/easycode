@@ -23,6 +23,7 @@ from easycode.policy import (
     PERM_ALLOW_ALL,
     PERM_ASK,
     PERM_AUTO_REVIEW,
+    SANDBOX_DANGER_FULL_ACCESS,
     permission_parse,
 )
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
@@ -224,11 +225,13 @@ def grant_for_toolcall(tc: ToolCall, ctx: PathContext) -> ToolGrant:
 
 # ---------------------------------------------------------------- destructive denylist
 
-# A clearly destructive shell command is denied outright regardless of the
-# permission mode. This is a policy gate (a conservative deny-list) layered on
-# top of the Seatbelt sandbox — the sandbox remains the actual file/network
-# boundary. Ordinary workspace commands (git status, pytest, ls, curl -I) are
-# unaffected and return ``None``.
+# A clearly destructive shell command is denied outright — under the sandboxed
+# presets (ask / auto-review) regardless of the permission mode. This is a
+# policy gate (a conservative deny-list) layered on top of the Seatbelt
+# sandbox — the sandbox remains the actual file/network boundary. Ordinary
+# workspace commands (git status, pytest, ls, curl -I) are unaffected and
+# return ``None``. Under ``danger-full-access`` (allow-all) the denylist is
+# off entirely — see :func:`definitive_deny_reason`.
 DESTRUCTIVE_GIT_RESET_RE = re.compile(r"\bgit\s+reset\s+--hard\b", re.IGNORECASE)
 DESTRUCTIVE_GIT_CLEAN_RE = re.compile(r"\bgit\s+clean\b", re.IGNORECASE)
 DESTRUCTIVE_GIT_PUSH_FORCE_RE = re.compile(
@@ -311,7 +314,14 @@ def definitive_deny_reason(tc: ToolCall, ctx: PathContext) -> str | None:
     builtins) is handled by the existing approval policy. Returning a reason
     means the call must be rejected without running — even when an approval
     handler is missing or a reviewer would have approved it.
+
+    Under ``danger-full-access`` (the ``allow-all`` preset) the denylist is
+    off, matching Codex's ``danger-full-access`` semantics: the sandbox and
+    approvals are already gone, so no in-process denylist remains. Selective
+    limits under allow-all are the job of ``permission_rules``.
     """
+    if ctx.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
+        return None
     if tc.name != "execute_shell":
         return None
     return destructive_command_reason(str(tc.arguments.get("command", "")))

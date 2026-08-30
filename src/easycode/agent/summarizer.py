@@ -117,7 +117,7 @@ class LLMSummarizer:
                 **self.kwargs,
             )
             content = resp.choices[0].message.content or ""
-        except Exception:  # noqa: BLE001 - MS-5: never fabricate a summary
+        except Exception:  # noqa: BLE001 - never fabricate a summary
             # Returning None lets the caller fall back (e.g. trim) without
             # replacing the original messages with a fake "(summary
             # unavailable...)"" note — that note would corrupt the transcript.

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from easycode.agent.context import SUMMARY_PREFIX, History
 from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.credentials import Credential, save_credential
@@ -284,6 +285,55 @@ def test_load_all_migrates_old_system_prompt(tmp_path):
     assert {"role": "system", "content": "[skill: docs] body"} in m  # kept
     assert s.messages == m  # synced
 
+
+def test_load_all_preserves_condensed_summary(tmp_path):
+    """A rolling-compaction summary (system + SUMMARY_PREFIX) at
+    messages[0] must survive a reload instead of being stripped as an old base
+    system prompt.
+
+    Before the fix, ``migrate_persisted_messages`` dropped any leading system
+    message unconditionally, so a summary written by ``condense_from`` was
+    treated as a stale base prompt and cut on every restart — silently losing
+    all condensed context (refresh/restart resume promise broken).
+    """
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str) -> Agent:
+        return Agent(
+            provider=FakeProvider(script=[{"text": "reply"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    sess = store.create()
+    for msg in ("one", "two", "three", "four"):
+        sess.agent.history.add_user(msg)
+        sess.agent.history.add_assistant(f"a-{msg}")
+    # The loop already condenses older turns into a summary system message here.
+    assert sess.agent.history.condense_from("SUMMARY", 2) is True
+    assert History.is_summary(sess.agent.history.messages[0])
+    assert sess.agent.history.summary == "SUMMARY"
+    store.record_exchange(sess)
+
+    # Reload from disk (browser refresh / service restart). NOTE: the summary is
+    # now messages[0] and must NOT be stripped as a base prompt.
+    store2 = SessionStore(cfg, tmp_path, factory)
+    store2.load_all()
+    restored = store2.get(sess.id)
+    assert restored is not None
+    m = restored.agent.history.messages
+    assert m[0]["role"] == "system"
+    assert History.is_summary(m[0])
+    assert SUMMARY_PREFIX in str(m[0]["content"])
+    assert restored.messages == m
+    # The rolling-merge field is rebuilt so the next compaction can merge.
+    assert restored.agent.history.summary == "SUMMARY"
+
+
 # ---------------------------------------------------------------- project management (对齐 codex)
 
 def _mk_repo(tmp_path: Path, name: str = "repo") -> Path:
@@ -418,7 +468,7 @@ def test_save_project_with_name(tmp_path):
     assert proj.get("name") == "新名字"
 
 
-# ---------------------------------------------------------------- item-11 (MS-4)
+# ----------------------------------------------------------------
 
 
 def _user_count(messages) -> int:
@@ -426,7 +476,7 @@ def _user_count(messages) -> int:
 
 
 def test_user_times_follow_compress_undo_redo(tmp_path):
-    """MS-4: user_times stays aligned with the surviving user messages across
+    """user_times stays aligned with the surviving user messages across
     3 turns, compaction (front drop), undo (back drop) and redo (back restore).
     Regression: the old ``user_times[:n_user]`` kept the WRONG end under
     compaction and lost the timestamp that a redo should restore."""
@@ -562,3 +612,106 @@ def test_config_project_secondary_binds_into_new_session(tmp_path):
     s = store.create(model_alias="fake-a")  # no root/secondary -> default project binding
     assert s.secondary_roots == [str(sec.resolve())]
     assert sorted(str(p) for p in s.agent.secondary_roots) == [str(sec.resolve())]
+
+
+# ------------------------------------------------- redo user_times alignment
+
+
+def _seed_three_turns(client, store):
+    """Chat one/two/three and return (sid, sess, times3)."""
+    sid = None
+    for msg in ("one", "two", "three"):
+        payload: dict = {"message": msg}
+        if sid:
+            payload["session_id"] = sid
+        r = client.post("/api/chat", json=payload)
+        assert r.status_code == 200
+        for line in r.text.splitlines():
+            if line.startswith("data:"):
+                ev = json.loads(line[6:])
+                if ev.get("type") == "session":
+                    sid = ev["session_id"]
+        assert sid
+    sess = store.get(sid)
+    assert sess is not None
+    times3 = list(sess.user_times)
+    assert len(times3) == 3  # one ISO timestamp per user message
+    return sid, sess, times3
+
+
+def test_redo_restores_one_timestamp_per_single_undo(tmp_path):
+    """Each redo_turn() re-applies EXACTLY one user turn, so after N
+    single-turn undos one redo must restore exactly ONE timestamp — the one
+    matching the re-applied turn — not drain the whole stash.
+
+    Repro that motivated the fix: 3 turns → 2 undos → 1 redo left user_times
+    shifted (``[t2,t3]``) instead of aligned with the surviving messages
+    ``['one','two']`` → ``[t1,t2]`` (t3 wrongly merged in, t1 lost).
+    """
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str) -> Agent:
+        return Agent(
+            provider=FakeProvider(script=[{"text": "reply"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    with client:
+        sid, sess, times3 = _seed_three_turns(client, store)
+
+        # two single-turn undos rewind history to ['one'], stash [t3, t2].
+        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
+        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
+        assert _user_count(sess.messages) == 1
+        assert list(sess.user_times) == [times3[0]]
+        assert sess._undone_user_times == [times3[2], times3[1]]
+
+        # one redo re-applies turn 'two': surviving users ['one','two'] but
+        # exactly ONE timestamp (t2) restored, t3 stays stashed (still redoable).
+        assert client.post(f"/api/sessions/{sid}/redo").json()["ok"]
+        assert _user_count(sess.messages) == 2
+        assert [m["content"] for m in sess.messages if m.get("role") == "user"] == ["one", "two"]
+        assert list(sess.user_times) == [times3[0], times3[1]]
+        assert sess._undone_user_times == [times3[2]]  # t3 still undone/redoable
+
+        # and the persisted JSON agrees (load-path uses the same session object).
+        fetched = client.get(f"/api/sessions/{sid}").json()
+        assert fetched["user_times"] == [times3[0], times3[1]]
+
+
+def test_redo_restores_full_after_single_undo(tmp_path):
+    """Control: with only ONE undo in the stack, a single redo must
+    restore the FULL [t1,t2,t3] (the stash had exactly one entry)."""
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str) -> Agent:
+        return Agent(
+            provider=FakeProvider(script=[{"text": "reply"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    with client:
+        sid, sess, times3 = _seed_three_turns(client, store)
+
+        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
+        assert _user_count(sess.messages) == 2
+        assert list(sess.user_times) == [times3[0], times3[1]]
+        assert sess._undone_user_times == [times3[2]]
+
+        assert client.post(f"/api/sessions/{sid}/redo").json()["ok"]
+        assert _user_count(sess.messages) == 3
+        assert list(sess.user_times) == [times3[0], times3[1], times3[2]]
+        assert sess._undone_user_times == []  # everything restored
+        assert client.get(f"/api/sessions/{sid}").json()["user_times"] == times3

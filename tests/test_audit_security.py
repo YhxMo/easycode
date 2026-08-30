@@ -1,11 +1,11 @@
-"""Batch A security regressions (SC-1 .. SC-4) from .audit/plan.md.
+"""Security regression tests.
 
-- item-01 (SC-1 + SC-2): credential paths are unconditionally protected and
+- Credential paths are unconditionally protected and
   reading / writing / enumerating them is rejected by every file tool.
-- item-02 (SC-3): an approved shell (``force_allowed=True``) relaxes only the
+- An approved shell (``force_allowed=True``) relaxes only the
   network dimension — file-write and process limits are retained; only
   ``danger-full-access`` disables the sandbox.
-- item-03 (SC-4): model detail redacts ``api_key``; cross-origin state-change
+- Model detail redacts ``api_key``; cross-origin state-change
   POSTs are rejected; the CLI ``web`` host stays loopback.
 
 Tests are isolated: temporary HOME, scripted FakeProvider, no real service.
@@ -30,7 +30,7 @@ from easycode.credentials import Credential, data_home, new_credential_id, save_
 from easycode.mcp import StdioTransport
 from easycode.sandbox import child_env
 from easycode.tools import build_registry
-from easycode.web.main import create_app
+from easycode.web.main import _origin_is_local, create_app
 from easycode.web.session import SessionStore
 from easycode.workspace import PathContext
 from tests.conftest import FakeProvider
@@ -41,7 +41,7 @@ def _isolate_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
 
 
-# ---------------------------------------------------------------- item-01 (SC-1+SC-2)
+# ----------------------------------------------------------------
 
 
 def make_home_ctx(tmp_path: Path) -> tuple[Path, Path]:
@@ -114,12 +114,12 @@ def test_in_allowed_false_for_credentials_even_when_missing(tmp_path, monkeypatc
     ctx = PathContext(primary=proj)
     cred = data_home() / "credentials.json"
     assert not cred.exists()
-    # SC-2: a not-yet-existing credential file is still off-limits for writes.
+    # a not-yet-existing credential file is still off-limits for writes.
     assert ctx.in_allowed(cred) is False
     assert ctx.is_protected(cred) is True
 
 
-# ---------------------------------------------------------------- item-02 (SC-3)
+# ----------------------------------------------------------------
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
@@ -260,6 +260,54 @@ def test_destructive_shell_commands_are_denied_before_execution(tmp_path):
         assert result["category"] == "destructive"
 
 
+def test_destructive_denylist_is_off_under_danger_full_access(tmp_path):
+    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+
+    registry = build_registry(8000)
+    ctx = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
+    # tmp_path is not a git repo, so git fails on its own; the point is that
+    # the command RUNS instead of being rejected by the destructive denylist.
+    result = json.loads(
+        registry.execute("execute_shell", {"command": "git reset --hard"}, tmp_path, ctx)
+    )
+    assert result["status"] == "ok"
+    assert result.get("rejected") is not True
+
+
+def test_writable_roots_declaration_is_not_gated_under_danger_full_access(tmp_path):
+    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+
+    registry = build_registry(8000)
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    ctx = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
+    # No grant exists under allow-all; the declaration must be ignored rather
+    # than failing the command with "not granted by approval".
+    result = json.loads(
+        registry.execute(
+            "execute_shell",
+            {"command": "echo ok", "writable_roots": [str(ext)]},
+            tmp_path,
+            ctx,
+        )
+    )
+    assert result["status"] == "ok"
+    assert "writable_roots" not in result.get("message", "")
+
+
+def test_definitive_deny_reason_respects_sandbox_mode(tmp_path):
+    from easycode.approval import definitive_deny_reason
+    from easycode.models.base import ToolCall
+    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+
+    tc = ToolCall(id="t1", name="execute_shell", arguments={"command": "rm -rf /"})
+    assert definitive_deny_reason(tc, PathContext(primary=tmp_path)) is not None
+    assert (
+        definitive_deny_reason(tc, PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS))
+        is None
+    )
+
+
 def test_secondary_root_keeps_workspace_access_but_protects_metadata(tmp_path):
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"
@@ -307,10 +355,10 @@ def test_sandbox_command_force_allowed_fails_closed_non_macos(monkeypatch, tmp_p
         macos.sandbox_command(["/bin/sh", "-c", "true"], PathContext(primary=tmp_path), force_allowed=True)
 
 
-# ---------------------------------------------------------------- item-03 (SC-4)
+# ----------------------------------------------------------------
 
 
-def make_app(tmp_path: Path):
+def make_app(tmp_path: Path, bind_host: str = "127.0.0.1", bind_port: int = 8000):
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
     cfg = Config.load(start=tmp_path)
@@ -325,7 +373,15 @@ def make_app(tmp_path: Path):
         )
 
     store = SessionStore(cfg, tmp_path, factory)
-    return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    return TestClient(
+        create_app(
+            cfg=cfg,
+            session_store=store,
+            static_dir=tmp_path / "no-dist",
+            bind_host=bind_host,
+            bind_port=bind_port,
+        )
+    )
 
 
 def test_model_detail_hides_api_key(tmp_path, monkeypatch):
@@ -376,3 +432,334 @@ def test_cli_web_host_default_loopback():
     web_cmd = get_command(cli_app).commands["web"]
     sig = inspect.signature(web_cmd.callback)
     assert sig.parameters["host"].default == "127.0.0.1"
+
+
+# ------------------------------------------------------ origin guard tightening
+# Origin gate: the control plane must only accept state-change requests from the
+# loopback bind's exact same origin (plus the known dev-frontend origins). The
+# three old escape hatches (no-Origin always allowed, Origin host == Host host,
+# any loopback host on any port) must all be closed.
+
+def test_origin_is_local_no_origin_loopback_only():
+    """No-Origin (CLI/curl/own tests) is allowed ONLY on a loopback bind."""
+    assert _origin_is_local(None, "127.0.0.1", 8000) is True
+    assert _origin_is_local(None, "localhost", 8000) is True
+    assert _origin_is_local(None, "::1", 8000) is True
+    # Non-loopback bind (e.g. `--host 0.0.0.0`) rejects a missing Origin.
+    assert _origin_is_local(None, "0.0.0.0", 8000) is False
+
+
+def test_origin_host_equals_host_header_equivalent_rejected(tmp_path):
+    """Origin hole #1: Origin host == Host hostname must NOT pass (DNS-rebinding)."""
+    assert _origin_is_local("http://evil.example.com:8000", "127.0.0.1", 8000) is False
+    client = make_app(tmp_path)
+    r = client.post(
+        "/api/chat",
+        json={"message": "hi"},
+        headers={"Host": "evil.example.com:8000", "Origin": "http://evil.example.com:8000"},
+    )
+    assert r.status_code == 403
+
+
+def test_origin_localhost_arbitrary_port_rejected(tmp_path):
+    """Origin hole #2: any loopback host on any port must no longer pass; the
+    bound PORT must match (5273 is not the bound port)."""
+    assert _origin_is_local("http://localhost:4173", "127.0.0.1", 8000) is False
+    client = make_app(tmp_path)
+    r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "http://localhost:4173"})
+    assert r.status_code == 403
+
+
+def test_origin_exact_same_origin_accepted(tmp_path):
+    """A same-origin request (http/https, same host+port as the listener) passes;
+    loopback hostname aliasing (localhost<->127.0.0.1) is kept so the built
+    frontend is usable whether the user visits ``localhost`` or ``127.0.0.1``."""
+    assert _origin_is_local("http://127.0.0.1:8000", "127.0.0.1", 8000) is True
+    assert _origin_is_local("https://127.0.0.1:8000", "127.0.0.1", 8000) is True
+    assert _origin_is_local("http://localhost:8000", "127.0.0.1", 8000) is True
+    # A different port on the same loopback host is still rejected.
+    assert _origin_is_local("http://127.0.0.1:9000", "127.0.0.1", 8000) is False
+    client = make_app(tmp_path)
+    r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "http://127.0.0.1:8000"})
+    assert r.status_code == 200
+
+
+def test_origin_known_dev_frontend_allowed():
+    """Dev Vite server origins remain a documented, loopback-only exception."""
+    assert _origin_is_local("http://localhost:5173", "127.0.0.1", 8000) is True
+    assert _origin_is_local("http://127.0.0.1:5173", "127.0.0.1", 8000) is True
+
+
+def test_nonloopback_bind_requires_token(tmp_path, monkeypatch):
+    """Non-loopback bind (--host 0.0.0.0) demands a bearer token; no-Origin and
+    bad tokens are fail-closed. Only a valid EASYCODE_WEB_TOKEN reaches the API."""
+    monkeypatch.setenv("EASYCODE_WEB_TOKEN", "sekrit")
+    client = make_app(tmp_path, bind_host="0.0.0.0")
+    # No Origin on a non-loopback bind is rejected outright.
+    assert client.post("/api/chat", json={"message": "hi"}).status_code == 403
+    ok_origin = {"Origin": "http://127.0.0.1:8000"}
+    # Valid Origin but no / wrong token -> 401.
+    assert client.post("/api/chat", json={"message": "hi"}, headers=ok_origin).status_code == 401
+    assert (
+        client.post(
+            "/api/chat", json={"message": "hi"}, headers={**ok_origin, "Authorization": "Bearer wrong"}
+        ).status_code
+        == 401
+    )
+    # Correct token passes through to the API.
+    assert (
+        client.post(
+            "/api/chat",
+            json={"message": "hi"},
+            headers={**ok_origin, "Authorization": "Bearer sekrit"},
+        ).status_code
+        == 200
+    )
+
+
+def test_nonloopback_bind_fails_closed_without_token_env(tmp_path, monkeypatch):
+    """If EASYCODE_WEB_TOKEN is unset, a non-loopback bind rejects every
+    state-change request (security-first fail-closed)."""
+    monkeypatch.delenv("EASYCODE_WEB_TOKEN", raising=False)
+    client = make_app(tmp_path, bind_host="0.0.0.0")
+    r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "http://127.0.0.1:8000"})
+    assert r.status_code in (401, 403)
+    assert r.status_code != 200
+
+
+# ------------------------------------------------------------- worktree safety
+# create_worktree: `.worktreeinclude` entries must resolve INSIDE the source and
+# worktree roots (absolute paths / `..` escapes are rejected with a warning), and
+# the repository-controlled `.easycode/setup.sh` must run through the SAME seatbelt
+# boundary as `execute_shell` — no unsandboxed escape hatch.
+
+import subprocess as _sp
+
+
+def _mk_repo_tmp(tmp_path: Path, name: str) -> Path:
+    """Minimal committed git repo for worktree endpoint tests (isolated)."""
+    repo = tmp_path / name
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _sp.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    return repo
+
+
+def test_worktreeinclude_rejects_escaping_parent_entry(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo_tmp(tmp_path, "proj-wt-escape")
+    # Hostile listing tries to copy a SIBLING file (outside the repo root).
+    secret = tmp_path / "secret"
+    secret.write_text("TOP SECRET", encoding="utf-8")
+    (repo / ".worktreeinclude").write_text("../secret\n", encoding="utf-8")
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    warnings = data.get("warnings", [])
+    assert any("secret" in w or "../secret" in w for w in warnings), warnings
+    wt = Path(data["root"])
+    # Not copied into the worktree, not smuggled into the worktree parent dir.
+    assert not (wt / "secret").exists()
+    assert not (data_home() / "worktrees" / "secret").exists()
+    # The host file is untouched (never read into the tree).
+    assert secret.read_text(encoding="utf-8") == "TOP SECRET"
+
+
+def test_worktreeinclude_rejects_absolute_path_entry(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo_tmp(tmp_path, "proj-wt-abs")
+    (repo / ".worktreeinclude").write_text("/etc/hosts\n", encoding="utf-8")
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    warnings = data.get("warnings", [])
+    assert any("/etc/hosts" in w for w in warnings), warnings
+    assert not (Path(data["root"]) / "hosts").exists()
+
+
+def test_worktreeinclude_copies_valid_entries(tmp_path):
+    client = make_app(tmp_path)
+    repo = _mk_repo_tmp(tmp_path, "proj-wt-ok")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "guide.md").write_text("guide", encoding="utf-8")
+    (repo / "notes.md").write_text("notes", encoding="utf-8")
+    (repo / ".worktreeinclude").write_text("docs/\nnotes.md\n# a comment\n", encoding="utf-8")
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    wt = Path(data["root"])
+    assert (wt / "docs" / "guide.md").read_text(encoding="utf-8") == "guide"
+    assert (wt / "notes.md").read_text(encoding="utf-8") == "notes"
+    assert not data.get("warnings"), data.get("warnings")
+
+
+def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatch):
+    import easycode.web.main as main_mod
+
+    client = make_app(tmp_path)
+    repo = _mk_repo_tmp(tmp_path, "proj-wt-setup")
+    (repo / ".easycode").mkdir()
+    (repo / ".easycode" / "setup.sh").write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    _sp.run(["git", "add", ".easycode/setup.sh"], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-qm", "add setup"], cwd=repo, check=True)
+
+    calls: list[list[str]] = []
+
+    def fake_sandbox(command: list[str], ctx, **kw):
+        calls.append(list(command))
+        # A portable no-op so the endpoint proceeds without a real seatbelt profile.
+        return ["sh", "-c", "exit 0"]
+
+    monkeypatch.setattr(main_mod, "sandbox_command", fake_sandbox)
+
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    wt = Path(data["root"])
+    setup_path = str(wt / ".easycode" / "setup.sh")
+    # The repo script was handed to the sandbox wrapper, not run bare.
+    assert any(cmd == ["bash", setup_path] for cmd in calls), calls
+    assert any("ran .easycode/setup.sh" in n for n in data.get("notes", [])), data.get("notes")
+
+
+def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, monkeypatch):
+    import easycode.web.main as main_mod
+
+    client = make_app(tmp_path)
+    repo = _mk_repo_tmp(tmp_path, "proj-wt-setup-nosand")
+    (repo / ".easycode").mkdir()
+    (repo / ".easycode" / "setup.sh").write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    _sp.run(["git", "add", ".easycode/setup.sh"], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-qm", "add setup"], cwd=repo, check=True)
+
+    def unsupported(command: list[str], ctx, **kw):
+        raise RuntimeError("workspace sandbox is currently supported only on macOS")
+
+    monkeypatch.setattr(main_mod, "sandbox_command", unsupported)
+
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    warnings = " ".join(data.get("warnings", []))
+    assert any(tok in warnings for tok in ("macOS", "Seatbelt", "sandbox")), warnings
+    # the script was NOT run (fail-closed, no unsandboxed fallback)
+    wt = Path(data["root"])
+    assert (wt / ".easycode" / "setup.sh").is_file()
+
+
+# -------------------------------------------------- finder prompt sanitization
+# ``choose_folders_via_finder`` splices a user-controlled ``prompt`` into an
+# ``osascript -e`` AppleScript literal. Only printable, trimmed, length-capped
+# text may reach the literal — never a raw newline or control character that
+# could break the ``choose folder`` statement, and quotes/backslashes stay
+# escaped so the value cannot escape the string literal.
+
+
+def test_finder_prompt_sanitizer_strips_controls_and_caps():
+    import easycode.web.main as main_mod
+
+    raw = "a\nb\tc\x00d" + "x" * 1000
+    out = main_mod._sanitize_finder_prompt(raw)
+    assert "\n" not in out
+    assert "\t" not in out
+    assert "\x00" not in out
+    # length-capped for the script literal
+    assert len(out) == main_mod.FINDER_PROMPT_MAX_LEN
+    # leading/trailing whitespace is trimmed
+    assert main_mod._sanitize_finder_prompt("   hi  ") == "hi"
+
+
+def test_finder_prompt_script_no_newline_and_quotes_escaped(tmp_path, monkeypatch):
+    import subprocess as sp
+
+    import easycode.web.main as main_mod
+
+    monkeypatch.setattr(main_mod, "finder_supported", lambda: True)
+    captured: dict[str, list[str]] = {}
+
+    class DummyProc:
+        returncode = 0
+        stdout = "/tmp/some/folder\n"
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        captured["argv"] = cmd
+        return DummyProc()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+
+    hostile = '选目录\n注入 do shell script "touch /tmp/pwned" 结束'
+    main_mod.choose_folders_via_finder(multiple=False, prompt=hostile)
+    argv = captured["argv"]
+    assert argv[0] == "osascript"
+    script = argv[2]  # the single ``-e`` argument
+    # No raw newline / control character reaches the interpreter argument.
+    assert "\n" not in script
+    assert "\r" not in script
+    # The intended plain text survives.
+    assert "选目录" in script
+    # The hostile text stays inert: its quotes are escaped into the literal.
+    assert "do shell script" in script
+    assert '\\"touch' in script, script
+    # The prompt renders as a single AppleScript string literal (one open+close).
+    assert script.startswith('POSIX path of (choose folder with prompt "')
+
+
+# ------------------------------------------------------- data_home write denial
+# The shell sandbox (workspace-write) lists ``data_home()`` in ``writable_roots``
+# so the app's Python can persist sessions/credentials, but that must NOT make
+# ``~/.easycode`` a shell write target — a model-originated shell could otherwise
+# silently create/delete ``~/.easycode/sessions/*`` bypassing SessionStore.
+
+
+def test_secret_policy_denies_data_home_writes(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.sandbox.macos import _secret_policy
+
+    dh = data_home()
+    policy = _secret_policy(include_write=True, protect_all_data_home=True)
+    lit = str(dh.resolve())
+    assert f'(deny file-read* (subpath "{lit}"))' in policy
+    # The read denial alone did not stop a shell truncating/creating files under
+    # ~/.easycode; a write denial must accompany it.
+    assert f'(deny file-write* (subpath "{lit}"))' in policy
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+def test_sandbox_command_profile_denies_data_home_write(tmp_path, monkeypatch):
+    from easycode.sandbox.macos import sandbox_command
+
+    proj = tmp_path / "proj"
+    proj.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    ctx = PathContext(primary=proj)
+    wrapped = sandbox_command(["/bin/sh", "-c", "true"], ctx)
+    policy = wrapped[2]
+    lit = str(data_home().resolve())
+    assert f'(deny file-read* (subpath "{lit}"))' in policy
+    assert f'(deny file-write* (subpath "{lit}"))' in policy
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+def test_shell_cannot_write_sessions_in_workspace_write(tmp_path, monkeypatch):
+    """A plain workspace-write shell cannot create/modify ~/.easycode/sessions."""
+    proj, home = make_home_ctx(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    ctx = PathContext(primary=proj)  # default sandbox_mode = workspace-write
+    sessions = data_home() / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    target = sessions / "evil.json"
+    target.write_text("ORIGINAL", encoding="utf-8")  # must be left untouched
+
+    result = json.loads(
+        build_registry(8000).execute(
+            "execute_shell", {"command": f"printf '{{}}' > {target}"}, proj, ctx
+        )
+    )
+    assert result["status"] == "ok"  # the shell ran at all
+    assert result["exit_code"] != 0  # the write was denied by Seatbelt
+    assert target.read_text(encoding="utf-8") == "ORIGINAL"

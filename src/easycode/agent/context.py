@@ -35,7 +35,7 @@ class History:
     def add(self, message: Message) -> None:
         self.messages.append(message)
         # Trim in whole turns so a single pop never lands mid-turn on an
-        # assistant ``tool_calls`` message or a ``tool`` result (MS-1): a
+        # assistant ``tool_calls`` message or a ``tool`` result: a
         # boundary can only break a tool_call/result pairing, which would
         # leave an orphan tool in the payload.
         while len(self.messages) > self.max_messages:
@@ -76,7 +76,7 @@ class History:
 
         Both paths count the system prompt (the payload includes it), so a
         large system consumes budget rather than being hidden behind the
-        message-only count (MS-8).
+        message-only count.
         """
         try:
             import litellm
@@ -124,7 +124,7 @@ class History:
         with every call — the tool schemas. Both the cheap pre-gate and the
         exact count now account for the system prompt and ``extra``, so a large
         system or a large tool set trips over-budget instead of being hidden by
-        an empty conversation (MS-8). Without this, only ``estimate_chars``
+        an empty conversation. Without this, only ``estimate_chars``
         (messages only) and the message-only cheap gate were consulted and a
         big system/schema never triggered compaction.
         """
@@ -154,7 +154,7 @@ class History:
         """Drop oldest messages beyond the limits (no summarization).
 
         Trims whole user turns so an assistant ``tool_calls`` message and its
-        ``tool`` results are never split across the trim boundary (MS-1).
+        ``tool`` results are never split across the trim boundary.
         """
         while len(self.messages) > self.max_messages:
             if not self._drop_oldest_turn():
@@ -182,7 +182,7 @@ class History:
         """Replace messages before ``tail_start`` with a summary; keep the tail.
 
         ``tail_start`` is first snapped to a non-tool boundary so the kept
-        tail never begins with an orphaned ``tool`` result (MS-2).
+        tail never begins with an orphaned ``tool`` result.
 
         Records ``summary`` so the next compaction can merge into it.
         """
@@ -209,7 +209,7 @@ class History:
         When ``idx`` points at a ``role=tool`` message, walk back to the
         assistant message that declared the call so the whole tool group is
         retained together — a suffix starting with a bare ``tool`` would be an
-        orphan (MS-2).
+        orphan.
         """
         i = idx
         while i >= 0 and self.messages[i].get("role") == "tool":
@@ -265,7 +265,7 @@ class History:
         Only cuts at a message that can begin a suffix without orphaning a
         ``tool`` result: a cut that lands on a ``role=tool`` message is
         skipped because its preceding assistant (which declared the call)
-        would be dropped, leaving an unpaired tool (MS-2).
+        would be dropped, leaving an unpaired tool.
         """
         if end - start <= 1:
             return None

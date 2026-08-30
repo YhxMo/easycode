@@ -262,11 +262,11 @@ def test_web_cancel_endpoint(repo: Path) -> None:
     asyncio.run(scenario())
 
 
-# ---------------------------------------------------------------- item-08 (MS-7 / SC-7)
+# ----------------------------------------------------------------
 
 
 def test_deleted_session_not_resurrected_by_stream(repo: Path) -> None:
-    """MS-7/SC-7: deleting a session while its chat stream is still in flight
+    """deleting a session while its chat stream is still in flight
     must not let the stream's ``finally`` re-write the session to disk. After
     the stream ends the .json is gone and ``load_all`` finds nothing."""
     import httpx
@@ -375,7 +375,7 @@ def test_first_chat_yields_session_event(repo: Path) -> None:
         assert '"type": "session"' in body and '"session_id"' in body
 
 
-# ---------------------------------------------------------------- item-09 (MS-6)
+# ----------------------------------------------------------------
 
 
 class SlowWriteProvider(Provider):
@@ -454,7 +454,7 @@ async def _consume(agent: Agent, msg: str) -> None:
 
 
 async def test_cancel_drains_slow_write_and_rolls_back(tmp_path: Path) -> None:
-    """MS-6: a slow write_file that is still in its worker thread when the turn
+    """a slow write_file that is still in its worker thread when the turn
     is cancelled must be drained before the snapshot pre-state is restored, so
     the late write is rolled back instead of re-dirtying the file."""
     agent = Agent(provider=SlowWriteProvider(), registry=_slow_write_registry(), root=tmp_path)
@@ -474,7 +474,7 @@ async def test_cancel_drains_slow_write_and_rolls_back(tmp_path: Path) -> None:
 
 
 async def test_cancel_shell_reports_residual_risk(tmp_path: Path) -> None:
-    """MS-6: a shell command that already ran cannot have its file effects
+    """a shell command that already ran cannot have its file effects
     rolled back; the cancellation must surface that residual risk instead of
     pretending the turn was cleanly undone."""
     agent = Agent(provider=ShellProvider(), registry=build_registry(8000), root=tmp_path)
@@ -495,3 +495,39 @@ async def test_cancel_shell_reports_residual_risk(tmp_path: Path) -> None:
     assert agent._last_cancel_note is not None
     assert "shell" in agent._last_cancel_note
     assert "回滚" in agent._last_cancel_note
+
+
+async def test_cancel_drain_timeout_reports_undrained_write_tool(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When a tracked write tool outlives the drain window, cancellation
+    must report the residual risk (its write may land after rollback) instead of
+    covering only shell tools. The old ``_residual_risk_note`` returned None for a
+    non-shell ``write_file`` that was still in-flight at drain timeout."""
+    import easycode.agent.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "TOOL_DRAIN_TIMEOUT", 0.05)
+
+    agent = Agent(provider=SlowWriteProvider(), registry=_slow_write_registry(), root=tmp_path)
+    agent.snapshot_manager = FileSnapshotManager("s", agent.path_context().roots)
+    assert not (tmp_path / "a.txt").exists()
+
+    task = asyncio.create_task(_consume(agent, "write slowly"))
+    await asyncio.sleep(0.1)  # write_file thread is now sleeping in the worker
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # (a) cancellation is confirmed normally: the turn's partial history is rolled back
+    assert agent.history.last_user_index() == -1
+    assert not agent.undo_available()
+    # (b) the residual note is non-empty and names the undrained write tool
+    assert agent._last_cancel_note is not None
+    assert "write_file" in agent._last_cancel_note
+    assert "未在取消窗口内完成" in agent._last_cancel_note
+    # (c) the race at hand: the late write lands *after* rollback
+    deadline = time.monotonic() + 2.0
+    while not (tmp_path / "a.txt").exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert (tmp_path / "a.txt").exists()
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "hello"

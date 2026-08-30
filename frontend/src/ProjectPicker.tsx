@@ -15,6 +15,7 @@ export function ProjectPicker({
   onRoot,
   onSecondary,
   onWorkspaces,
+  onError,
 }: {
   workspaces: WorkspacesInfo;
   root: string | null;
@@ -23,6 +24,7 @@ export function ProjectPicker({
   onRoot: (r: string | null) => void;
   onSecondary: (r: string[]) => void;
   onWorkspaces: (w: WorkspacesInfo) => void;
+  onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -53,6 +55,7 @@ export function ProjectPicker({
       const { paths, supported } = await chooseWorkspace(false, "选择主目录");
       if (!supported) {
         setError("当前平台不支持访达选择，请用已有项目或重启后重试");
+        onError?.("当前平台不支持访达选择，请用已有项目或重启后重试");
       } else if (paths[0]) {
         const chosen = paths[0];
         onRoot(chosen);
@@ -65,7 +68,9 @@ export function ProjectPicker({
         }
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      onError?.(msg);
     } finally {
       setBusy(false);
     }
@@ -151,6 +156,7 @@ export function ProjectPicker({
           disabled={disabled}
           onSecondary={onSecondary}
           onWorkspaces={onWorkspaces}
+          onError={onError}
         />
         {error && <div className="picker-error">{error}</div>}
       </div>

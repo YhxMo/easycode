@@ -51,14 +51,33 @@ def _seatbelt_literal(path: Path) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _secret_policy(include_write: bool) -> str:
-    """Deny reads of the application data dir (credentials live there).
+def _secret_policy(include_write: bool, *, protect_all_data_home: bool = True) -> str:
+    """Deny reads (and, when ``include_write``, writes) of the application data
+    dir, or — when a workspace root lives INSIDE the data dir (a git worktree
+    under ``~/.easycode/worktrees``) — just the credential files, so that
+    worktree can still be read by its own setup script while ``credentials.json``
+    stays off-limits.
+
+    In Seatbelt ``deny`` always wins over ``allow``, so a narrower ``allow``
+    cannot carve a worktree out of a blanket data-home denial; the caller narrows
+    the *denial* itself instead.
 
     ``(allow file-read*)`` in the base policy is the confirmed gap — a child
     could cat ``~/.easycode/credentials.json``. We close it by denying the whole
-    data dir for model-originated processes. Write is included when the caller
-    provides no separate write protection (the ``danger-full-access`` policy).
+    data dir for model-originated processes. ``include_write`` is set whenever
+    the sandbox hands out any file-write allowance (``danger-full-access`` and
+    the normal workspace-write path alike), so the data dir is never a shell
+    write target either.
     """
+    if not protect_all_data_home:
+        creds = data_home() / "credentials.json"
+        out: list[str] = []
+        for p in (creds, creds.with_suffix(".tmp")):
+            lit = _seatbelt_literal(p)
+            out.append(f"(deny file-read* (literal {lit}))")
+            if include_write:
+                out.append(f"(deny file-write* (literal {lit}))")
+        return "\n".join(out)
     lit = _seatbelt_literal(data_home())
     out = [f"(deny file-read* (subpath {lit}))"]
     if include_write:
@@ -117,11 +136,28 @@ def sandbox_command(
         for i in range(len(protected))
     ]
     network_policy = "(allow network*)" if (grant and grant.network_allowed) else ""
+    # A workspace root that lives inside the data dir (a git worktree created
+    # under ~/.easycode/worktrees) must stay readable by the sandboxed process,
+    # so the blanket data-home read denial is narrowed to just the credentials.
+    data_home_resolved = data_home().resolve()
+    any_root_in_data_home = any(
+        r.resolve().is_relative_to(data_home_resolved)
+        for r in [*ctx.roots, *ctx.extra_safe_dirs]
+    )
     policy = BASE_POLICY.format(
         write_policy="\n".join(write_rules),
         protected_policy="\n".join(protected_rules),
         network_policy=network_policy,
-        secret_policy=_secret_policy(include_write=False),
+        # The data dir is listed in ``writable_roots`` (so the app's own
+        # Python writing of sessions/credentials is unaffected), but the shell
+        # sandbox adds a write-deny for it — otherwise a model-originated shell
+        # could silently create/delete ``~/.easycode/sessions/*`` without
+        # approval, bypassing SessionStore's atomic replacement. When a worktree
+        # root lives INSIDE the data dir, the denial is narrowed to the
+        # credential files so the worktree stays writable by its own setup script.
+        secret_policy=_secret_policy(
+            include_write=True, protect_all_data_home=not any_root_in_data_home
+        ),
     )
     args = [str(SEATBELT_EXECUTABLE), "-p", policy]
     args.extend(f"-DWRITABLE_ROOT_{i}={path.resolve()}" for i, path in enumerate(writable))

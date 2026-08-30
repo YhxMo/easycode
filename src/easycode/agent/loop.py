@@ -8,8 +8,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from easycode.agent import builtin_tools
+from easycode.agent.builtin_tools import (
+    BUILTIN_TOOLS,
+    DEFAULT_MAX_PARALLEL,
+    PARALLEL_TASKS_SCHEMA,
+    TASK_SCHEMA,
+    USE_SKILL_SCHEMA,
+)
+from easycode.agent.compaction import (
+    COMPACTION_DEFAULTS,
+    PRUNE_MINIMUM,
+    PRUNE_PROTECT,
+    PRUNED_OUTPUT,
+    PROTECTED_TOOL_OUTPUTS,
+    BudgetExceededError,
+    Compactor,
+)
 from easycode.agent.context import History
-from easycode.agent.summarizer import LLMSummarizer, Summarizer
+from easycode.agent.rollback import TurnRollback
+from easycode.agent.summarizer import Summarizer
 from easycode.agent.system import build_system_prompt, find_agents_rules
 from easycode.approval import (
     PERM_ASK,
@@ -24,7 +42,6 @@ from easycode.policy import (
     APPROVAL_NEVER,
     REVIEWER_AUTO,
     ExecutionPolicy,
-    cap_permission,
     permission_rule_action,
 )
 from easycode.reviewer import ReviewDecision
@@ -32,105 +49,11 @@ from easycode.tools.registry import ToolRegistry
 from easycode.workspace import PathContext, ToolGrant
 
 MAX_TOOL_ITERATIONS = 12
-DEFAULT_MAX_PARALLEL = 4
 
 #: How long a cancellation/abort waits for in-flight ``to_thread`` tool futures
 #: to finish before rolling back, so a late file write lands before the snapshot
-#: pre-state is restored (late-write barrier, MS-6).
+#: pre-state is restored (late-write barrier).
 TOOL_DRAIN_TIMEOUT = 10.0
-
-#: Context-compaction defaults (aligned with opencode `compaction` config).
-COMPACTION_DEFAULTS: dict[str, Any] = {
-    "auto": True,
-    "buffer": 20_000,
-    "preserve_recent_tokens": None,
-    "tail_turns": None,
-    "prune": True,
-    "summary_max_chars": 8_000,
-}
-
-#: clear old tool outputs once >PRUNE_PROTECT tokens accumulate (min PRUNE_MINIMUM freed)
-PRUNE_MINIMUM = 20_000
-PRUNE_PROTECT = 40_000
-PRUNED_OUTPUT = "[Tool output cleared]"
-PROTECTED_TOOL_OUTPUTS = {"use_skill", "task"}
-
-PARALLEL_TASKS_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "parallel_tasks",
-        "description": (
-            "Run independent subtasks concurrently using sub-agents, then return "
-            "their results. Use for tasks that do not depend on each other (e.g. "
-            "read & analyze several files, draft several small functions). "
-            "Each task runs with its own fresh context sharing the same tools and workspace."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "tasks": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 6,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "short task label"},
-                            "prompt": {"type": "string", "description": "self-contained task instructions"},
-                        },
-                        "required": ["name", "prompt"],
-                    },
-                },
-                "max_parallel": {"type": "integer", "default": DEFAULT_MAX_PARALLEL, "minimum": 1, "maximum": 6},
-            },
-            "required": ["tasks"],
-        },
-    },
-}
-
-TASK_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "task",
-        "description": (
-            "Delegate one job to a named subagent (see 'Delegatable agents' in "
-            "the system prompt). The subagent runs with its own fresh context, "
-            "its own system prompt, and possibly its own model and tool set; "
-            "only its final answer comes back. Use when the job matches an "
-            "agent's description; prefer parallel_tasks for several independent "
-            "generic subtasks."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "agent": {"type": "string", "description": "name of the agent to delegate to"},
-                "prompt": {"type": "string", "description": "self-contained task instructions"},
-            },
-            "required": ["agent", "prompt"],
-        },
-    },
-}
-
-USE_SKILL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "use_skill",
-        "description": (
-            "Load a skill (see 'Available skills' in the system prompt) into the "
-            "conversation by name. The skill body is injected once and stays in "
-            "context for the rest of the session."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "skill name to load"},
-            },
-            "required": ["name"],
-        },
-    },
-}
-
-BUILTIN_TOOLS = {"parallel_tasks", "task", "use_skill"}
 
 
 @dataclass
@@ -175,15 +98,21 @@ class Agent:
     agents: "AgentRegistry | None" = None
     skills: "SkillRegistry | None" = None
     system_override: str | None = None
-    # MS-6: in-flight tool threads + whether a shell ran this turn, so a
+    # in-flight tool threads + whether a shell ran this turn, so a
     # cancellation can drain them (late-write barrier) and report the un-doable
     # shell side effects instead of pretending the turn was cleanly rolled back.
     _pending_tool_tasks: list[tuple[str, asyncio.Future]] = field(default_factory=list)
     _shell_tools_ran: bool = False
     _last_cancel_note: str | None = None
+    # Names of tracked tools that were still in-flight when the drain
+    # window timed out, so cancellation can report that their writes may land
+    # *after* the snapshot rollback (not just shell side effects).
+    _undrained_tools: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.compaction = {**COMPACTION_DEFAULTS, **(self.compaction or {})}
+        self._compactor = Compactor(self)
+        self._rollback = TurnRollback(self)
         self.history.max_tokens = self._usable_tokens()
         self.history.set_system(self._build_system())
 
@@ -256,7 +185,7 @@ class Agent:
 
         The budget accounts for these so a large tool set (many MCP tools, a
         bloated schema) trips compaction instead of silently exceeding the
-        provider window (MS-8).
+        provider window.
         """
         schemas = self.tool_schemas()
         if not schemas:
@@ -267,97 +196,26 @@ class Agent:
         return self.history.payload()
 
     def _usable_tokens(self) -> int:
-        """Usable context budget = model window − reserved output buffer.
-
-        When the model's limits are unknown (fallback), the whole
-        ``max_context_tokens`` is usable — there is no output figure to reserve.
-        """
-        limits = self.model_limits
-        if not limits:
-            return self.max_context_tokens
-        context = limits["context"]
-        output = limits["output"] or 0
-        buffer = int(self.compaction.get("buffer") or 0)
-        reserved = min(buffer, output) if output else buffer
-        return max(0, context - reserved)
+        """Usable context budget = model window − reserved output buffer (see Compactor)."""
+        return self._compactor._usable_tokens()
 
     def _preserve_recent_tokens(self) -> int:
-        explicit = self.compaction.get("preserve_recent_tokens")
-        if explicit is not None:
-            return int(explicit)
-        return max(2_000, min(15_000, int(self._usable_tokens() * 0.25)))
+        return self._compactor._preserve_recent_tokens()
 
     async def _summarize(self, messages: list[dict]) -> str | None:
-        if self.summarizer is None:
-            return None
-        if isinstance(self.summarizer, LLMSummarizer):
-            return await self.summarizer.summarize(messages, previous_summary=self.history.summary)
-        return await self.summarizer(messages)
+        return await self._compactor._summarize(messages)
 
     def _prune_tool_outputs(self) -> None:
-        """Clear the outputs of old completed tool calls to free context (opencode prune).
-
-        Protects the most recent two user turns, existing summaries, and the
-        ``use_skill``/``task`` tools; only clears once there are at least
-        ``PRUNE_PROTECT`` tokens of older tool output and the freed amount
-        exceeds ``PRUNE_MINIMUM``.
-        """
-        if not self.compaction.get("prune", True):
-            return
-        turns = 0
-        total = 0
-        pruned = 0
-        to_clear: list[dict] = []
-        for m in reversed(self.history.messages):
-            role = m.get("role")
-            if role == "user":
-                turns += 1
-            if turns < 2:
-                continue
-            if self.history.is_summary(m):
-                break
-            if role != "tool":
-                continue
-            if m.get("name") in PROTECTED_TOOL_OUTPUTS:
-                continue
-            content = str(m.get("content") or "")
-            if not content or content == PRUNED_OUTPUT:
-                continue
-            size = self.history.estimate_messages_tokens([m])
-            total += size
-            if total <= PRUNE_PROTECT:
-                continue
-            pruned += size
-            to_clear.append(m)
-        if pruned > PRUNE_MINIMUM:
-            for m in to_clear:
-                m["content"] = PRUNED_OUTPUT
+        """Clear the outputs of old completed tool calls to free context (opencode prune)."""
+        self._compactor._prune_tool_outputs()
 
     async def _condense_if_over_budget(self) -> None:
-        """Compact history when over budget (MS-3: honors ``compaction.auto``).
+        """Compact history when over budget (honors ``compaction.auto``)."""
+        await self._compactor._condense_if_over_budget()
 
-        When ``auto`` is False the user opted out of automatic compaction, so
-        nothing is summarized or trimmed here even when the budget is exceeded.
-        ``extra`` is the token cost of the tool schemas sent on every call, so a
-        large tool set also counts toward the budget (MS-8).
-        """
-        if not self.compaction.get("auto", True):
-            return
-        extra = self._tool_schema_tokens()
-        if not self.history.over_budget(extra):
-            return
-        self._prune_tool_outputs()
-        if not self.history.over_budget(extra):
-            return
-        tail_start = self.history.select_tail_start(
-            self._preserve_recent_tokens(), self.compaction.get("tail_turns")
-        )
-        if tail_start is None or self.summarizer is None:
-            self.history.trim()
-            return
-        summary = await self._summarize(self.history.messages[:tail_start])
-        if summary is None or not self.history.condense_from(summary, tail_start):
-            self.history.trim()
+    def _raise_if_over_budget(self) -> None:
+        """Final budget gate (invariant #5): fail before the provider call."""
+        self._compactor._raise_if_over_budget()
 
     async def respond(
         self, user_input: str, max_iterations: int = MAX_TOOL_ITERATIONS
@@ -372,17 +230,18 @@ class Agent:
         self._review_items = []
         self._review_decisions = []
         self._consecutive_review_denials = 0
-        # MS-6: per-turn tool tracking must start clean (a prior abort may have
+        # per-turn tool tracking must start clean (a prior abort may have
         # left drained futures in the executor, but nothing pending here).
         self._pending_tool_tasks = []
         self._shell_tools_ran = False
         self._last_cancel_note = None
+        self._undrained_tools = set()
         try:
             async for ev in self._turn(user_input, max_iterations):
                 yield ev
         except (asyncio.CancelledError, KeyboardInterrupt):
             # roll back this turn's partial messages so history stays valid, and
-            # restore file pre-state (MS-6) after draining any in-flight tool thread.
+            # restore file pre-state after draining any in-flight tool thread.
             restored = await self._abort_turn(start_len)
             note = self._residual_risk_note()
             self._last_cancel_note = note
@@ -393,7 +252,7 @@ class Agent:
             except BaseException:
                 pass
             raise
-        except Exception as exc:  # noqa: BLE001 - MS-9: any non-cancel failure must not leave half state
+        except Exception as exc:  # noqa: BLE001 - any non-cancel failure must not leave half state
             # A provider (or any loop step) that raises mid-turn after yielding
             # tool_calls would otherwise leave [user] in history and a dangling
             # snapshot record. Roll back the same way cancellation does, surface
@@ -417,7 +276,7 @@ class Agent:
         Waits (bounded) for any ``to_thread`` tool futures so a late write lands
         before the snapshot pre-state is restored, then restores the pre-state
         (``rollback_turn``) and drops the turn's partial history. Returns the
-        restored paths (best-effort). MS-6.
+        restored paths (best-effort).
         """
         await self._drain_pending_tools()
         restored: list[str] = []
@@ -440,7 +299,12 @@ class Agent:
         """
         if not self._pending_tool_tasks:
             return
-        pending = [f for _, f in self._pending_tool_tasks]
+        # Snapshot before waiting: the time-out cancellation below cancels the
+        # child futures, and each cancelled future's done callback empties
+        # ``_pending_tool_tasks``. So "unfinished" must be decided from a copy
+        # taken before we start waiting.
+        snapshot = list(self._pending_tool_tasks)
+        pending = [f for _, f in snapshot]
         try:
             await asyncio.wait_for(
                 asyncio.gather(*pending, return_exceptions=True),
@@ -449,24 +313,45 @@ class Agent:
         except (asyncio.TimeoutError, asyncio.CancelledError):
             # A tool that outlives the drain is dropped, not rolled back; the
             # caller still restores the snapshot and reports the residual risk.
-            pass
+            # Record tracked tools that are still in-flight (their future
+            # was cancelled by the timeout, or is not done) so the residual note
+            # covers non-shell tools whose write may land after the snapshot
+            # restore (not just shell side effects).
+            self._undrained_tools.update(
+                name for name, f in snapshot if f.cancelled() or not f.done()
+            )
         self._pending_tool_tasks.clear()
 
     def _residual_risk_note(self) -> str | None:
-        """Explain that an executed shell command's file effects were NOT undone."""
-        if not self._shell_tools_ran:
-            return None
-        return (
-            "cancelled: 本回合已执行 shell 命令，其文件副作用无法自动回滚；"
-            "请手工核对受影响文件 (shell side-effects cannot be rolled back; "
-            "files written by the shell are left as-is)."
-        )
+        """Explain cancellation residue that was NOT peacefully rolled back.
+
+        Two sources: (1) an executed shell command whose file effects cannot be
+        undone, and (2) tracked tools that were still in-flight when the
+        drain window timed out, so their writes may land *after* the snapshot
+        restore. Either one means the turn was not cleanly undone.
+        """
+        parts: list[str] = []
+        if self._shell_tools_ran:
+            parts.append(
+                "cancelled: 本回合已执行 shell 命令，其文件副作用无法自动回滚；"
+                "请手工核对受影响文件 (shell side-effects cannot be rolled back; "
+                "files written by the shell are left as-is)."
+            )
+        if self._undrained_tools:
+            names = ", ".join(sorted(self._undrained_tools))
+            parts.append(
+                f"cancelled: 工具 {names} 未在取消窗口内完成，"
+                f"其写入可能稍后落地 (tool {names} did not finish within the cancel "
+                "window; any file write it made may still land after the rollback)."
+            )
+        return "\n".join(parts) if parts else None
 
     async def _turn(self, user_input: str, max_iterations: int) -> AsyncIterator[AgentEvent]:
         iteration = 0
         while iteration < max_iterations:
             iteration += 1
             await self._condense_if_over_budget()
+            self._raise_if_over_budget()
             schemas = self.tool_schemas()
             final_text: list[str] = []
             tool_calls: list[ToolCall] | None = None
@@ -673,7 +558,7 @@ class Agent:
         return json.dumps(compact, ensure_ascii=False)
 
     async def _dispatch_tool(self, tc: ToolCall, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
-        # MS-6: record that a shell ran this turn so cancellation can report the
+        # record that a shell ran this turn so cancellation can report the
         # residual risk (its file side effects cannot be reliably rolled back).
         if tc.name == "execute_shell":
             self._shell_tools_ran = True
@@ -684,141 +569,20 @@ class Agent:
         return await self._run_tool(tc, force_allowed=force_allowed, grant=grant)
 
     async def _run_builtin(self, tc: ToolCall) -> str:
-        if tc.name == "parallel_tasks":
-            try:
-                sub_tasks = tc.arguments.get("tasks", [])
-                max_parallel = int(tc.arguments.get("max_parallel", DEFAULT_MAX_PARALLEL))
-                return await self._run_parallel(sub_tasks, max_parallel)
-            except Exception as exc:  # noqa: BLE001
-                return json.dumps({"status": "error", "message": f"{type(exc).__name__}: {exc}"})
-        if tc.name == "task":
-            return await self._run_task(tc)
-        if tc.name == "use_skill":
-            return await self._run_use_skill(tc)
-        return json.dumps({"status": "error", "message": f"unknown builtin tool: {tc.name}"})
+        return await builtin_tools.run_builtin(self, tc)
 
     async def _run_task(self, tc: ToolCall) -> str:
-        name = str(tc.arguments.get("agent", "")).strip().lower()
-        prompt = str(tc.arguments.get("prompt", "")).strip()
-        if not self.agents or not name:
-            return json.dumps({"status": "error", "message": "unknown agent or no agents configured"})
-        spec = self.agents.get(name)
-        if spec is None:
-            return json.dumps(
-                {
-                    "status": "error",
-                    "message": f"unknown agent: {name}",
-                    "known_agents": self.agents.names(),
-                },
-                ensure_ascii=False,
-            )
-        if not prompt:
-            return json.dumps({"status": "error", "message": "task prompt is empty"})
-        try:
-            sub = self._make_subagent(spec)
-            text = await sub.run_task(prompt)
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"status": "error", "message": f"{type(exc).__name__}: {exc}"})
-        return json.dumps(
-            {"status": "ok", "agent": spec.name, "model": spec.model, "result": text},
-            ensure_ascii=False,
-        )
+        return await builtin_tools.run_task(self, tc)
 
     async def _run_use_skill(self, tc: ToolCall) -> str:
-        name = str(tc.arguments.get("name", "")).strip().lower()
-        if not self.skills:
-            return json.dumps({"status": "error", "message": "no skills configured"})
-        skill = self.skills.get(name)
-        if skill is None:
-            return json.dumps(
-                {
-                    "status": "error",
-                    "message": f"unknown skill: {name}",
-                    "known_skills": self.skills.names(),
-                },
-                ensure_ascii=False,
-            )
-        # inject the body into the conversation once (stays for the session)
-        self.history.add({"role": "system", "content": f"[skill: {skill.name}]\n{skill.body}"})
-        return json.dumps(
-            {"status": "ok", "skill": skill.name, "loaded": True},
-            ensure_ascii=False,
-        )
+        return await builtin_tools.run_use_skill(self, tc)
 
     async def _run_parallel(self, tasks: list[dict], max_parallel: int) -> str:
-        sem = asyncio.Semaphore(min(max_parallel, 6) or 1)
-
-        async def run_one(task: dict) -> dict:
-            async with sem:
-                name = task.get("name", "task")
-                prompt = task.get("prompt", "")
-                try:
-                    sub = self._make_subagent()
-                    text = await sub.run_task(prompt)
-                    return {"name": name, "result": text}
-                except Exception as exc:  # noqa: BLE001
-                    return {"name": name, "error": f"{type(exc).__name__}: {exc}"}
-
-        results = await asyncio.gather(*(run_one(t) for t in tasks))
-        return json.dumps({"status": "ok", "count": len(results), "results": results}, ensure_ascii=False)
+        return await builtin_tools.run_parallel(self, tasks, max_parallel)
 
     def _make_subagent(self, spec: "AgentSpec | None" = None) -> "Agent":
         """Build a subagent; ``spec`` (task tool) overrides model/system/tools/permission."""
-        model = None
-        if spec is not None and spec.model:
-            model = spec.model
-        if self.subagent_factory:
-            sub = self.subagent_factory(model or self.provider.model)
-        else:
-            from easycode.models.litellm_provider import LiteLLMProvider
-
-            if model and hasattr(self.provider, "kwargs"):
-                provider = LiteLLMProvider(model, **self.provider.kwargs)
-            else:
-                provider = LiteLLMProvider(model or self.provider.model)
-            sub = Agent(
-                provider=provider,
-                registry=self.registry,
-                root=self.root,
-                enabled_tools=self.enabled_tools,
-                secondary_roots=list(self.secondary_roots),
-                extra_safe_dirs=list(self.extra_safe_dirs),
-                permission_mode=self.permission_mode,
-                permission_rules=dict(self.permission_rules),
-                mcp_servers=self.mcp_servers,
-                mcp_manager=self.mcp_manager,
-                max_context_tokens=self.max_context_tokens,
-                compaction=dict(self.compaction),
-                model_limits=self.model_limits,
-                agents=self.agents,
-                skills=self.skills,
-                approval_handler=self.approval_handler,
-                review_handler=self.review_handler,
-            )
-        sub.root = self.root
-        sub.secondary_roots = list(self.secondary_roots)
-        sub.extra_safe_dirs = list(self.extra_safe_dirs)
-        sub.mcp_servers = self.mcp_servers
-        sub.mcp_manager = self.mcp_manager
-        sub.permission_mode = self.permission_mode
-        sub.permission_rules = dict(self.permission_rules)
-        sub.approval_handler = self.approval_handler
-        sub.review_handler = self.review_handler
-        if spec is None:
-            sub.history.set_system(sub._build_system())
-            return sub
-        if spec.tools is not None:
-            sub.enabled_tools = set(spec.tools)
-        if spec.permission:
-            sub.permission_mode = cap_permission(self.permission_mode, spec.permission)
-        else:
-            sub.permission_mode = self.permission_mode
-        if spec.system:
-            sub.system_override = spec.system
-        if spec.temperature is not None and hasattr(sub.provider, "kwargs"):
-            sub.provider.kwargs.setdefault("temperature", spec.temperature)
-        sub.history.set_system(sub._build_system())
-        return sub
+        return builtin_tools.make_subagent(self, spec)
 
     async def run_task(self, prompt: str, max_iterations: int = MAX_TOOL_ITERATIONS) -> str:
         """Run a standalone subtask with a fresh history; return the final text.
@@ -839,32 +603,21 @@ class Agent:
     # --- undo / redo (session rollback) -------------------------------------
 
     def undo_available(self) -> bool:
-        return self.history.last_user_index() >= 0
+        return self._rollback.undo_available()
 
     def redo_available(self) -> bool:
-        return bool(self._redo_stack)
+        return self._rollback.redo_available()
 
     def undo_turn(self) -> dict:
         """Undo the last user turn: drop its messages and restore files.
 
         Returns a summary dict; raises RuntimeError when there is nothing to undo.
         """
-        if not self.undo_available():
-            raise RuntimeError("nothing to undo")
-        removed = self.history.pop_user_turn()
-        self._redo_stack.append(removed)
-        if self.snapshot_manager and self.snapshot_manager.can_undo():
-            return self.snapshot_manager.undo_turn()
-        return {"restored": [], "message_only": True}
+        return self._rollback.undo_turn()
 
     def redo_turn(self) -> dict:
         """Redo the last undone turn: re-append its messages and reapply files."""
-        if not self._redo_stack:
-            raise RuntimeError("nothing to redo")
-        self.history.messages.extend(self._redo_stack.pop())
-        if self.snapshot_manager and self.snapshot_manager.can_redo():
-            return self.snapshot_manager.redo_turn()
-        return {"restored": [], "message_only": True}
+        return self._rollback.redo_turn()
 
     def undo_to_user(self, nth: int) -> dict:
         """Undo everything back to just before the ``nth`` user message (1-based).
@@ -874,20 +627,7 @@ class Agent:
         cannot be re-applied in one step). Raises RuntimeError when ``nth``
         is out of range.
         """
-        count = sum(1 for m in self.history.messages if m.get("role") == "user")
-        if nth < 1 or nth > count:
-            raise RuntimeError(f"invalid user message index: {nth} (有 {count} 条用户消息)")
-        summary: dict = {"restored": []}
-        while count >= nth and self.undo_available():
-            removed = self.history.pop_user_turn()
-            self._redo_stack.clear()
-            if self.snapshot_manager and self.snapshot_manager.can_undo():
-                part = self.snapshot_manager.undo_turn()
-                summary["restored"].extend(part.get("restored", []))
-            count -= 1
-        if not summary["restored"]:
-            summary["message_only"] = True
-        return summary
+        return self._rollback.undo_to_user(nth)
 
     async def _run_tool(self, tc: ToolCall, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
         loop = asyncio.get_running_loop()
@@ -901,7 +641,7 @@ class Agent:
             force_allowed,
             grant,
         )
-        # MS-6: track the in-flight thread so a cancellation can drain it before
+        # track the in-flight thread so a cancellation can drain it before
         # rolling back the snapshot (late-write barrier). The done callback
         # removes it once the thread actually finishes.
         entry = (tc.name, fut)
@@ -909,6 +649,15 @@ class Agent:
         fut.add_done_callback(lambda _f: self._discard_pending(entry))
         try:
             return await fut
+        except asyncio.CancelledError:
+            # We abandon the in-flight thread without waiting; it keeps
+            # running and any file write it makes can land *after* the snapshot
+            # rollback. Cancelling the await also cancels ``fut`` (whose done
+            # callback removes the entry from ``_pending_tool_tasks``), so the
+            # drain can no longer see it — record it here so the residual note
+            # warns about the late write instead of staying silent.
+            self._undrained_tools.add(tc.name)
+            raise
         except Exception as exc:  # noqa: BLE001 - report tool failures to the model
             return json.dumps({"status": "error", "message": f"{type(exc).__name__}: {exc}"})
 

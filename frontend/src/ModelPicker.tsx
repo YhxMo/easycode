@@ -78,10 +78,12 @@ export function ModelPicker({
   models,
   current,
   onChange,
+  onError,
 }: {
   models: ModelsInfo;
   current: string;
   onChange: (m: ModelsInfo) => void;
+  onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
@@ -156,7 +158,11 @@ export function ModelPicker({
       onChange(await switchModel(alias));
     } catch (error) {
       const message = error instanceof Error ? error.message : "请求失败";
+      // Surface the switch failure globally (App toast) in addition to
+      // the local in-picker flash. `current` is left untouched, so the old
+      // model stays highlighted (onChange is only called on success).
       flash("error", `切换失败：${message}`);
+      onError?.(`切换失败：${message}`);
       fetchModels().then(onChange).catch(() => {});
     } finally {
       setBusy(false);

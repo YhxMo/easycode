@@ -21,7 +21,7 @@ export function ApprovalSheet({
 }: ApprovalSheetProps) {
   // Closed sheet stays mounted so the slide-up/down animation is preserved,
   // but it is removed from the accessibility tree and keyboard tab order so a
-  // hidden allow/deny control can never be activated by accident (UI-5).
+  // hidden allow/deny control can never be activated by accident.
   const interactiveTab = open ? undefined : -1;
   return (
     <div

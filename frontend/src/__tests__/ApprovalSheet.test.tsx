@@ -15,12 +15,12 @@ describe("ApprovalSheet", () => {
       />,
     );
     // Closed sheet is inert + aria-hidden, so RTL excludes it from the
-    // accessibility tree by default — query it with `hidden: true` (UI-5).
+    // accessibility tree by default — query it with `hidden: true`.
     const sheet = screen.getByRole("alertdialog", { hidden: true });
     // closed => inert + hidden from AT
     expect(sheet.getAttribute("inert")).not.toBeNull();
     expect(sheet.getAttribute("aria-hidden")).toBe("true");
-    // no button is keyboard reachable while hidden (UI-5)
+    // no button is keyboard reachable while hidden
     for (const name of ["收起", "拒绝", "始终允许", "允许一次"]) {
       const btn = screen.getByRole("button", { name, hidden: true });
       expect(btn.tabIndex).toBe(-1);

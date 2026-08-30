@@ -113,6 +113,49 @@ async def test_permission_rule_deny_skips_approval_handler(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_permission_rule_deny_still_applies_under_allow_all(tmp_path):
+    script = [
+        {"tool_calls": [("c1", "execute_shell", {"command": "git status --short"})]},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        tmp_path,
+        permission_mode="allow-all",
+        permission_rules={"execute_shell": {"git status*": "deny"}},
+    )
+    events = [event async for event in agent.respond("check status")]
+    result = next(event.tool_result for event in events if event.kind == "tool_result")
+    payload = json.loads(result)
+
+    assert payload["rejected"] is True
+    assert payload["category"] == "policy"
+
+
+@pytest.mark.asyncio
+async def test_destructive_command_is_not_policy_rejected_under_allow_all(tmp_path):
+    script = [
+        {"tool_calls": [("c1", "execute_shell", {"command": "git reset --hard"})]},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        tmp_path,
+        permission_mode="allow-all",
+    )
+    events = [event async for event in agent.respond("reset")]
+    result = next(event.tool_result for event in events if event.kind == "tool_result")
+    payload = json.loads(result)
+
+    # tmp_path is not a git repo (git exits non-zero on its own), but the
+    # command must RUN: no destructive policy gate under allow-all.
+    assert payload.get("rejected") is not True
+    assert payload["status"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_permission_rule_allow_grants_exact_external_file_write(tmp_path):
     outside = tmp_path / "secondary" / "approved.txt"
     outside.parent.mkdir()

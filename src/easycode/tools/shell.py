@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from easycode.approval import destructive_command_reason
+from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
 from easycode.sandbox import child_env, sandbox_command
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
@@ -48,44 +49,50 @@ def execute_shell(
     grant: ToolGrant | None = None,
 ) -> str:
     scope = ctx or PathContext(primary=root)
-    # SC: a clearly destructive command (rm -rf /, git reset --hard, git clean,
-    # git push --force) is denied outright, before any validation or sandbox, and
-    # cannot be re-enabled by a grant or an approval — even under allow-all.
-    deny = destructive_command_reason(args.command)
-    if deny:
-        return json_out(
-            "error",
-            {
-                "message": f"tool call rejected: execute_shell: {deny}",
-                "rejected": True,
-                "category": "destructive",
-                "reason": deny,
-                "in_allowed": False,
-            },
-        )
-    # Validate the model's explicit writable_roots declaration (P0-1): invalid
-    # entries (relative / missing / plain file / .git / .easycode / data home)
-    # fail closed with a structured error instead of silently dropping them.
-    declared, err = validate_writable_roots(args.writable_roots, None)
-    if err:
-        return json_out(
-            "error",
-            {"message": f"invalid writable_roots: {err}", "in_allowed": False},
-        )
-    # Never trust the model's own declaration: it is only honored when an
-    # approval grant covers it. Any declared root the grant does NOT cover is
-    # rejected, so a shell can never write outside the workspace unprompted.
-    if declared:
-        granted = {str(p.resolve()).rstrip("/") for p in (grant.writable_roots if grant else ())}
-        missing = [str(p) for p in declared if str(p).rstrip("/") not in granted]
-        if missing:
+    # Under the sandboxed presets (ask / auto-review) a clearly destructive
+    # command (rm -rf /, git reset --hard, git clean, git push --force) is
+    # denied outright, before any validation or sandbox, and cannot be
+    # re-enabled by a grant or an approval. Under danger-full-access
+    # (allow-all) the denylist and the writable_roots gate are both off —
+    # the sandbox and approvals are already gone there (Codex-aligned);
+    # permission_rules remain the way to selectively forbid commands.
+    full_access = scope.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS
+    if not full_access:
+        deny = destructive_command_reason(args.command)
+        if deny:
             return json_out(
                 "error",
                 {
-                    "message": f"writable_roots not granted by approval: {', '.join(missing)}",
+                    "message": f"tool call rejected: execute_shell: {deny}",
+                    "rejected": True,
+                    "category": "destructive",
+                    "reason": deny,
                     "in_allowed": False,
                 },
             )
+        # Validate the model's explicit writable_roots declaration (P0-1): invalid
+        # entries (relative / missing / plain file / .git / .easycode / data home)
+        # fail closed with a structured error instead of silently dropping them.
+        declared, err = validate_writable_roots(args.writable_roots, None)
+        if err:
+            return json_out(
+                "error",
+                {"message": f"invalid writable_roots: {err}", "in_allowed": False},
+            )
+        # Never trust the model's own declaration: it is only honored when an
+        # approval grant covers it. Any declared root the grant does NOT cover is
+        # rejected, so a shell can never write outside the workspace unprompted.
+        if declared:
+            granted = {str(p.resolve()).rstrip("/") for p in (grant.writable_roots if grant else ())}
+            missing = [str(p) for p in declared if str(p).rstrip("/") not in granted]
+            if missing:
+                return json_out(
+                    "error",
+                    {
+                        "message": f"writable_roots not granted by approval: {', '.join(missing)}",
+                        "in_allowed": False,
+                    },
+                )
     try:
         command = sandbox_command(
             ["/bin/sh", "-c", args.command],

@@ -12,6 +12,7 @@ export function SecondaryEditor({
   disabled,
   onSecondary,
   onWorkspaces,
+  onError,
 }: {
   root: string | null;
   secondary: string[];
@@ -19,6 +20,7 @@ export function SecondaryEditor({
   disabled: boolean;
   onSecondary: (r: string[]) => void;
   onWorkspaces?: (w: WorkspacesInfo) => void;
+  onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -37,7 +39,9 @@ export function SecondaryEditor({
       onWorkspaces?.({ projects } as WorkspacesInfo);
       return saved;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      onError?.(msg);
       return null;
     } finally {
       setBusy(false);
@@ -54,11 +58,14 @@ export function SecondaryEditor({
       );
       if (!supported) {
         setError("当前平台不支持访达选择");
+        onError?.("当前平台不支持访达选择");
       } else if (paths.length) {
         await mutate([...new Set([...secondary, ...paths])]);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      onError?.(msg);
     } finally {
       setBusy(false);
     }
