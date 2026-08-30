@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
-  ApprovalRecord,
   CommandInfo,
   ModelsInfo,
   SessionDetail,
@@ -30,54 +29,22 @@ import {
   submitApproval,
   undoSession,
 } from "./api";
-import type { ChatOptions } from "./api";
+import { useChatStream } from "./useChatStream";
+import { currentTimeLabel, formatClock, formatDuration, historyToItems } from "./lib/history";
+import type { ApprovalState, Item, RollbackInfo } from "./types";
 import { ApprovalSheet } from "./ApprovalSheet";
-import { CommandMenu, filterCommands } from "./CommandMenu";
-import { ModelPicker } from "./ModelPicker";
+import { CommandMenu, filterCommands, clampCommandIndex, moveCommandCursor } from "./CommandMenu";
+import { Modal } from "./components/Modal";
+import { Markdown } from "./components/Markdown";
+import { Sidebar } from "./components/Sidebar";
 import { PermissionPicker } from "./PermissionPicker";
-import { ProjectMenu } from "./ProjectMenu";
 import type { ProjectAction } from "./ProjectMenu";
-import { ProjectPicker, basename } from "./ProjectPicker";
+import { basename } from "./ProjectPicker";
 import { SecondaryEditor } from "./SecondaryEditor";
 import { ToolCard } from "./ToolCard";
 
-type ApprovalState = "pending" | "approved" | "denied" | "expired";
-
-type Item =
-  | { kind: "user"; text: string; time?: string }
-  | { kind: "assistant"; text: string }
-  | { kind: "tool"; id: string; name: string; args: Record<string, unknown>; result?: string; done: boolean }
-  | { kind: "approval"; id: string; toolCallId: string; name: string; args: Record<string, unknown>; reason?: string; scope?: string; state: ApprovalState }
-  | { kind: "review"; text: string }
-  | { kind: "notice"; text: string }
-  | { kind: "error"; text: string };
-
-type RollbackInfo = {
-  count: number;
-  prompt: string;
-  files: number;
-  messageOnly: boolean;
-};
-
 const EMPTY_MODELS: ModelsInfo = { default: "deepseek-v4flash", models: {} };
 const DEFAULT_PROJECT = "default project";
-
-function FolderIcon() {
-  return (
-    <svg className="project-folder-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M3.5 7.5h6l1.8 2h9.2v7.8a2.7 2.7 0 0 1-2.7 2.7H6.2a2.7 2.7 0 0 1-2.7-2.7V7.5Z" />
-      <path d="M3.5 7.5V6.7A2.7 2.7 0 0 1 6.2 4h3.1l2 2h3.2" />
-    </svg>
-  );
-}
-
-function PinBadgeIcon() {
-  return (
-    <svg className="project-pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M12 3v9m0 0-4-4m4 4 4-4M6 21h12" />
-    </svg>
-  );
-}
 
 function UndoIcon() {
   return (
@@ -104,97 +71,10 @@ function CopyIcon({ copied = false }: { copied?: boolean }) {
   );
 }
 
-function normalizeToolArgs(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-    } catch {
-      return { input: value };
-    }
-  }
-  return {};
-}
-
-function currentTimeLabel(): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date());
-}
-
-function formatClock(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return currentTimeLabel();
-  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(d);
-}
-
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException ? err.name === "AbortError" : (err as Error)?.name === "AbortError";
-}
-
-function historyToItems(
-  messages: any[],
-  approvals: ApprovalRecord[] = [],
-  userTimes: string[] = [],
-): Item[] {
-  const items: Item[] = [];
-  const toolResults = new Map<string, string>();
-  for (const m of messages) {
-    if (m.role === "tool" && m.tool_call_id) toolResults.set(String(m.tool_call_id), String(m.content ?? ""));
-  }
-  const approvalByCall = new Map<string, ApprovalRecord>();
-  for (const a of approvals) approvalByCall.set(String(a.tool_call_id), a);
-  let userIndex = 0;
-  for (const m of messages) {
-    if (m.role === "user") {
-      items.push({ kind: "user", text: String(m.content ?? ""), time: userTimes[userIndex] });
-      userIndex += 1;
-    } else if (m.role === "assistant") {
-      if (m.content) items.push({ kind: "assistant", text: String(m.content) });
-      if (m.tool_calls?.length) {
-        for (const tc of m.tool_calls) {
-          if (!tc.function) continue;
-          const id = String(tc.id ?? "");
-          const approval = approvalByCall.get(id);
-          if (approval) {
-            items.push({
-              kind: "approval",
-              id: `hist-${id}`,
-              toolCallId: id,
-              name: approval.name,
-              args: approval.args ?? {},
-              reason: approval.reason,
-              scope: approval.scope,
-              state: approval.decision,
-            });
-          }
-          items.push({
-            kind: "tool",
-            id,
-            name: tc.function.name,
-            args: normalizeToolArgs(tc.function.arguments),
-            result: toolResults.get(id),
-            done: true,
-          });
-        }
-      }
-    }
-  }
-  return items;
-}
-
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
   const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
   const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ default: "", projects: [] });
   const [chosenRoot, setChosenRoot] = useState<string | null>(null);
@@ -208,12 +88,12 @@ export default function App() {
   const [cmdIndex, setCmdIndex] = useState(0);
   const [rollbackInfo, setRollbackInfo] = useState<RollbackInfo | null>(null);
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null);
-  // UI-4: on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
+  // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  // UI-4: Escape closes the mobile drawer. Scoped to when the drawer is open so
+  // Escape closes the mobile drawer. Scoped to when the drawer is open so
   // the desktop layout and the composer's own Escape (command menu) are
   // unaffected.
   useEffect(() => {
@@ -227,15 +107,53 @@ export default function App() {
 
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
-  // UI-1 / UI-3 / UI-6: request generation + per-session stream ownership.
-  // currentRequestRef holds the token of the *active* request; a stale or
-  // aborted request is one whose token no longer matches. openSeqRef guards
-  // openSession against out-of-order fetchSession responses.
-  const currentRequestRef = useRef<number | null>(null);
-  const reqSeqRef = useRef(0);
-  const currentStreamSessionRef = useRef<string | null>(null);
-  const sendAbortRef = useRef<AbortController | null>(null);
-  const openSeqRef = useRef(0);
+  const refreshSessions = useCallback(() => {
+    fetchSessions().then(setSessions).catch(() => {});
+    fetchWorkspaces().then(setWorkspaces).catch(() => {});
+  }, []);
+
+  // Resolved ahead of useChatStream so send() can stamp the model name onto the
+  // turn's assistant messages (reply meta row).
+  const currentSession = sessions.find((s) => s.id === currentId);
+  const currentModelName =
+    (currentId ? (models.models[currentSession?.model_alias ?? ""]?.model ?? currentSession?.model_alias) : null) ??
+    models.models[models.default]?.model ??
+    models.default;
+
+  // The chat stream orchestration (send/stop + the request-ownership refs
+  // currentRequestRef/reqSeqRef/currentStreamSessionRef/sendAbortRef/openSeqRef
+  // that encode the stream-ownership concurrency contract) lives in the
+  // useChatStream hook. App supplies the api surface plus the state families the
+  // stream must coordinate with (dependency injection — no App closure leaks in).
+  const {
+    send,
+    stop,
+    busy,
+    items,
+    setBusy,
+    setItems,
+    currentRequestRef,
+    currentStreamSessionRef,
+    sendAbortRef,
+    openSeqRef,
+  } = useChatStream({
+    input,
+    currentId,
+    chosenRoot,
+    chosenSecondary,
+    chosenPermission,
+    currentPermission,
+    currentModelName,
+    refreshSessions,
+    setRollbackInfo,
+    setInput,
+    setCurrentId,
+    setCurrentPermission,
+    onApprovalRequired: () => setOverlayOpen(true),
+    streamChat,
+    cancelSessionChat,
+    fetchSessions,
+  });
 
   const decideApproval = useCallback(
     async (item: Extract<Item, { kind: "approval" }>, approve: boolean, always: boolean) => {
@@ -254,11 +172,6 @@ export default function App() {
     },
     [],
   );
-
-  const refreshSessions = useCallback(() => {
-    fetchSessions().then(setSessions).catch(() => {});
-    fetchWorkspaces().then(setWorkspaces).catch(() => {});
-  }, []);
 
   const refreshArchived = useCallback(() => {
     fetchArchivedSessions().then(setArchived).catch(() => {});
@@ -318,7 +231,7 @@ export default function App() {
     async (id: string | null) => {
       const token = ++openSeqRef.current;
       // Switching to a *different* session aborts the previous chat stream so
-      // its events cannot leak into the new view (UI-1). Re-opening the same
+      // its events cannot leak into the new view. Re-opening the same
       // session is a refresh and does not cancel the in-flight request.
       if (id !== currentStreamSessionRef.current) {
         sendAbortRef.current?.abort();
@@ -334,7 +247,7 @@ export default function App() {
         try {
           const detail: SessionDetail = await fetchSession(id);
           // Guard against out-of-order responses: only the most recent open
-          // request may apply its result (UI-3).
+          // request may apply its result.
           if (openSeqRef.current !== token) return;
           setItems(historyToItems(detail.messages, detail.approvals, detail.user_times));
           setCurrentSecondary(detail.secondary_roots ?? []);
@@ -386,6 +299,15 @@ export default function App() {
     refreshSessions();
     refreshArchived();
   }, [deleteTarget, currentId, refreshSessions, refreshArchived]);
+
+  const restoreArchived = useCallback(
+    async (session: SessionSummary) => {
+      await setSessionArchived(session.id, false).catch(() => {});
+      setArchived((prev) => prev.filter((x) => x.id !== session.id));
+      refreshSessions();
+    },
+    [refreshSessions],
+  );
 
   const newChatInProject = useCallback(
     (root: string | null) => {
@@ -493,7 +415,7 @@ export default function App() {
     [items],
   );
   const pendingApproval = pendingApprovals.length > 0;
-  // UI-9: the sheet shows the first *pending* approval; its queue position is
+  // the sheet shows the first *pending* approval; its queue position is
   // its 1-based index among every approval item, so it advances as earlier
   // approvals are resolved instead of being hard-coded to 1.
   const approvalQueue = useMemo(
@@ -505,11 +427,6 @@ export default function App() {
     [approvalQueue],
   );
   const approvalTotal = approvalQueue.length;
-  const currentSession = sessions.find((s) => s.id === currentId);
-  const currentModelName =
-    (currentId ? (models.models[currentSession?.model_alias ?? ""]?.model ?? currentSession?.model_alias) : null) ??
-    models.models[models.default]?.model ??
-    models.default;
 
   const changePermission = useCallback(
     async (mode: string) => {
@@ -528,9 +445,18 @@ export default function App() {
     [currentId, refreshSessions],
   );
 
+  // A synchronous re-entrancy guard for rollback. ``busy`` is async state
+  // and only binds ``disabled`` on the next render, so two back-to-back clicks in
+  // the same tick could double-fire undoSession before the button re-renders. This
+  // ref is set synchronously at entry and cleared in finally, so the second click
+  // is dropped instead of issuing a duplicate undo/redo request.
+  const rollbackBusyRef = useRef(false);
+
   const rollback = useCallback(
     async (dir: "undo" | "redo", untilUser?: number) => {
       if (currentId === null) return;
+      if (rollbackBusyRef.current) return;
+      rollbackBusyRef.current = true;
       const userItems = items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
       const rollbackCount = untilUser ? Math.max(1, userItems.length - untilUser + 1) : 1;
       const rollbackPrompt = untilUser
@@ -559,18 +485,12 @@ export default function App() {
         showToast("err", `回滚失败: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         setBusy(false);
+        rollbackBusyRef.current = false;
         refreshSessions();
       }
     },
     [currentId, items, refreshSessions, showToast],
   );
-
-  const stop = useCallback(() => {
-    // Abort the local reader + tell the backend to cancel; the send() finally
-    // still runs and resets busy since we keep the request token.
-    sendAbortRef.current?.abort();
-    if (currentId) cancelSessionChat(currentId).catch(() => {});
-  }, [currentId]);
 
   const copyMessage = useCallback((text: string, index: number) => {
     const write = navigator.clipboard?.writeText(text);
@@ -581,337 +501,37 @@ export default function App() {
     });
   }, []);
 
-  const ranTool = useRef(false);
-  const send = useCallback(async () => {
-    const text = input.trim();
-    if (!text || busy) return;
-    setInput("");
-    setRollbackInfo(null);
-    setBusy(true);
-    ranTool.current = false;
-    const sessionId = currentId;
-    // UI-1: each request owns a unique token. A stale/aborted request has a
-    // token that no longer matches currentRequestRef and drops all its events.
-    const token = ++reqSeqRef.current;
-    currentRequestRef.current = token;
-    currentStreamSessionRef.current = sessionId;
-    const controller = new AbortController();
-    sendAbortRef.current = controller;
-    const opts: ChatOptions = {};
-    if (currentId === null) {
-      if (chosenRoot) opts.root = chosenRoot;
-      if (chosenSecondary.length) opts.secondary_roots = chosenSecondary;
-    }
-    opts.permission_mode = currentId === null ? chosenPermission : currentPermission;
-    opts.signal = controller.signal;
-    const patches: Item[] = [
-      { kind: "user", text },
-      { kind: "assistant", text: "" },
-    ];
-    setItems((prev) => [...prev, ...patches]);
-    try {
-      await streamChat(sessionId, text, (ev) => {
-        // Only the current request may touch the view (UI-1 invariant 1/10).
-        if (currentRequestRef.current !== token) return;
-        const expirePending = () =>
-          setItems((prev) =>
-            prev.map((it) =>
-              it.kind === "approval" && it.state === "pending" ? { ...it, state: "expired" } : it,
-            ),
-          );
-        if (ev.type === "session") {
-          if (ev.session_id) {
-            setCurrentId(ev.session_id);
-            currentStreamSessionRef.current = ev.session_id;
-          }
-          refreshSessions();
-        } else if (ev.type === "text") {
-          setItems((prev) => {
-            const next = [...prev];
-            const last = next[next.length - 1];
-            if (last?.kind === "assistant") {
-              last.text += ev.content ?? "";
-            } else {
-              // Text after a tool call starts a new assistant block (the old
-              // handler dropped it, hiding the model's final reply).
-              next.push({ kind: "assistant", text: ev.content ?? "" });
-            }
-            return next;
-          });
-        } else if (ev.type === "cancelled") {
-          expirePending();
-          setItems((prev) => [...prev, { kind: "notice", text: "⏹ 已中断" }]);
-        } else if (ev.type === "tool_start") {
-          ranTool.current = true;
-          setItems((prev) => [
-            ...prev,
-            {
-              kind: "tool",
-              id: ev.tool_call.id,
-              name: ev.tool_call.name,
-              args: ev.tool_call.arguments,
-              done: false,
-            },
-          ]);
-        } else if (ev.type === "tool_result") {
-          setItems((prev) => {
-            const next = [...prev];
-            const tool = [...next].reverse().find(
-              (item) => item.kind === "tool" && item.id === ev.tool_call?.id,
-            );
-            if (tool?.kind === "tool") {
-              tool.result = ev.result;
-              tool.done = true;
-            }
-            return next;
-          });
-        } else if (ev.type === "done") {
-          expirePending();
-          // 工具执行后若无最终回复，提示完成状态，避免看起来卡住
-          setItems((prev) => {
-            const last = prev[prev.length - 1];
-            const noReply =
-              ranTool.current &&
-              (last?.kind !== "assistant" || !(last.text ?? "").trim());
-            if (!noReply) return prev;
-            const msg =
-              last?.kind === "tool" && !last.done
-                ? "⚠ 回合已结束但工具未返回结果"
-                : "✓ 已完成（模型未输出文字回复，工具可能已生效）";
-            return [
-              ...prev,
-              {
-                kind: noReply && last?.kind === "tool" && !last.done ? "error" : "notice",
-                text: msg,
-              },
-            ];
-          });
-        } else if (ev.type === "error") {
-          expirePending();
-          setItems((prev) => [...prev, { kind: "error", text: ev.error ?? "error" }]);
-        } else if (ev.type === "approval_required") {
-          setOverlayOpen(true);
-          setItems((prev) => [
-            ...prev,
-            {
-              kind: "approval",
-              id: ev.approval_id,
-              toolCallId: ev.tool_call.id,
-              name: ev.tool_call.name,
-              args: ev.tool_call.arguments,
-              reason: ev.reason,
-              scope: ev.scope,
-              state: "pending" as ApprovalState,
-            },
-          ]);
-        } else if (ev.type === "review") {
-          setItems((prev) => [...prev, { kind: "review", text: ev.content ?? "" }]);
-        }
-      }, opts);
-    } catch (err) {
-      // A stale/aborted request must not add an error row to a different
-      // session's view (UI-1). A deliberate abort is not an error either.
-      if (currentRequestRef.current !== token) return;
-      if (isAbortError(err)) return;
-      setItems((prev) => [
-        ...prev,
-        { kind: "error", text: err instanceof Error ? err.message : String(err) },
-      ]);
-    } finally {
-      setBusy(false);
-      if (currentRequestRef.current === token) {
-        setItems((prev) =>
-          prev.map((it) => (it.kind === "approval" && it.state === "pending" ? { ...it, state: "expired" } : it)),
-        );
-        refreshSessions();
-        if (sessionId === null) {
-          // pick up the newly-created session (only for the active request)
-          const list = await fetchSessions().catch(() => []);
-          if (list.length) {
-            setCurrentId(list[0].id);
-            currentStreamSessionRef.current = list[0].id;
-            setCurrentPermission(list[0].permission_mode ?? chosenPermission);
-          }
-        }
-      }
-      sendAbortRef.current = null;
-    }
-  }, [input, busy, currentId, chosenRoot, chosenSecondary, chosenPermission, currentPermission, refreshSessions]);
-
   return (
     <div className={`app${sidebarOpen ? " sidebar-open" : ""}`}>
-      <aside className="sidebar" id="sidebar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">&gt;_</span>
-          <h1>Easy code</h1>
-        </div>
-        <button className="new-btn" type="button" onClick={newSession}>
-          <span aria-hidden="true">＋</span> 新会话
-        </button>
-        <div className="project-picker">
-          {currentId === null ? (
-            <ProjectPicker
-              workspaces={workspaces}
-              root={chosenRoot}
-              secondary={chosenSecondary}
-              disabled={busy}
-              onRoot={setChosenRoot}
-              onSecondary={setChosenSecondary}
-              onWorkspaces={setWorkspaces}
-            />
-          ) : currentRoot ? (
-            <div className="project-tag" title={currentRoot}>
-              {basename(currentRoot)}
-            </div>
-          ) : (
-            <div className="project-tag default">{DEFAULT_PROJECT}</div>
-          )}
-          {currentId !== null && (
-            <SecondaryEditor
-              root={currentRoot}
-              secondary={currentSecondary}
-              sessionId={currentId}
-              disabled={busy}
-              onSecondary={setCurrentSecondary}
-              onWorkspaces={setWorkspaces}
-            />
-          )}
-        </div>
-        <div className="session-list">
-          {groups.length > 0 && <div className="session-list-label">项目</div>}
-          {groups.map(([root, list]) => {
-            const meta = projectMeta.get(root);
-            const pinned = meta?.pinned ?? false;
-            const groupKey = root ?? "__default__";
-            const isCollapsed = Boolean(collapsedProjects[groupKey]);
-            return (
-            <div key={groupKey} className={`project-group ${isCollapsed ? "collapsed" : ""}`}>
-              <div
-                className="project-group-head"
-                title={root ?? DEFAULT_PROJECT}
-              >
-                <button
-                  type="button"
-                  className="group-head-main"
-                  title={root ?? DEFAULT_PROJECT}
-                  aria-expanded={!isCollapsed}
-                  aria-label={isCollapsed ? "展开项目" : "折叠项目"}
-                  onClick={() => toggleProjectCollapsed(groupKey)}
-                >
-                  <span className="project-collapse-caret" aria-hidden="true">{isCollapsed ? "›" : "⌄"}</span>
-                  <FolderIcon />
-                  <span className="project-group-name">{meta?.name ?? (root ? basename(root) : DEFAULT_PROJECT)}</span>
-                  {pinned && (
-                    <span className="project-pin-badge" title="已置顶" aria-label="已置顶">
-                      <PinBadgeIcon />
-                    </span>
-                  )}
-                </button>
-                <div className="group-head-actions">
-                  <button
-                    type="button"
-                    className="group-new-btn"
-                    title="在此项目下新建会话"
-                    aria-label="在此项目下新建会话"
-                    disabled={busy}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      newChatInProject(root);
-                    }}
-                  >
-                    <span aria-hidden="true">＋</span>
-                  </button>
-                  <ProjectMenu
-                    pinned={pinned}
-                    disabled={busy}
-                    onAction={(action) => runProjectAction(root, action)}
-                  />
-                </div>
-              </div>
-              {!isCollapsed && list.map((s) => (
-                <div
-                  key={s.id}
-                  className={`session-item ${s.id === currentId ? "active" : ""}`}
-                  onClick={() => openSession(s.id)}
-                >
-                  <span className="session-title">{s.title}</span>
-                  <span
-                    className="session-del"
-                    title="删除"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteTarget(s);
-                    }}
-                  >
-                    ✕
-                  </span>
-                </div>
-              ))}
-            </div>
-          );
-          })}
-          {groups.length === 0 && <div className="session-empty">新会话会保存在这里</div>}
-          {archived.length > 0 && (
-            <div className="archive-section">
-              <button
-                type="button"
-                className="archive-head"
-                onClick={() => setShowArchived(!showArchived)}
-                aria-expanded={showArchived}
-              >
-                <span className="archive-icon" aria-hidden="true">📦</span>
-                <span>已归档</span>
-                <span className="archive-count">{archived.length}</span>
-                <span className="archive-caret" aria-hidden="true">{showArchived ? "⌄" : "›"}</span>
-              </button>
-              {showArchived && (
-                <div className="archive-list">
-                  {archived.map((s) => (
-                    <div key={s.id} className="session-item archived">
-                      <span className="session-title" title={s.title}>{s.title}</span>
-                      <div className="archive-actions">
-                        <button
-                          type="button"
-                          className="archive-restore"
-                          title="恢复"
-                          aria-label="恢复"
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            await setSessionArchived(s.id, false).catch(() => {});
-                            setArchived((prev) => prev.filter((x) => x.id !== s.id));
-                            refreshSessions();
-                          }}
-                        >
-                          ↥
-                        </button>
-                        <button
-                          type="button"
-                          className="archive-del"
-                          title="彻底删除"
-                          aria-label="彻底删除"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteTarget(s);
-                          }}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="sidebar-foot">
-          <ModelPicker
-            models={models}
-            current={models.default}
-            onChange={setModels}
-          />
-        </div>
-      </aside>
+      <Sidebar
+        currentId={currentId}
+        archived={archived}
+        showArchived={showArchived}
+        collapsedProjects={collapsedProjects}
+        busy={busy}
+        models={models}
+        workspaces={workspaces}
+        groups={groups}
+        projectMeta={projectMeta}
+        chosenRoot={chosenRoot}
+        chosenSecondary={chosenSecondary}
+        currentRoot={currentRoot}
+        currentSecondary={currentSecondary}
+        onNewSession={newSession}
+        onOpenSession={openSession}
+        onToggleCollapsed={toggleProjectCollapsed}
+        onNewChatInProject={newChatInProject}
+        onProjectAction={runProjectAction}
+        onSetChosenRoot={setChosenRoot}
+        onSetChosenSecondary={setChosenSecondary}
+        onSetCurrentSecondary={setCurrentSecondary}
+        onSetWorkspaces={setWorkspaces}
+        onToggleArchived={() => setShowArchived(!showArchived)}
+        onDeleteSession={setDeleteTarget}
+        onRestoreSession={restoreArchived}
+        onModelChange={setModels}
+        onError={(msg) => showToast("err", msg)}
+      />
       {sidebarOpen && (
         <div
           className="sidebar-overlay"
@@ -975,8 +595,6 @@ export default function App() {
                 <div key={i} className="msg-row user">
                   <div className="msg user">{it.text}</div>
                   <div className="msg-meta">
-                    <span>Build</span>
-                    <span className="msg-meta-separator">·</span>
                     <span>{currentModelName}</span>
                     <span className="msg-meta-separator">·</span>
                     <time>{it.time ? formatClock(it.time) : currentTimeLabel()}</time>
@@ -1003,10 +621,31 @@ export default function App() {
             }
             if (it.kind === "assistant") {
               if (!it.text) return null;
+              const metaParts: string[] = [];
+              if (it.model) metaParts.push(it.model);
+              if (typeof it.durationMs === "number") metaParts.push(formatDuration(it.durationMs));
               return (
-                <div key={i} className="msg assistant">
-                  {it.text}
-                  {busy && i === items.length - 1 && <span className="cursor" />}
+                <div key={i} className="msg-row assistant">
+                  <div className="msg assistant">
+                    <Markdown text={it.text} />
+                    {busy && i === items.length - 1 && <span className="cursor" />}
+                  </div>
+                  <div className="msg-meta">
+                    <button
+                      className="msg-action"
+                      title="复制回复"
+                      aria-label="复制回复"
+                      onClick={() => copyMessage(it.text, i)}
+                    >
+                      <CopyIcon copied={copiedMessage === i} />
+                    </button>
+                    {metaParts.map((part, pi) => (
+                      <Fragment key={pi}>
+                        <span className="msg-meta-separator">·</span>
+                        <span>{part}</span>
+                      </Fragment>
+                    ))}
+                  </div>
                 </div>
               );
             }
@@ -1125,22 +764,21 @@ export default function App() {
                     return;
                   }
                   if (cmdOpen) {
-                    const q = input.startsWith("/") ? input.slice(1) : input;
-                    const filtered = filterCommands(commands, `/${q}`);
+                    const filtered = filterCommands(commands, input);
                     const count = filtered.length;
                     if (e.key === "ArrowDown") {
                       e.preventDefault();
-                      setCmdIndex((i) => (count ? Math.min(i + 1, count - 1) : i));
+                      setCmdIndex((i) => moveCommandCursor(filtered, i, +1));
                       return;
                     }
                     if (e.key === "ArrowUp") {
                       e.preventDefault();
-                      setCmdIndex((i) => Math.max(i - 1, 0));
+                      setCmdIndex((i) => moveCommandCursor(filtered, i, -1));
                       return;
                     }
                     if (e.key === "Enter" && count > 0) {
                       e.preventDefault();
-                      const pick = filtered[Math.min(cmdIndex, filtered.length - 1)];
+                      const pick = filtered[clampCommandIndex(filtered, cmdIndex)];
                       if (pick) {
                         setInput(`/${pick.name} `);
                         setCmdOpen(false);
@@ -1219,26 +857,13 @@ export default function App() {
           </div>
         )}
         {editTarget && (
-          <div className="modal-backdrop" onClick={() => setEditTarget(null)}>
-            <div className="modal project-edit-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-title">编辑项目</div>
-              <label className="modal-field">
-                <span>项目名称</span>
-                <input
-                  type="text"
-                  value={editTarget.name}
-                  onChange={(e) => setEditTarget({ ...editTarget, name: e.target.value })}
-                  autoFocus
-                />
-              </label>
-              <SecondaryEditor
-                root={editTarget.root}
-                secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
-                disabled={false}
-                onSecondary={() => {}}
-                onWorkspaces={setWorkspaces}
-              />
-              <div className="modal-actions">
+          <Modal
+            open={Boolean(editTarget)}
+            onClose={() => setEditTarget(null)}
+            title="编辑项目"
+            variant="project-edit-modal"
+            actions={
+              <>
                 <button type="button" className="modal-cancel" onClick={() => setEditTarget(null)}>
                   取消
                 </button>
@@ -1264,46 +889,72 @@ export default function App() {
                 >
                   保存
                 </button>
-              </div>
-            </div>
-          </div>
+              </>
+            }
+          >
+            <label className="modal-field">
+              <span>项目名称</span>
+              <input
+                type="text"
+                value={editTarget.name}
+                onChange={(e) => setEditTarget({ ...editTarget, name: e.target.value })}
+                autoFocus
+              />
+            </label>
+            <SecondaryEditor
+              root={editTarget.root}
+              secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
+              disabled={false}
+              onSecondary={() => {}}
+              onWorkspaces={setWorkspaces}
+              onError={(msg) => showToast("err", msg)}
+            />
+          </Modal>
         )}
         {deleteTarget && (
-          <div className="modal-backdrop" onClick={() => setDeleteTarget(null)}>
-            <div className="modal project-remove-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-title">删除会话</div>
-              <p className="modal-desc">
-                将永久删除「{deleteTarget.title}」及其全部消息（不可恢复）。
-              </p>
-              <div className="modal-actions">
+          <Modal
+            open={Boolean(deleteTarget)}
+            onClose={() => setDeleteTarget(null)}
+            title="删除会话"
+            variant="project-remove-modal"
+            actions={
+              <>
                 <button type="button" className="modal-cancel" onClick={() => setDeleteTarget(null)}>
                   取消
                 </button>
                 <button type="button" className="danger" onClick={confirmDeleteSession}>
                   确认删除
                 </button>
-              </div>
-            </div>
-          </div>
+              </>
+            }
+          >
+            <p className="modal-desc">
+              将永久删除「{deleteTarget.title}」及其全部消息（不可恢复）。
+            </p>
+          </Modal>
         )}
         {removeTarget && (
-          <div className="modal-backdrop" onClick={() => setRemoveTarget(null)}>
-            <div className="modal project-remove-modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-title">移除项目</div>
-              <p className="modal-desc">
-                将删除「{removeTarget.root ? basename(removeTarget.root) : DEFAULT_PROJECT}」的绑定，
-                并删除其下 {removeTarget.count} 条会话（不可恢复）。
-              </p>
-              <div className="modal-actions">
+          <Modal
+            open={Boolean(removeTarget)}
+            onClose={() => setRemoveTarget(null)}
+            title="移除项目"
+            variant="project-remove-modal"
+            actions={
+              <>
                 <button type="button" className="modal-cancel" onClick={() => setRemoveTarget(null)}>
                   取消
                 </button>
                 <button type="button" className="danger" onClick={confirmRemoveProject}>
                   确认移除
                 </button>
-              </div>
-            </div>
-          </div>
+              </>
+            }
+          >
+            <p className="modal-desc">
+              将删除「{removeTarget.root ? basename(removeTarget.root) : DEFAULT_PROJECT}」的绑定，
+              并删除其下 {removeTarget.count} 条会话（不可恢复）。
+            </p>
+          </Modal>
         )}
       </main>
     </div>
