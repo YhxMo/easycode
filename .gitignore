@@ -32,3 +32,13 @@ credentials.json
 
 # Multi-agent audit artifacts
 .audit/
+
+# Local development workflows and notes
+.opencode/
+PLAN-phase*.md
+
+# Environment variants and local session data
+.env.*
+!.env.example
+.easycode/sessions/
+.easycode/credentials.json
