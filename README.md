@@ -1,218 +1,117 @@
-# easycode
+# EasyCode
 
-Python CLI 编程助手（类 Claude Code / opencode），带 Web UI。
+EasyCode 是一个基于 Python 的编程 Agent，提供命令行入口和 Web 界面。它将大模型对话与文件操作、命令执行、上下文管理和任务委派结合，用于理解代码、辅助修改和处理多步骤编程任务。
 
-- **多供应商 LLM 抽象**：基于 [LiteLLM](https://github.com/BerriAI/litellm)，统一 OpenAI / Anthropic / DeepSeek / 本地模型等的 OpenAI 格式接口
-- **手写 agentic tool-use 循环**（全异步）：流式输出 + 工具调用 → 执行 → 回填结果 → 再循环，直到给出最终回复
-- **内置 7 个工具**：`execute_shell` / `read_file` / `write_file` / `edit_file` / `grep` / `glob` / `parallel_tasks`
-- **子 agent 并行**：`parallel_tasks` 把独立子任务分发到子 agent（限流并发、独立上下文、结果回填）
-- **项目规则**：自动加载工作区 AGENTS.md（向上查找）注入系统提示
-- **上下文压缩**：历史超预算时按 token 预算保留最近几轮原文、把更早部分 LLM 压成结构化摘要，并与上一次摘要滚动合并（对齐 opencode）；压缩前先清理旧工具输出（prune）
-- **Token/成本优化**：`write_file`/`edit_file` 结果只把短确认回喂给模型（完整 diff 走 review/hook 通道，不重复消耗 token）；`use_skill` 结果去重；上下文预算用廉价字符估算门控（避免每轮全量 token 计数）；工具结果截断保持合法 JSON；`read_file` 支持分页（`offset`/`limit` 行号读取 + 续读脚注）
-- **结构化编辑 + diff**：`edit_file` 精确替换（唯一匹配校验、dry_run 预览 unified diff）；CLI diff 语法高亮，`/run` 一键改代码并汇总变更
-- **双端交互**：多行 REPL CLI + Web UI（FastAPI + SSE 流式 + React）
-- **多会话**：Web 端会话隔离 + 落盘持久化（刷新/重启可恢复）
-- **会话中断**：Web 忙碌时「停止」按钮 / CLI `Ctrl+C`，中断回合自动回滚半成品消息，历史保持可用
-- **撤销 / 重做（undo / redo）**：Web 端每条 user prompt 下方有「↶ 回滚到此处」（删除该条 prompt 及其后的全部消息与文件改动，`POST /api/sessions/{id}/undo` 带 `until_user`）；输入区保留「↷ 重做」；CLI 用 `/undo` `/redo`。文件回滚基于「工具调用时刻的内容快照」，不依赖 git，且不误伤回合前已有的未提交改动
+后端使用 FastAPI，通过 SSE 向 React 界面推送模型输出、工具执行状态和审批请求；模型接入基于 LiteLLM。
 
-## 安装
+## 核心能力
 
-需要 [uv](https://docs.astral.sh/uv/)（Python ≥ 3.11）：
+- **工具调用**：读取、检索和编辑文件，执行 Shell 命令，展示修改差异与执行结果。
+- **任务委派**：支持并行子任务和自定义 Agent，子任务使用独立上下文，结果返回主会话。
+- **上下文管理**：结合历史摘要、近期消息保留和工具输出裁剪，控制长会话的上下文规模。
+- **会话管理**：按项目组织会话，支持历史持久化、流式响应、任务中断和撤销 / 重做。
+- **权限控制**：提供操作审批、路径规则和 macOS 沙箱支持，可配置主工作目录与附加目录。
+- **扩展机制**：支持项目规则、自定义 Skill、斜杠命令，以及通过 MCP 接入外部工具。
+- **模型配置**：支持模型切换，为不同模型独立配置 API Key、接口地址和接口格式。
 
-```bash
-uv sync --frozen    # 用 uv.lock 锁定版本，可复现安装
-```
+## 快速开始
 
-## 配置
+需要 Python 3.11 及以上版本和 uv；构建 Web 界面还需要 Node.js 与 npm。仓库 CI 使用 Python 3.14 和 Node.js 22。
 
-### API Key
-
-每个模型通过 Web UI 单独保存 API Key 和 Base URL。凭据文件位于
-`~/.easycode/credentials.json`，自动 `chmod 600`，不在项目目录中：
-
-```json
-{
-  "model-<uuid>": { "api_key": "sk-...", "base_url": "https://..." }
-}
-```
-
-配置文件中的模型条目引用独立 `key_id`，并保存 `api_format`；Web UI
-「添加模型」会为填写了 API Key/Base URL 的模型自动创建独立凭据，模型之间不会共享 Key。
-`GET /api/models` 永远不返回 API Key。
-
-### 模型别名（easycode.config.json）
-
-```json
-{
-  "default_model": "deepseek-v4flash",
-  "models": {
-    "deepseek-v4flash": {
-      "model": "deepseek-v4-flash",
-      "key_id": "model-<uuid>",
-      "api_format": "openai_compatible"
-    }
-  },
-  "tools": { "execute_shell": true, "read_file": true, "write_file": true, "grep": true, "glob": true },
-  "max_tool_result_chars": 8000,
-  "max_context_tokens": 32000,
-  "permission": "ask",
-  "workspace": { "secondary": ["~/shared-lib"], "extra_safe_dirs": ["~/notes"] },
-  "mcp_servers": { "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]} }
-}
-```
-
-- `workspace.secondary`：次要工作目录（与主目录同等免批准，可多个）；`workspace.extra_safe_dirs`：额外免批准目录
-- 路径归属判定：主/次工作目录 + 系统临时目录 + `~/.easycode/` 免批准，其余为 `external`（读取允许，编辑需批准）
-- `permission`：`ask`（默认，外部文件编辑/疑似联网命令事前询问）/ `auto-review`（全自动+事后变更汇总）/ `allow-all`（关闭沙箱与审批，对齐 Codex `danger-full-access`）；CLI 用 `--permission`
-  - `ask` / `auto-review` 下，明显破坏性命令（`git reset --hard`、`git clean`、`git push --force`、`rm -rf /` 或 `~`）在任何批准之前直接拒绝
-  - `allow-all` 下该拒绝列表关闭；仍保留的限制：`~/.easycode/credentials.json` 等凭据文件始终禁止读写、`permission_rules` 规则表继续生效（可用 `deny` 规则选择性禁止特定命令）
-- `permissions`：可选的工具/参数规则表，动作支持 `allow` / `ask` / `deny`；规则最后匹配优先。例如 `{"execute_shell":{"*":"ask","git status*":"allow","git push*":"deny"}}`。规则只改变批准决策，文件和网络仍受沙箱边界约束
-- `mcp_servers`：外部 MCP server（stdio `{command,args}` 或 `{url}`），工具以 `mcp__<server>__<tool>` 注入 agent
-- `max_context_tokens`：未知模型窗口时的上下文回退预算（默认 32k）；已知模型用 `litellm.get_model_info` 推导 `usable = 窗口 − 输出预留`
-- `compaction`：压缩微调（对齐 opencode）——`auto`（开关）、`buffer`（输出预留，默认 20000）、`preserve_recent_tokens`（保留原文的 token 预算，默认 25% usable，clamp 2k~15k）、`tail_turns`（最多保留轮数）、`prune`（压缩前清理旧工具输出）、`summary_max_chars`（摘要长度上限）
-
-- `models`：别名 → `{"model": "gpt-4o", "key_id": "model-<uuid>", "api_format": "openai_compatible"}`；接口格式决定请求协议，Key/Base URL 从该模型自己的凭据读取
-- 想临时换模型，无需改文件，在 REPL 里用 `/model`（见下）
-- 配置文件从当前目录向上查找最近的 `easycode.config.json`
-
-## 使用
-
-### CLI（REPL）
+在项目根目录安装依赖并构建界面：
 
 ```bash
-uv run easycode                # 启动（默认模型）
-uv run easycode -m claude-sonnet5   # 指定别名启动
-uv run easycode -r /path/to/project # 指定工作目录
-uv run easycode -r main --secondary-root /shared/lib # 追加次要工作目录（可多次）
+uv sync --frozen
+npm --prefix frontend ci
+npm --prefix frontend run build
 ```
 
-### Web UI
+启动 Web 服务：
 
 ```bash
-uv run easycode web            # http://127.0.0.1:8000
+uv run easycode web
+```
+
+打开 <http://127.0.0.1:8000>，添加模型并填写 API Key、接口地址及模型名称，再选择项目目录开始会话。也可通过 `--port` 指定端口：
+
+```bash
 uv run easycode web --port 9000
 ```
 
-- Web 安全模型（SC-100）：控制面默认绑定回环 `127.0.0.1`。此时浏览器发起的**状态变更请求**（POST/PUT/PATCH/DELETE）必须与监听地址精确同源（http/https + 相同主机与端口），或属于已登记的前端开发源（`http://localhost:5173` 等）；缺失 `Origin`/`Referer`（CLI/curl、非浏览器工具）**仅对回环绑定放行**。若 `--host` 改为非回环（如 `0.0.0.0`），按安全优先 **fail-closed**：无 `Origin` 的一律拒绝，且每个状态变更请求都必须携带 `Authorization: Bearer $EASYCODE_WEB_TOKEN`；未设置该变量时启动即打印警告日志并拒绝所有此类请求，绝不无认证暴露控制面
-- 工作树安全（SC-104）：创建永久工作树（`POST /api/workspaces/worktree`）时，仓库内 `.easycode/setup.sh` 与模型命令同等受 Seatbelt 沙箱边界约束（与 `execute_shell` 同边界，**无未经沙箱的逃逸口**；平台不支持 Seatbelt 时明确拒绝运行预设脚本并说明原因）；`.worktreeinclude` 逐行做 resolve 后的源/工作树包含校验，含绝对路径或 `..`/符号链接逃逸的行会被拒绝并记录 warning，绝不把仓库根外的宿主文件拷入工作树
-- 生产模式自动托管 `frontend/dist`（需先构建：`cd frontend && npm ci && npm run build`，`npm ci` 锁定 `package-lock.json` 可复现安装）
-- 开发模式：另起一个终端 `cd frontend && npm run dev`（Vite 代理 `/api` → 8000），改动前端热更新
-- 浏览器打开后：左侧会话列表（多会话隔离，落盘 `~/.easycode/sessions/*.json`，刷新/重启可恢复续聊），按**项目（主工作目录）分组**：新会话时选择项目目录（手动输入或 📁 访达选择），**每个主目录绑定一组次目录**（＋/📁 多选/✕ 维护，绑定持久化到 config 并由会话历史推断合并，主/次目录同样免批准），发出第一条消息后锁定；未选择的项目归入 `default project`（也能挂次目录）；底部可切换 / 添加 / 删除模型
-
-REPL 命令：
-
-| 命令 | 说明 |
-|---|---|
-| `/model` | 列出模型与当前默认 |
-| `/model <别名>` | 切换默认模型 |
-| `/model <别名>=<litellm串>` | 运行时新增/覆盖别名并保存 |
-| `/run <任务>` | 一键改代码：agent 自动执行修改，结束后渲染本次全部 diff 汇总 |
-| `/undo` | 撤销上一回合：删除该回合消息并回滚其文件改动 |
-| `/redo` | 重做被 `/undo` 撤销的回合（消息 + 文件） |
-| `/skills` | 列出可用 skills（`~/.easycode/skills/` 与 `<workspace>/.easycode/skills/`） |
-| `/agents` | 列出可委派 agents（`~/.easycode/agents/` 与 `<workspace>/.easycode/agents/`） |
-| `/help` | 帮助（动态列出内置/模板/skill 全量命令） |
-| `/exit` | 退出 |
-
-键位：`Enter` 发送，`Esc+Enter` 换行，`Ctrl+C` 中断当前回合（自动回滚半成品消息），`Ctrl+D` 退出。
-
-## 自定义 Agent / Skill / Command（Phase 6）
-
-Easy code 提供了与主流生态对齐的扩展能力：
-
-### 1. 自定义 Agent（.easycode/agents/*.md）
-- **路径**：`~/.easycode/agents/{name}.md`（全局）或 `<workspace>/.easycode/agents/{name}.md`（项目级，同名覆盖）。
-- **定义格式**：YAML frontmatter + Markdown 正文（作为 System Prompt）。
-  ```yaml
-  ---
-  name: plan
-  description: 负责架构探索与计划制定的只读 Agent
-  tools: [read_file, grep, glob]
-  mode: subagent
-  ---
-  你是一个架构规划专家...
-  ```
-- **委派与调用**：通过内置 `task` 工具（`{agent, prompt}`）按需委派独立上下文的具名子 Agent，执行完毕后将结论回填给主 Agent。
-
-### 2. Skill 系统（SKILL.md + use_skill / 命令式触发）
-- **路径**：`~/.easycode/skills/{name}/SKILL.md` 或 `<workspace>/.easycode/skills/{name}/SKILL.md`。
-- **渐进披露**：系统提示中仅展示 Skill 的 `name` 与 `description`，Agent 判断命中时调用 `use_skill(name)` 动态将全文注入历史；用户亦可直接在 CLI/Web 输入 `/{name}` 执行。
-- **配置开关**：支持在 `easycode.config.json` 中配置 `"skills": {"enabled": false}` 全局禁用。
-
-### 3. Slash Command 模板（.easycode/commands/*.md）
-- **路径**：`~/.easycode/commands/{name}.md` 或 `<workspace>/.easycode/commands/{name}.md`。
-- **参数替换**：支持 `$ARGUMENTS`（或 `$ARGS`）以及 `$1`..`$9` 位置参数展开。
-- **双端支持**：CLI 与 Web 共享命令发现层，Web 端提供输入前导 `/` 的快捷自动补全（`GET /api/commands`）。
-
-## 会话中断与回滚
-
-- **中断**：Web 端回合进行中「发送」按钮变「停止」（`POST /api/sessions/{id}/cancel`），SSE 收到 `cancelled` 事件后流正常结束；CLI 用 `Ctrl+C`。被中断回合的未完成消息会从历史中移除，不污染后续轮次。
-- **撤销 / 重做**：在 `write_file`/`edit_file` 等工具**执行前**记录目标文件内容快照（`src/easycode/snapshot.py`），`/undo` 时精确还原、并删除该回合新建的文件；`/redo` 重新应用。机制**不依赖 git**（任意工作目录可用），也不会误伤回合前已有的未提交改动。局限：`execute_shell` 直接改写的文件不在追踪范围。
-- Web 端每条用户 prompt 下方有「↶ 回滚到此处」按钮（回滚到该条 prompt 之前，删除其后所有消息与文件改动）；输入区右侧保留「↷ 重做」按钮。undo/redo 栈为会话内存态，重启后重置。
-
-## 架构
-
-```
-src/easycode/
-├── cli.py                # typer 入口：main(REPL) / web(FastAPI) 子命令
-├── config.py             # 配置加载 + 模型别名解析（向上查找 config）
-├── frontmatter.py        # YAML frontmatter 解析
-├── agents.py             # AgentSpec + AgentRegistry（自定义 Agent 发现与解析）
-├── skills.py             # Skill + SkillRegistry（Skill 渐进式披露与按需加载）
-├── commands.py           # CommandRegistry（内置/模板/Skill 统一命令路由与展开）
-├── models/
-│   ├── base.py           # Provider 异步协议 + StreamEvent/ToolCall 类型
-│   └── litellm_provider.py  # litellm.acompletion 流式 + tool_calls 分片累积（SSA）
-├── agent/
-│   ├── loop.py           # 异步 agentic loop（响应用户 → 工具循环 → final；内置 parallel_tasks, task, use_skill）
-│   ├── context.py        # 会话历史（条数/字符预算 + 摘要压缩 condense）
-│   ├── summarizer.py     # LLMSummarizer：非流式摘要旧消息
-│   └── system.py         # 系统提示词 + AGENTS.md + Skills/Agents 列表向上查找注入
-├── tools/
-│   ├── registry.py       # @tool 装饰器 + pydantic → JSON Schema + 结果截断
-│   ├── shell.py          # execute_shell
-│   └── files.py          # read/write/edit(精确替换+dry_run)/grep/glob（pathlib 限制工作目录）
-├── snapshot.py           # 回合文件快照 + undo/redo（工具执行前记录内容字节）
-├── ui/render.py          # rich 渲染（CLI 用）
-└── web/                  # Web UI 后端
-    ├── main.py           # FastAPI app + /api/chat(SSE) + /api/models + /api/sessions + /api/commands
-    ├── session.py        # SessionStore：多会话隔离 + 落盘持久化
-    └── bridge.py         # AgentEvent → SSE 序列化
-
-frontend/                 # Vite + React + TS 前端
-├── vite.config.ts        # dev 代理 /api → 8000
-└── src/
-    ├── App.tsx           # 会话列表 / 消息流 / 输入框
-    ├── api.ts            # fetch SSE 流解析 / API 请求
-    ├── CommandMenu.tsx   # / Slash Command 自动补全菜单
-    ├── ToolCard.tsx      # 工具调用卡片（折叠结果）
-    └── ModelPicker.tsx   # 模型下拉切换
-```
-
-消息全程使用 OpenAI 格式 dict，供应商无关；核心循环见 `agent/loop.py`。Web 端实时事件通过 SSE 推送（`session` / `text` / `tool_start` / `tool_result` / `error` / `approval_required` / `review` / `cancelled` / `done`）。
-
-## 测试
-
-后端（Python，离线可跑：测试用脚本化 FakeProvider 替代真实 LLM，不与真实 `~/.easycode` 数据交互；`--frozen` 使用 `uv.lock` 锁定依赖）：
+命令行入口及参数可通过以下命令查看：
 
 ```bash
-uv run --frozen pytest        # 311 个测试（含 Web 接口、序列化与压缩保真契约测试）
+uv run easycode --help
+uv run easycode main --help
 ```
 
-前端（Vitest + Testing Library，mock fetch/SSE，不起真实服务）：
+## 使用说明
+
+### 模型与配置
+
+通过 Web 界面管理模型。项目设置保存在 `easycode.config.json`，模型凭据单独存放于用户目录下的 `~/.easycode/credentials.json`。这两类本地文件均不纳入版本控制。
+
+新建会话时选择主工作目录，可按需添加其他工作目录。项目根目录中的 `AGENTS.md` 可用于提供代码规范和项目说明。
+
+### 常用命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `/model` | 查看模型列表 |
+| `/model <别名>` | 切换模型 |
+| `/run <任务>` | 执行编程任务并汇总修改差异 |
+| `/undo` | 撤销上一回合 |
+| `/redo` | 重做已撤销的回合 |
+| `/skills` | 查看可用技能 |
+| `/agents` | 查看可委派的 Agent |
+| `/help` | 查看命令帮助 |
+
+Web 界面还提供停止、回滚到指定消息和重做操作。
+
+### 扩展方式
+
+扩展文件可以放在项目的 `.easycode/` 目录，或用户目录下的 `~/.easycode/` 中。
+
+| 类型 | 路径 | 作用 |
+| --- | --- | --- |
+| Agent | `agents/<name>.md` | 定义角色、可用工具和任务说明 |
+| Skill | `skills/<name>/SKILL.md` | 按需加载特定任务的操作说明 |
+| 命令 | `commands/<name>.md` | 定义可复用的提示词模板 |
+
+可参考 [Agent 示例](examples/agents/plan.md)、[Skill 示例](examples/skills/skill-creator/SKILL.md)和[命令示例](examples/commands/btw.md)。外部工具通过配置文件中的 `mcp_servers` 接入，支持 stdio 和 HTTP 传输。
+
+### 使用范围
+
+Web 服务默认监听本机地址，适合本地项目使用。文件和命令操作受所选权限模式约束；macOS 沙箱能力依赖系统支持。
+
+撤销 / 重做覆盖文件编辑工具记录的修改，Shell 命令产生的文件变更不在其追踪范围内。撤销栈保存在内存中，服务重启后不会恢复。
+
+## 核心设计
+
+一次任务从用户消息开始：模型生成回答或工具调用，Agent 执行工具并将结果加入上下文，再继续请求模型，直到任务结束。CLI 和 Web 界面共用 Agent 核心，Web 层负责会话管理和事件推送。
+
+| 模块 | 职责 |
+| --- | --- |
+| `src/easycode/agent/` | 异步工具调用循环、上下文管理、摘要与任务委派 |
+| `src/easycode/models/` | 模型接口抽象与流式响应处理 |
+| `src/easycode/tools/` | 工具注册、文件操作与命令执行 |
+| `src/easycode/web/` | HTTP 接口、SSE 事件和会话存储 |
+| `src/easycode/approval.py`、`sandbox/` | 操作审批与执行边界 |
+| `src/easycode/snapshot.py` | 文件快照与撤销 / 重做 |
+| `frontend/` | React + TypeScript 交互界面 |
+| `tests/` | 后端单元测试与接口测试 |
+
+## 验证
+
+测试使用模拟模型响应和隔离数据，无需真实模型凭据。
 
 ```bash
-cd frontend
-npm ci
-npm run test:run
+# 后端检查与测试
+uv run --frozen ruff check src tests
+uv run --frozen pytest
+
+# 前端检查、构建与测试
+npm --prefix frontend run lint
+npm --prefix frontend run build
+npm --prefix frontend run test:run
 ```
-
-## 路线图
-
-- **Phase 1（已交付）**：骨架 + litellm 抽象 + 5 工具 + tool-use 循环 + REPL + 测试
-- **Phase 2（已交付）**：`edit_file` 结构化精确替换（唯一匹配校验 + dry_run 预览）、diff 语法高亮渲染、`/run` 一键改代码 + 变更汇总
-- **Phase 3（已交付）**：`parallel_tasks` 子 agent 并行、AGENTS.md 规则加载、LLM 摘要上下文压缩
-- **Phase 4（已交付）**：核心全异步化、FastAPI + SSE 后端、React/Vite Web UI、多会话持久化、`easycode web` 子命令
-- **Phase 5（已交付）**：模型 Web 直配 + 独立凭据文件（`~/.easycode/credentials.json`，脱敏）、多工作目录 + 路径归属判定、三档权限分级 + CLI/Web 批准交互（SSE + `POST /api/approval/{id}`）、MCP client（自研 stdio/HTTP 传输，工具 `mcp__<server>__<tool>`）、上下文压缩接入生产（token 预算 + LLM 摘要）
-- **Phase 5.5（已交付）**：会话中断（Web 停止按钮 `POST /api/sessions/{id}/cancel` + CLI `Ctrl+C`，中断自动回滚半成品消息）+ 撤销/重做（`/undo` `/redo` + Web `↶↷`，文件内容快照回滚，不依赖 git）
-- **Phase 6（已交付）**：多 Agent / Skill / Command 系统（`.easycode/agents/*.md` + `task` 工具委派、`SKILL.md` + `use_skill` 渐进式披露、Markdown 模板命令与 `$ARGUMENTS` 展开、Web 端 `/` 自动补全）
