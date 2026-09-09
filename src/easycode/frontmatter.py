@@ -40,7 +40,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             raise FrontmatterError("PyYAML is required to parse frontmatter")
         try:
             parsed = yaml.safe_load(raw)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise FrontmatterError(f"invalid YAML frontmatter: {exc}") from exc
         if isinstance(parsed, dict):
             meta = parsed

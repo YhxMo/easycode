@@ -66,6 +66,7 @@ def choose_folders_via_finder(multiple: bool = False, prompt: str = "选择目�
             ["osascript", "-e", script],
             capture_output=True,
             text=True,
+            check=False,
             timeout=600,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -95,7 +96,7 @@ def reveal_in_finder(path: str) -> dict:
     if not (sys.platform == "darwin" and shutil.which("open")):
         return {"ok": False, "supported": False, "error": "open is only supported on macOS"}
     try:
-        subprocess.run(["open", path], capture_output=True, text=True, timeout=15)
+        subprocess.run(["open", path], capture_output=True, text=True, check=False, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return {"ok": False, "supported": False, "error": "open failed"}
     return {"ok": True, "supported": True, "path": path}
@@ -119,7 +120,7 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
     """
     def run(cmd: list[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
         return subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout
+            cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=timeout
         )
 
     if not shutil.which("git"):
@@ -140,7 +141,7 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
     slug = f"{src.name}-{uuid.uuid4().hex[:5]}"
     wt = root_home / slug
     added = run(["git", "worktree", "add", "--detach", str(wt), head_sha], src)
-    if added.returncode != 0 or not (wt.is_dir() and (wt / ".git").exists() or (wt / ".git").is_file()):
+    if added.returncode != 0 or not ((wt.is_dir() and (wt / ".git").exists()) or (wt / ".git").is_file()):
         raise WorktreeAddError(f"git worktree add failed: {added.stderr[:200]}")
 
     notes: list[str] = []
@@ -214,6 +215,7 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
                 cwd=wt,
                 capture_output=True,
                 text=True,
+                check=False,
                 timeout=300,
                 env=child_env(),
             )

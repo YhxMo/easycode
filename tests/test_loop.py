@@ -197,7 +197,7 @@ async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_pat
 
     async def failing_summarize(messages, previous_summary=None):
         log.append("summarize")
-        return None  # simulate provider failure surfaced as None
+        return  # simulate provider failure surfaced as None
 
     agent.summarizer = failing_summarize
     await agent._condense_if_over_budget()
@@ -220,8 +220,8 @@ async def test_max_iterations_guard(tmp_path):
 
 async def test_concurrent_turns_isolated(tmp_path):
     """Two agents (sessions) running interleaved in the same loop."""
-    a1, p1 = make_agent(tmp_path, [{"text": "A"}])
-    a2, p2 = make_agent(tmp_path, [{"text": "B"}])
+    a1, _p1 = make_agent(tmp_path, [{"text": "A"}])
+    a2, _p2 = make_agent(tmp_path, [{"text": "B"}])
     t1 = collect(a1, "q1")
     t2 = collect(a2, "q2")
     e1, e2 = await t1, await t2
@@ -265,7 +265,7 @@ async def test_edit_file_model_view_strips_diff_review_keeps(tmp_path):
         {"tool_calls": [("c1", "edit_file", {"path": "e.py", "old_string": "return 1", "new_string": "return 42"})], "text": ""},
         {"text": "changed"},
     ]
-    agent, provider = make_agent(tmp_path, script)
+    agent, _provider = make_agent(tmp_path, script)
     agent.permission_mode = "auto-review"
     events = await collect(agent, "edit")
 

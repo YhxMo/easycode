@@ -16,9 +16,10 @@ over template commands with the same name; built-in names are reserved.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from easycode.frontmatter import parse_spec
 from easycode.skills import SkillRegistry

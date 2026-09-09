@@ -13,13 +13,13 @@ Tests are isolated: temporary HOME, scripted FakeProvider, no real service.
 
 from __future__ import annotations
 
-import inspect
 import asyncio
+import inspect
 import json
 import subprocess
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -155,7 +155,7 @@ def test_approved_shell_still_cannot_write_credentials(tmp_path, monkeypatch):
 
     cmd = ["/bin/sh", "-c", f"printf '{{}}' > {cred}"]
     # force_allowed=True simulates an approved shell: file-write protections remain.
-    proc = subprocess.run(sandbox_command(cmd, ctx, force_allowed=True), capture_output=True, text=True)
+    proc = subprocess.run(sandbox_command(cmd, ctx, force_allowed=True), capture_output=True, text=True, check=False)
     assert proc.returncode != 0
     assert not cred.exists()
 
@@ -763,3 +763,97 @@ def test_shell_cannot_write_sessions_in_workspace_write(tmp_path, monkeypatch):
     assert result["status"] == "ok"  # the shell ran at all
     assert result["exit_code"] != 0  # the write was denied by Seatbelt
     assert target.read_text(encoding="utf-8") == "ORIGINAL"
+
+
+# ---------------------------------------------------------------------------
+# SC-105: ask/auto-review 模式下，read_file 目标在项目目录之外（如 ~/.ssh）
+# 必须先经审批，不能静默读取外部敏感文件。
+# ---------------------------------------------------------------------------
+
+def test_read_file_external_requires_approval_ask_mode(tmp_path, monkeypatch):
+    from easycode.approval import needs_approval
+    from easycode.models.base import ToolCall
+    from easycode.workspace import PathContext
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    # pytest 的 tmp 在 OS 临时目录下；把 tempdir 指到别处，outside 才是真正的 external
+    import tempfile
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(home / "tdir"))
+    (home / "tdir").mkdir()
+    ext = home / "outside"  # HOME 之下、项目/临时目录/data_home 之外 -> classify=external
+    ext.mkdir()
+    secret = ext / "secret.txt"
+    secret.write_text("top-secret", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "ok.txt").write_text("fine", encoding="utf-8")
+    ctx = PathContext(primary=proj)
+
+    assert needs_approval(ToolCall(id="a", name="read_file", arguments={"path": str(secret)}), ctx, "ask") is True
+    # 项目内读取保持免批
+    assert needs_approval(ToolCall(id="b", name="read_file", arguments={"path": "ok.txt"}), ctx, "ask") is False
+    # allow-all 保持不问
+    assert needs_approval(ToolCall(id="c", name="read_file", arguments={"path": str(secret)}), ctx, "allow-all") is False
+
+
+@pytest.mark.asyncio
+async def test_read_file_external_denied_without_approval(tmp_path, monkeypatch):
+    """agent 级：ask 模式下外部读取触发审批；拒绝后内容不得落地。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    import tempfile
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(home / "tdir"))
+    (home / "tdir").mkdir()
+    ext = home / "outside"
+    ext.mkdir()
+    secret = ext / "secret.txt"
+    secret.write_text("top-secret", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    script = [{"tool_calls": [("c1", "read_file", {"path": str(secret)})]}, {"text": "done"}]
+    agent = Agent(FakeProvider(script=script), build_registry(8_000), proj)
+    prompts: list[str] = []
+
+    async def approval(tc, *_args):
+        prompts.append(tc.name)
+        return False
+
+    agent.approval_handler = approval
+    events = [event async for event in agent.respond("read it")]
+    result = next(event.tool_result for event in events if event.kind == "tool_result")
+
+    assert prompts == ["read_file"]
+    assert "top-secret" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_file_external_allowed_after_approval(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    import tempfile
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(home / "tdir"))
+    (home / "tdir").mkdir()
+    ext = home / "outside"
+    ext.mkdir()
+    secret = ext / "secret.txt"
+    secret.write_text("top-secret", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    script = [{"tool_calls": [("c1", "read_file", {"path": str(secret)})]}, {"text": "done"}]
+    agent = Agent(FakeProvider(script=script), build_registry(8_000), proj)
+
+    async def approval(_tc, *_args):
+        return True
+
+    agent.approval_handler = approval
+    events = [event async for event in agent.respond("read it")]
+    result = next(event.tool_result for event in events if event.kind == "tool_result")
+
+    assert json.loads(result)["status"] == "ok"
+    assert "top-secret" in result

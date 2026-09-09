@@ -8,7 +8,6 @@ from pathlib import Path
 from easycode.agent.context import History
 from easycode.agent.loop import Agent
 from easycode.agent.system import find_agents_rules
-from easycode.models.base import ToolCall
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 
@@ -70,7 +69,6 @@ def test_history_condense_noop_when_few_messages():
 
 async def test_agent_condenses_when_over_budget(tmp_path):
     calls = []
-    from easycode.agent.summarizer import Summarizer
 
     async def fake_summarizer(messages) -> str:
         calls.append(messages)

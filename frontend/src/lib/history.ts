@@ -46,8 +46,17 @@ export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException ? err.name === "AbortError" : (err as Error)?.name === "AbortError";
 }
 
+// 后端历史消息（OpenAI 风格 dict）的宽松形状；字段按 historyToItems 的实际读取面声明。
+export interface HistoryMessage {
+  role: string;
+  content?: unknown;
+  tool_call_id?: string;
+  tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
+  [key: string]: unknown;
+}
+
 export function historyToItems(
-  messages: any[],
+  messages: HistoryMessage[],
   approvals: ApprovalRecord[] = [],
   userTimes: string[] = [],
 ): Item[] {
@@ -85,7 +94,7 @@ export function historyToItems(
           items.push({
             kind: "tool",
             id,
-            name: tc.function.name,
+            name: tc.function.name ?? "",
             args: normalizeToolArgs(tc.function.arguments),
             result: toolResults.get(id),
             done: true,

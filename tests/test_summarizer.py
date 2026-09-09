@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
+from typing import ClassVar
 
-from easycode.agent.summarizer import build_prompt, SUMMARY_TEMPLATE, LLMSummarizer
+from easycode.agent.summarizer import SUMMARY_TEMPLATE, LLMSummarizer, build_prompt
 
 
 def test_build_prompt_new_summary() -> None:
@@ -48,7 +48,7 @@ async def test_summarize_returns_content_on_success(monkeypatch) -> None:
             class Message:
                 content = "a real summary"
             message = Message()
-        choices = [Choice()]
+        choices: ClassVar[list] = [Choice()]
 
     async def ok(*args, **kwargs):
         return Resp()

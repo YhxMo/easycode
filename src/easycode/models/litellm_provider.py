@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
-import litellm
 from litellm import acompletion
 
 from easycode.models.base import Provider, StreamEvent, ToolCall

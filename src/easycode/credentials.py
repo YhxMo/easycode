@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 import os
-from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 CREDENTIALS_DIR = ".easycode"
 CREDENTIALS_FILENAME = "credentials.json"
@@ -81,9 +81,9 @@ def load_credentials(path: Path | None = None) -> dict[str, Credential]:
     for key_id, entry in (raw or {}).items():
         if (
             not isinstance(entry, dict)
-            or not entry.get("api_key")
+            or (not entry.get("api_key")
             and not entry.get("provider")
-            and not entry.get("base_url")
+            and not entry.get("base_url"))
         ):
             continue
         out[str(key_id)] = Credential(

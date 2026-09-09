@@ -15,16 +15,20 @@ import os
 import re
 import shlex
 from pathlib import Path
-from typing import Any
 
 from easycode.models.base import ToolCall
 from easycode.policy import (
-    PERMISSIONS,
     PERM_ALLOW_ALL,
-    PERM_ASK,
-    PERM_AUTO_REVIEW,
     SANDBOX_DANGER_FULL_ACCESS,
-    permission_parse,
+)
+from easycode.policy import (
+    PERM_ASK as PERM_ASK,  # re-export: config/loop import the mode constants from here
+)
+from easycode.policy import (
+    PERM_AUTO_REVIEW as PERM_AUTO_REVIEW,
+)
+from easycode.policy import (
+    permission_parse as permission_parse,  # re-export: config imports it from here
 )
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
@@ -50,6 +54,10 @@ NETWORK_HINTS = (
 NETWORK_HINT_RE = re.compile("|".join(re.escape(h) for h in NETWORK_HINTS), re.IGNORECASE)
 
 FILE_EDIT_TOOLS = {"write_file", "edit_file"}
+
+#: 读取类工具：目标落在项目目录之外（classify() == "external"，如 ~/.ssh）时
+#: 在 ask / auto-review 模式下必须先经审批（SC-105），防止静默读取外部敏感文件。
+READ_TOOLS = {"read_file"}
 
 TRUNC_LIMIT = 80
 
@@ -111,6 +119,11 @@ def needs_approval(tc: ToolCall, ctx: PathContext, mode: str) -> bool:
     """
     if mode == PERM_ALLOW_ALL:
         return False
+    if tc.name in READ_TOOLS:
+        path = tc.arguments.get("path", "")
+        if not path:
+            return False
+        return ctx.classify(ctx.resolve(str(path))) == "external"
     if tc.name in FILE_EDIT_TOOLS:
         path = tc.arguments.get("path", "")
         if not path:
@@ -143,6 +156,8 @@ def approval_reason(tc: ToolCall, ctx: PathContext) -> str:
     the ``scope`` line), so the prompt reads like opencode's permission
     dialog category line.
     """
+    if tc.name in READ_TOOLS:
+        return "读取项目目录之外的文件"
     if tc.name in FILE_EDIT_TOOLS:
         path = tc.arguments.get("path", "")
         resolved = ctx.resolve(str(path))
@@ -170,11 +185,7 @@ def looks_like_network(command: str) -> bool:
 
 def needs_review(tc: ToolCall) -> bool:
     """Auto-review mode: worth surfacing afterwards (file changes)."""
-    if tc.name in FILE_EDIT_TOOLS:
-        return True
-    if tc.name == "execute_shell":
-        return True
-    return False
+    return tc.name in FILE_EDIT_TOOLS or tc.name == "execute_shell"
 
 
 def grant_for_toolcall(tc: ToolCall, ctx: PathContext) -> ToolGrant:
@@ -280,7 +291,7 @@ def _rm_recursive_root_reason(command: str) -> str | None:
             expanded = _expand_path(t).resolve()
         except (OSError, ValueError):
             continue
-        if expanded == root or expanded == home:
+        if expanded in (root, home):
             return "rm 递归删除系统根目录/用户主目录，已阻止"
     return None
 

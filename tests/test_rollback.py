@@ -14,13 +14,13 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from easycode.agent.loop import Agent
+from easycode.config import Config
 from easycode.models.base import Provider, StreamEvent, ToolCall
 from easycode.snapshot import FileSnapshotManager
 from easycode.tools import build_registry
 from easycode.tools.registry import ToolRegistry, tool
 from easycode.web.main import create_app
 from easycode.web.session import SessionStore
-from easycode.config import Config
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
@@ -133,8 +133,7 @@ class TwoTurnProvider(Provider):
 
 
 def _agent(repo: Path, provider) -> Agent:
-    agent = Agent(provider=provider, registry=build_registry(8000), root=repo)
-    return agent
+    return Agent(provider=provider, registry=build_registry(8000), root=repo)
 
 
 class Sink:
@@ -155,7 +154,7 @@ async def test_agent_undo_redo(repo: Path) -> None:
     assert (repo / "app.py").read_text(encoding="utf-8") == "print('hello world')\n"
     assert agent.undo_available()
 
-    summary = agent.undo_turn()
+    agent.undo_turn()
     assert (repo / "app.py").read_text(encoding="utf-8") == "print('hello')\n"
     assert not agent.undo_available()
     assert agent.redo_available()
@@ -318,13 +317,12 @@ async def test_agent_undo_to_user(repo: Path) -> None:
     users = [m for m in agent.history.messages if m.get("role") == "user"]
     assert users == []
 
-    agent.undo_to_user(0) if False else None  # noqa
+    agent.undo_to_user(0) if False else None
     with pytest.raises(RuntimeError):
         agent.undo_to_user(3)  # out of range
 
 
 def test_web_undo_until_user(repo: Path) -> None:
-    from tests.conftest import FakeProvider
 
     cfg = Config.load()
     created: list[Agent] = []

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-import litellm
 from litellm import acompletion
 
 from easycode.models.base import Message
@@ -71,22 +71,18 @@ def build_prompt(previous_summary: str | None, context: str) -> str:
         f"Here is the conversation so far:\n\n<conversation>\n{context}\n</conversation>"
     )
     if not previous_summary:
-        return "\n\n".join(
-            [
-                conversation,
-                "Create a new anchored summary from the conversation history in the "
-                "<conversation> tags above so another coding agent can continue the work.",
-                SUMMARY_TEMPLATE,
-            ]
+        return (
+            f"{conversation}\n\n"
+            "Create a new anchored summary from the conversation history in the "
+            "<conversation> tags above so another coding agent can continue the work.\n\n"
+            f"{SUMMARY_TEMPLATE}"
         )
-    return "\n\n".join(
-        [
-            conversation,
-            "Here is the summary of the conversation before the <conversation> above:\n\n"
-            f"<prior-summary>\n{previous_summary}\n</prior-summary>",
-            SUMMARY_UPDATE_INSTRUCTIONS,
-            SUMMARY_TEMPLATE,
-        ]
+    return (
+        f"{conversation}\n\n"
+        "Here is the summary of the conversation before the <conversation> above:\n\n"
+        f"<prior-summary>\n{previous_summary}\n</prior-summary>\n\n"
+        f"{SUMMARY_UPDATE_INSTRUCTIONS}\n\n"
+        f"{SUMMARY_TEMPLATE}"
     )
 
 

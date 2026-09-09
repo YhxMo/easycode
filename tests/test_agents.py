@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from easycode.agent.loop import Agent
-from easycode.agents import AgentRegistry, AgentSpec
+from easycode.agents import AgentRegistry
 from easycode.frontmatter import FrontmatterError, parse_frontmatter, parse_spec
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider

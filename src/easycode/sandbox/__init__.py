@@ -7,7 +7,7 @@ import re
 
 from easycode.sandbox.macos import sandbox_command
 
-__all__ = ["sandbox_command", "child_env"]
+__all__ = ["child_env", "sandbox_command"]
 
 #: Environment variable names treated as secret-bearing and stripped from
 #: model-originated child processes by default (a conservative child env policy).

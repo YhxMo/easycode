@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
+import type { HistoryMessage } from "../lib/history";
 
 // The App is exercised purely against a mocked ./api. No real backend, no
 // network, no ~/.easycode data (easycode-audit rule 3). SSE is driven by
@@ -37,7 +38,7 @@ function session(id: string, title: string): api.SessionSummary {
   return { id, title, created_at: "2026-01-01T00:00:00Z", model_alias: "m", permission_mode: "ask" };
 }
 
-function detail(id: string, title: string, messages: unknown[]): api.SessionDetail {
+function detail(id: string, title: string, messages: HistoryMessage[]): api.SessionDetail {
   return {
     id,
     title,

@@ -122,7 +122,9 @@ def sandbox_command(
             rp = r.resolve()
             if not any(rp == w or rp.is_relative_to(w) or w.is_relative_to(rp) for w in writable):
                 writable.append(rp)
-    write_rules = ["(allow file-write* (subpath (param \"WRITABLE_ROOT_%d\")))" % i for i in range(len(writable))]
+    write_rules = [
+        f'(allow file-write* (subpath (param "WRITABLE_ROOT_{i}")))' for i in range(len(writable))
+    ]
 
     protected = list(ctx.protected_paths())
     if grant:
@@ -132,7 +134,7 @@ def sandbox_command(
                 if not any(sub == q or sub.is_relative_to(q) for q in protected):
                     protected.append(sub)
     protected_rules = [
-        "(deny file-write* (subpath (param \"PROTECTED_ROOT_%d\")))" % i
+        f'(deny file-write* (subpath (param "PROTECTED_ROOT_{i}")))'
         for i in range(len(protected))
     ]
     network_policy = "(allow network*)" if (grant and grant.network_allowed) else ""

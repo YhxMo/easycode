@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from easycode.agent.loop import Agent
-from easycode.frontmatter import FrontmatterError
-from easycode.skills import Skill, SkillRegistry
+from easycode.skills import SkillRegistry
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 

@@ -467,7 +467,7 @@ def test_grant_external_writable_root_succeeds_neighbor_fails(tmp_path):
 
     # a network grant alone does not grant external writes (network/file separation).
     net_only = sandbox_command(["/bin/sh", "-c", f"printf nope > {ext / 'n.txt'}"], ctx, grant=ToolGrant(network_allowed=True))
-    proc = subprocess.run(net_only, capture_output=True, text=True)
+    proc = subprocess.run(net_only, capture_output=True, text=True, check=False)
     assert proc.returncode != 0
     assert not (ext / "n.txt").exists()
 
@@ -505,7 +505,7 @@ def test_grant_protects_git_under_grant_root(tmp_path):
         ctx,
         grant=ToolGrant(writable_roots=(groot,)),
     )
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert proc.returncode != 0
     assert not (groot / ".git" / "config").exists()
 

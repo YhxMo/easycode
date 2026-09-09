@@ -19,11 +19,11 @@ here.
 
 from __future__ import annotations
 
-import easycode.agent.loop as loop
 import pytest
 
+import easycode.agent.loop as loop
 from easycode.agent.context import History
-from easycode.agent.loop import Agent, BudgetExceededError, PRUNED_OUTPUT
+from easycode.agent.loop import PRUNED_OUTPUT, Agent, BudgetExceededError
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 

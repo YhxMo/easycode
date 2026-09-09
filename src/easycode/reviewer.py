@@ -64,7 +64,7 @@ class AutoReviewer:
             raw = await asyncio.wait_for(collect(), timeout=self.timeout)
             data = _parse_json(raw)
             if not isinstance(data.get("approve"), bool):
-                raise ValueError("reviewer response lacks boolean approve")
+                raise TypeError("reviewer response lacks boolean approve")
             return ReviewDecision(bool(data["approve"]), str(data.get("rationale") or "no rationale"))
         except Exception as exc:  # noqa: BLE001 - reviewer failures must fail closed
             return ReviewDecision(False, f"automatic review failed: {type(exc).__name__}: {exc}")
@@ -79,5 +79,5 @@ def _parse_json(text: str) -> dict[str, Any]:
             value = value.lstrip()[4:].lstrip()
     data = json.loads(value)
     if not isinstance(data, dict):
-        raise ValueError("reviewer response is not an object")
+        raise TypeError("reviewer response is not an object")
     return data

@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from easycode.policy import cap_permission
 
 if TYPE_CHECKING:
-    from easycode.agents import AgentSpec
     from easycode.agent.loop import Agent, ToolCall
+    from easycode.agents import AgentSpec
 
 DEFAULT_MAX_PARALLEL = 4
 
@@ -104,7 +104,7 @@ USE_SKILL_SCHEMA = {
 BUILTIN_TOOLS = {"parallel_tasks", "task", "use_skill"}
 
 
-async def run_task(agent: "Agent", tc: "ToolCall") -> str:
+async def run_task(agent: Agent, tc: ToolCall) -> str:
     """Runner for the ``task`` tool: delegate one job to a named subagent."""
     name = str(tc.arguments.get("agent", "")).strip().lower()
     prompt = str(tc.arguments.get("prompt", "")).strip()
@@ -133,7 +133,7 @@ async def run_task(agent: "Agent", tc: "ToolCall") -> str:
     )
 
 
-async def run_use_skill(agent: "Agent", tc: "ToolCall") -> str:
+async def run_use_skill(agent: Agent, tc: ToolCall) -> str:
     """Runner for the ``use_skill`` tool: inject a skill body into the session."""
     name = str(tc.arguments.get("name", "")).strip().lower()
     if not agent.skills:
@@ -156,7 +156,7 @@ async def run_use_skill(agent: "Agent", tc: "ToolCall") -> str:
     )
 
 
-async def run_parallel(agent: "Agent", tasks: list[dict], max_parallel: int) -> str:
+async def run_parallel(agent: Agent, tasks: list[dict], max_parallel: int) -> str:
     """Runner for the ``parallel_tasks`` tool: run independent subtasks concurrently."""
     sem = asyncio.Semaphore(min(max_parallel, 6) or 1)
 
@@ -175,7 +175,7 @@ async def run_parallel(agent: "Agent", tasks: list[dict], max_parallel: int) -> 
     return json.dumps({"status": "ok", "count": len(results), "results": results}, ensure_ascii=False)
 
 
-async def run_builtin(agent: "Agent", tc: "ToolCall") -> str:
+async def run_builtin(agent: Agent, tc: ToolCall) -> str:
     """Dispatch one builtin tool call to its runner (previously ``_run_builtin``)."""
     if tc.name == "parallel_tasks":
         try:
@@ -191,7 +191,7 @@ async def run_builtin(agent: "Agent", tc: "ToolCall") -> str:
     return json.dumps({"status": "error", "message": f"unknown builtin tool: {tc.name}"})
 
 
-def make_subagent(agent: "Agent", spec: "AgentSpec | None" = None) -> "Agent":
+def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
     """Build a subagent; ``spec`` (task tool) overrides model/system/tools/permission.
 
     Uses ``agent.subagent_factory`` when provided (dependency inversion); the

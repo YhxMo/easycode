@@ -32,6 +32,8 @@ jobs:
           python-version: "3.14"
       - name: Install Python dependencies (locked)
         run: uv sync --frozen
+      - name: Lint (ruff, blocking gate)
+        run: uv run --frozen ruff check src tests
       - name: Run backend tests
         run: PYTHONDONTWRITEBYTECODE=1 uv run --frozen pytest -q -p no:cacheprovider
 
@@ -52,6 +54,8 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend dependencies (locked)
         run: npm ci
+      - name: Lint (eslint, blocking gate on errors)
+        run: npm run lint
       - name: Type-check and build (tsc -b && vite build)
         run: npm run build
       - name: Run frontend tests

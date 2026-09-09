@@ -53,10 +53,9 @@ export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
   useLayoutEffect(() => {
-    if (!open) {
-      setPos(null);
-      return;
-    }
+    // 只在打开时测量定位；关闭后的陈旧 pos 不可见（菜单受 open 门控），
+    // 重开时本 effect 会同步重测，故无需在关闭路径 setState（避免级联渲染）。
+    if (!open) return;
     const btn = ref.current?.querySelector(".group-more-btn");
     const menu = menuRef.current;
     if (!btn || !menu) return;

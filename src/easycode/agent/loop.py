@@ -3,27 +3,38 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from easycode.agent import builtin_tools
 from easycode.agent.builtin_tools import (
     BUILTIN_TOOLS,
-    DEFAULT_MAX_PARALLEL,
     PARALLEL_TASKS_SCHEMA,
     TASK_SCHEMA,
     USE_SKILL_SCHEMA,
 )
 from easycode.agent.compaction import (
     COMPACTION_DEFAULTS,
-    PRUNE_MINIMUM,
-    PRUNE_PROTECT,
-    PRUNED_OUTPUT,
-    PROTECTED_TOOL_OUTPUTS,
-    BudgetExceededError,
     Compactor,
+)
+from easycode.agent.compaction import (
+    PROTECTED_TOOL_OUTPUTS as PROTECTED_TOOL_OUTPUTS,
+)
+from easycode.agent.compaction import (
+    PRUNE_MINIMUM as PRUNE_MINIMUM,  # re-export: compaction.py reads these back via _loop()
+)
+from easycode.agent.compaction import (
+    PRUNE_PROTECT as PRUNE_PROTECT,
+)
+from easycode.agent.compaction import (
+    PRUNED_OUTPUT as PRUNED_OUTPUT,
+)
+from easycode.agent.compaction import (
+    BudgetExceededError as BudgetExceededError,  # re-export: public loop API (budget gate)
 )
 from easycode.agent.context import History
 from easycode.agent.rollback import TurnRollback
@@ -37,7 +48,7 @@ from easycode.approval import (
     grant_for_toolcall,
     needs_approval,
 )
-from easycode.models.base import Provider, StreamEvent, ToolCall
+from easycode.models.base import Provider, ToolCall
 from easycode.policy import (
     APPROVAL_NEVER,
     REVIEWER_AUTO,
@@ -47,6 +58,12 @@ from easycode.policy import (
 from easycode.reviewer import ReviewDecision
 from easycode.tools.registry import ToolRegistry
 from easycode.workspace import PathContext, ToolGrant
+
+if TYPE_CHECKING:
+    from easycode.agents import AgentRegistry, AgentSpec
+    from easycode.mcp import MCPSessionManager
+    from easycode.skills import SkillRegistry
+    from easycode.snapshot import FileSnapshotManager
 
 MAX_TOOL_ITERATIONS = 12
 
@@ -76,7 +93,7 @@ class Agent:
     enabled_tools: set[str] | None = None
     hook: Callable[[str, ToolCall, str], None] | None = None
     summarizer: Summarizer | None = None
-    subagent_factory: Callable[[str], "Agent"] | None = None
+    subagent_factory: Callable[[str], Agent] | None = None
     include_parallel_tool: bool = True
     secondary_roots: list[Path] = field(default_factory=list)
     extra_safe_dirs: list[Path] = field(default_factory=list)
@@ -88,15 +105,15 @@ class Agent:
     _review_decisions: list[bool] = field(default_factory=list)
     _consecutive_review_denials: int = 0
     mcp_servers: dict[str, dict] = field(default_factory=dict)
-    mcp_manager: "MCPSessionManager | None" = None
+    mcp_manager: MCPSessionManager | None = None
     include_mcp_tools: bool = True
     max_context_tokens: int = 32_000
     compaction: dict[str, Any] = field(default_factory=dict)
     model_limits: dict[str, int] | None = None
-    snapshot_manager: "FileSnapshotManager | None" = None
+    snapshot_manager: FileSnapshotManager | None = None
     _redo_stack: list[list[dict]] = field(default_factory=list)
-    agents: "AgentRegistry | None" = None
-    skills: "SkillRegistry | None" = None
+    agents: AgentRegistry | None = None
+    skills: SkillRegistry | None = None
     system_override: str | None = None
     # in-flight tool threads + whether a shell ran this turn, so a
     # cancellation can drain them (late-write barrier) and report the un-doable
@@ -242,32 +259,30 @@ class Agent:
         except (asyncio.CancelledError, KeyboardInterrupt):
             # roll back this turn's partial messages so history stays valid, and
             # restore file pre-state after draining any in-flight tool thread.
-            restored = await self._abort_turn(start_len)
+            await self._abort_turn(start_len)
             note = self._residual_risk_note()
             self._last_cancel_note = note
-            try:
+            # The consumer may already be gone (GeneratorExit) or raising;
+            # the original cancel must win, so swallow anything the yield does.
+            with contextlib.suppress(BaseException):
                 if note:
                     yield AgentEvent(kind="error", error=note)
                 yield AgentEvent(kind="cancelled")
-            except BaseException:
-                pass
             raise
-        except Exception as exc:  # noqa: BLE001 - any non-cancel failure must not leave half state
+        except Exception as exc:
             # A provider (or any loop step) that raises mid-turn after yielding
             # tool_calls would otherwise leave [user] in history and a dangling
             # snapshot record. Roll back the same way cancellation does, surface
             # the error to the UI, then re-raise so the caller can react.
-            restored = await self._abort_turn(start_len)
+            await self._abort_turn(start_len)
             note = self._residual_risk_note()
             self._last_cancel_note = note
-            try:
+            with contextlib.suppress(BaseException):
                 yield AgentEvent(
                     kind="error",
                     error=f"{type(exc).__name__}: {exc}"
                     + (f"\n{note}" if note else ""),
                 )
-            except BaseException:
-                pass
             raise
 
     async def _abort_turn(self, start_len: int) -> list[str]:
@@ -310,7 +325,7 @@ class Agent:
                 asyncio.gather(*pending, return_exceptions=True),
                 timeout=TOOL_DRAIN_TIMEOUT,
             )
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             # A tool that outlives the drain is dropped, not rolled back; the
             # caller still restores the snapshot and reports the residual risk.
             # Record tracked tools that are still in-flight (their future
@@ -580,7 +595,7 @@ class Agent:
     async def _run_parallel(self, tasks: list[dict], max_parallel: int) -> str:
         return await builtin_tools.run_parallel(self, tasks, max_parallel)
 
-    def _make_subagent(self, spec: "AgentSpec | None" = None) -> "Agent":
+    def _make_subagent(self, spec: AgentSpec | None = None) -> Agent:
         """Build a subagent; ``spec`` (task tool) overrides model/system/tools/permission."""
         return builtin_tools.make_subagent(self, spec)
 

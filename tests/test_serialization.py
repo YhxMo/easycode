@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 import httpx
 import pytest
@@ -115,7 +115,7 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
             await _wait_until(lambda: len(store.list()) == 1)
             sid = list(store.list())[0].id
             # Ensure the stream's gen() has actually acquired the session lock.
-            await _wait_until(lambda: store.get(sid)._lock.locked())
+            await _wait_until(store.get(sid)._lock.locked)
             # While chat1 streams (holds the session lock), chat2 must be busy.
             r2 = await c.post("/api/chat", json={"message": "second chat", "session_id": sid})
             assert r2.status_code == 409, r2.text
@@ -158,7 +158,7 @@ def test_inflight_chat_undo_redo_permission_archive_409(tmp_path) -> None:
             chat = asyncio.create_task(c.post("/api/chat", json={"message": "hi"}))
             await _wait_until(lambda: len(store.list()) == 1)
             sid = list(store.list())[0].id
-            await _wait_until(lambda: store.get(sid)._lock.locked())
+            await _wait_until(store.get(sid)._lock.locked)
 
             for method, url, body in (
                 ("POST", f"/api/sessions/{sid}/undo", None),
@@ -204,7 +204,7 @@ def test_cancel_during_inflight_not_gated(tmp_path) -> None:
             chat = asyncio.create_task(c.post("/api/chat", json={"message": "hi"}))
             await _wait_until(lambda: len(store.list()) == 1)
             sid = list(store.list())[0].id
-            await _wait_until(lambda: store.get(sid)._lock.locked())
+            await _wait_until(store.get(sid)._lock.locked)
 
             r_cancel = await c.post(f"/api/sessions/{sid}/cancel")
             assert r_cancel.status_code == 200, r_cancel.text

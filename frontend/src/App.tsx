@@ -173,9 +173,10 @@ export default function App() {
     [],
   );
 
+  const [archived, setArchived] = useState<SessionSummary[]>([]);
   const refreshArchived = useCallback(() => {
     fetchArchivedSessions().then(setArchived).catch(() => {});
-  }, []);
+  }, [setArchived]);
 
   useEffect(() => {
     refreshSessions();
@@ -216,7 +217,9 @@ export default function App() {
       const next = { ...prev, [rootKey]: !prev[rootKey] };
       try {
         localStorage.setItem("easycode:collapsed_projects", JSON.stringify(next));
-      } catch {}
+      } catch {
+        // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
+      }
       return next;
     });
   }, []);
@@ -283,7 +286,6 @@ export default function App() {
   // ---- project row actions (new chat / more menu) ----
   const [editTarget, setEditTarget] = useState<{ root: string | null; name: string } | null>(null);
   const [removeTarget, setRemoveTarget] = useState<{ root: string | null; count: number } | null>(null);
-  const [archived, setArchived] = useState<SessionSummary[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
 
@@ -306,7 +308,7 @@ export default function App() {
       setArchived((prev) => prev.filter((x) => x.id !== session.id));
       refreshSessions();
     },
-    [refreshSessions],
+    [refreshSessions, setArchived],
   );
 
   const newChatInProject = useCallback(

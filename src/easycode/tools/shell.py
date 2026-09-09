@@ -108,6 +108,7 @@ def execute_shell(
             cwd=root,
             capture_output=True,
             text=True,
+            check=False,
             timeout=args.timeout,
             env=child_env(),
         )

@@ -37,7 +37,7 @@ class SkillRegistry:
         self._skills: dict[str, Skill] = dict(skills or {})
 
     @classmethod
-    def discover(cls, roots: list[Path], user_dir: Path | None = None) -> "SkillRegistry":
+    def discover(cls, roots: list[Path], user_dir: Path | None = None) -> SkillRegistry:
         reg = cls()
         user = (user_dir or Path.home() / ".easycode" / "skills")
         for d in sorted(user.iterdir()) if user.is_dir() else []:

@@ -23,6 +23,7 @@ dev = [
     "httpx>=0.27",
     "mcp>=1.29,<2",
     "playwright>=1.62.0",
+    "ruff>=0.16,<0.17",
 ]
 
 [project.scripts]
@@ -38,3 +39,34 @@ packages = ["src/easycode"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["**/._*"]
+
+[tool.ruff.lint]
+select = [
+    "E9",            # syntax-level errors
+    "F",             # pyflakes: undefined names, unused imports/vars, f-string bugs
+    "I",             # import sorting
+    "UP",            # pyupgrade: modern syntax
+    "C4",            # comprehension hygiene
+    "RET",           # return hygiene
+    "SIM",           # simplifications
+    "RUF",           # ruff-specific: unused noqa, dangling asyncio task, ...
+    "BLE",           # no blind except
+    "S110", "S112",  # try-except-pass/continue
+    "TRY004",        # isinstance checks raise TypeError, not ValueError
+    "FLY",           # static join -> f-string
+    "ISC",           # implicit string concat hygiene
+    "PLW",           # pylint warnings (subprocess without check, ...)
+]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # 中文注释/字符串的全角标点是有意为之
+    "SIM105",                       # 取消/回滚路径的 try-except-pass 是有意的（部分改用 suppress）
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["RUF015", "RUF006"]  # 测试里 list()[0] 的 IndexError 语义本身就是断言的一部分；ensure_future 后台任务同理

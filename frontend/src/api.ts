@@ -1,3 +1,5 @@
+import type { HistoryMessage } from "./lib/history";
+
 export interface ToolCall {
   id: string;
   name: string;
@@ -44,7 +46,7 @@ export interface ApprovalRecord {
 }
 
 export interface SessionDetail extends SessionSummary {
-  messages: any[];
+  messages: HistoryMessage[];
   approvals?: ApprovalRecord[];
   user_times?: string[];
 }

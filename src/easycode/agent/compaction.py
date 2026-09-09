@@ -45,7 +45,7 @@ class BudgetExceededError(Exception):
     """
 
 
-def _loop() -> "Any":
+def _loop() -> Any:
     """Return the ``easycode.agent.loop`` module at call time.
 
     ``PRUNE_MINIMUM`` / ``PRUNE_PROTECT`` are imported (and re-exported) by
@@ -70,17 +70,17 @@ class Compactor:
     monkeypatch points stay intact.
     """
 
-    def __init__(self, agent: "Any") -> None:
+    def __init__(self, agent: Any) -> None:
         self._agent = agent
 
     # -- live view of the owning agent ---------------------------------------
 
     @property
-    def agent(self) -> "Any":
+    def agent(self) -> Any:
         return self._agent
 
     @property
-    def history(self) -> "Any":
+    def history(self) -> Any:
         return self._agent.history
 
     @property
@@ -231,10 +231,10 @@ class Compactor:
 
 __all__ = [
     "COMPACTION_DEFAULTS",
+    "PROTECTED_TOOL_OUTPUTS",
+    "PRUNED_OUTPUT",
     "PRUNE_MINIMUM",
     "PRUNE_PROTECT",
-    "PRUNED_OUTPUT",
-    "PROTECTED_TOOL_OUTPUTS",
     "BudgetExceededError",
     "Compactor",
 ]

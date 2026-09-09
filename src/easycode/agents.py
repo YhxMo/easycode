@@ -21,7 +21,7 @@ Body = the agent's system prompt.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from easycode.frontmatter import parse_spec
@@ -55,7 +55,7 @@ class AgentRegistry:
         self._specs: dict[str, AgentSpec] = dict(specs or {})
 
     @classmethod
-    def discover(cls, roots: list[Path], user_dir: Path | None = None) -> "AgentRegistry":
+    def discover(cls, roots: list[Path], user_dir: Path | None = None) -> AgentRegistry:
         """Discover agents: project dirs win over the personal dir on conflicts."""
         reg = cls()
         user = (user_dir or Path.home() / ".easycode" / "agents")

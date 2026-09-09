@@ -6,10 +6,11 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from easycode.agent.context import SUMMARY_PREFIX, History
 from easycode.agent.loop import Agent
@@ -52,7 +53,7 @@ def _summary_text(msg: dict) -> str:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass

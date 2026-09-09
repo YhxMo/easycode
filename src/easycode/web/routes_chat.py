@@ -10,11 +10,12 @@ module never hand-builds a ``data: ...`` line.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+import contextlib
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -29,6 +30,9 @@ from easycode.web.bridge import (
 )
 from easycode.web.session import Session
 from easycode.workspace import resolve_workspace_path
+
+if TYPE_CHECKING:
+    from easycode.commands import CommandRegistry
 
 
 class ChatRequest(BaseModel):
@@ -54,7 +58,7 @@ def _session_roots(sess: Session, cfg: Any) -> list[Path]:
     return [Path(p) for p in raw if p]
 
 
-def _build_web_commands(roots: list[Path], skills) -> "CommandRegistry":
+def _build_web_commands(roots: list[Path], skills) -> CommandRegistry:
     """Registry for the Web UI: templates + skill commands (+ builtin placeholders)."""
     from easycode.commands import Command, CommandRegistry
 
@@ -75,7 +79,6 @@ def _build_web_commands(roots: list[Path], skills) -> "CommandRegistry":
 
 def _expand_command(message: str, sess: Session, cfg: Any) -> str:
     """Resolve a leading '/' message: templates/skills expand, builtins rejected."""
-    from easycode.commands import CommandRegistry
 
     reg = _build_web_commands(_session_roots(sess, cfg), sess.agent.skills)
     resolved = reg.resolve(message)
@@ -123,8 +126,8 @@ def register_chat(app, cfg: Any, store: Any, broker: ApprovalBroker) -> None:
         if sess is None:
             return  # _get_session surfaces the 404
         if root_raw:
-            request_root = _normalise_root(root_raw, cfg.root)
-            if _project_key(request_root) != _project_key(_session_primary(sess, cfg)):
+            request_root = _normalise_root(root_raw)
+            if _project_key(request_root) != _project_key(_session_primary(sess)):
                 raise HTTPException(409, "workspace root does not match session primary")
         if secondary_raw:
             request_sec = sorted(
@@ -137,7 +140,7 @@ def register_chat(app, cfg: Any, store: Any, broker: ApprovalBroker) -> None:
                 raise HTTPException(409, "secondary roots do not match session")
 
     @app.post("/api/chat")
-    async def chat(req: ChatRequest, background: BackgroundTasks) -> StreamingResponse:
+    async def chat(req: ChatRequest) -> StreamingResponse:
         if not req.message.strip():
             raise HTTPException(422, "empty message")
         if req.root and not Path(req.root).expanduser().is_dir():
@@ -194,7 +197,7 @@ def register_chat(app, cfg: Any, store: Any, broker: ApprovalBroker) -> None:
                     sess.agent.permission_mode = perm_mode
                 if sess.title == "新会话":
                     sess.title = raw_message.strip()[:30]
-                sess.user_times.append(datetime.now(timezone.utc).isoformat())
+                sess.user_times.append(datetime.now(UTC).isoformat())
                 yield session_sse(sess.id)
                 gen_it = stream_chat_with_approval(
                     sess.agent, req.message, broker, cancel_event=cancel_event, session=sess
@@ -208,10 +211,8 @@ def register_chat(app, cfg: Any, store: Any, broker: ApprovalBroker) -> None:
                     else:
                         yield event_to_sse(payload)
             except asyncio.CancelledError:
-                try:
+                with contextlib.suppress(BaseException):
                     yield cancelled_sse()
-                except BaseException:
-                    pass
                 raise
             finally:
                 if sess.cancel_event is cancel_event:

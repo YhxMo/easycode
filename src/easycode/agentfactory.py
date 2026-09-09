@@ -17,7 +17,6 @@ from easycode.credentials import load_credentials
 from easycode.models.litellm_provider import LiteLLMProvider
 from easycode.tools import build_registry
 
-
 KNOWN_PROVIDER_PREFIXES = {
     "openai",
     "anthropic",

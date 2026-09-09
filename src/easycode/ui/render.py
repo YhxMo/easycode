@@ -7,7 +7,6 @@ import json
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
-from rich.text import Text
 
 from easycode.agent.loop import AgentEvent
 
@@ -68,7 +67,7 @@ def show_diff_summary(edits: list[dict]) -> None:
     """Render a multi-file edit summary (used by /run)."""
     if not edits:
         return
-    console.print(Panel("[bold cyan]修改汇总[/] — 共 {} 个文件".format(len(edits)), border_style="cyan"))
+    console.print(Panel(f"[bold cyan]修改汇总[/] — 共 {len(edits)} 个文件", border_style="cyan"))
     for edit in edits:
         console.print(f"\n[bold]{edit['path']}[/]")
         console.print(Syntax(edit["diff"], "diff", theme="monokai", word_wrap=True))

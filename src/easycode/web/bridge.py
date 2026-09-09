@@ -6,11 +6,15 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 from easycode.agent.loop import Agent, AgentEvent
 from easycode.models.base import ToolCall
 from easycode.workspace import ToolGrant
+
+if TYPE_CHECKING:
+    from easycode.web.session import Session
 
 # Throttle knobs for human-friendly streaming: coalesce token-level text into
 # larger chunks (either at least TEXT_FLUSH_CHARS chars, or at most
@@ -153,7 +157,7 @@ async def stream_chat_with_approval(
     flush_chars: int = TEXT_FLUSH_CHARS,
     flush_seconds: float = TEXT_FLUSH_SECONDS,
     cancel_event: asyncio.Event | None = None,
-    session: "Session | None" = None,
+    session: Session | None = None,
 ) -> AsyncIterator[tuple[str, object]]:
     """Agent turn with human approval interleaved.
 
@@ -216,7 +220,7 @@ async def stream_chat_with_approval(
                 decision = "approved" if approve else "denied"
                 if approve and session and always and key not in session.always_allow:
                     session.always_allow.append(key)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 decision = "expired"
             finally:
                 broker.remove(approval_id)

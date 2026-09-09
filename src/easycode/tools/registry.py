@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel
 
@@ -43,9 +44,9 @@ class Tool:
         self,
         arguments: dict[str, Any],
         root: Path,
-        ctx: "PathContext | None" = None,
+        ctx: PathContext | None = None,
         force_allowed: bool = False,
-        grant: "ToolGrant | None" = None,
+        grant: ToolGrant | None = None,
     ) -> Any:
         params = self.params_model.model_validate(arguments)
         return self.handler(params, root=root, ctx=ctx, force_allowed=force_allowed, grant=grant)
@@ -71,9 +72,9 @@ class ToolRegistry:
         name: str,
         arguments: dict[str, Any],
         root: Path,
-        ctx: "PathContext | None" = None,
+        ctx: PathContext | None = None,
         force_allowed: bool = False,
-        grant: "ToolGrant | None" = None,
+        grant: ToolGrant | None = None,
     ) -> str:
         if name not in self._tools:
             raise KeyError(f"unknown tool: {name}")
@@ -156,15 +157,15 @@ class ToolRegistry:
                     best = (size, path, node)
             if isinstance(node, dict):
                 for k, v in node.items():
-                    walk(v, path + (k,))
+                    walk(v, (*path, k))
             elif isinstance(node, list):
                 for i, v in enumerate(node):
-                    walk(v, path + (i,))
+                    walk(v, (*path, i))
 
         walk(data, ())
         if best is None:
             return
-        _, path, lst = best
+        _, _path, lst = best
         lo, hi = 1, len(lst)
         while lo < hi:
             mid = (lo + hi + 1) // 2
@@ -196,10 +197,10 @@ class ToolRegistry:
                     leaves.append((path, node))
             elif isinstance(node, dict):
                 for k, v in node.items():
-                    walk(v, path + (k,))
+                    walk(v, (*path, k))
             elif isinstance(node, list):
                 for i, v in enumerate(node):
-                    walk(v, path + (i,))
+                    walk(v, (*path, i))
 
         walk(data, ())
         if not leaves:

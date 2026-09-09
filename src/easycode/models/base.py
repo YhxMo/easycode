@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 Message = dict[str, Any]
 """OpenAI-format message: role/content/tool_calls/tool_call_id."""

@@ -78,14 +78,15 @@ def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None,
     bytes_used = 0
     truncated = False
     for line in all_lines[start : start + args.limit]:
+        out_line = line
         if len(line) > MAX_LINE_LEN:
-            line = line[:MAX_LINE_LEN] + "…[truncated line]"
+            out_line = line[:MAX_LINE_LEN] + "…[truncated line]"
             truncated = True
-        size = len(line.encode("utf-8", errors="replace")) + 1
+        size = len(out_line.encode("utf-8", errors="replace")) + 1
         if selected and bytes_used + size > MAX_READ_BYTES:
             truncated = True
             break
-        selected.append(line)
+        selected.append(out_line)
         bytes_used += size
     if start + len(selected) < total:
         truncated = True

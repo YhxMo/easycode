@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -165,7 +164,7 @@ class StdioTransport(_BaseTransport):
                 if self.proc.stdin is not None:
                     self.proc.stdin.close()
                 await asyncio.wait_for(self.proc.wait(), timeout=2.0)
-            except (asyncio.TimeoutError, ProcessLookupError):
+            except (TimeoutError, ProcessLookupError):
                 try:
                     self.proc.kill()
                 except ProcessLookupError:
@@ -247,7 +246,7 @@ class MCPSession:
 
     async def start(self) -> None:
         await self.transport.start()
-        result = await self.transport.request(
+        await self.transport.request(
             "initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "easycode", "version": "0.1.0"}}
         )
         await self.transport.notify("notifications/initialized")
@@ -372,9 +371,9 @@ class MCPSessionManager:
         if entry is None:
             return False
         annotations = entry.get("annotations") or {}
-        if annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True:
-            return False
-        return True
+        read_only = annotations.get("readOnlyHint") is True
+        destructive = annotations.get("destructiveHint") is True
+        return not (read_only and not destructive)
 
     def approval_reason(self, name: str) -> str:
         return f"MCP 工具声明存在副作用: {name}"

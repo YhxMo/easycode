@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import fnmatch
+from dataclasses import dataclass
 from typing import Any
 
 SANDBOX_READ_ONLY = "read-only"
@@ -67,7 +67,7 @@ class ExecutionPolicy:
     approvals_reviewer: str
 
     @classmethod
-    def from_preset(cls, value: str) -> "ExecutionPolicy":
+    def from_preset(cls, value: str) -> ExecutionPolicy:
         preset = permission_parse(value)
         if preset == PERM_ALLOW_ALL:
             return cls(SANDBOX_DANGER_FULL_ACCESS, APPROVAL_NEVER, REVIEWER_USER)

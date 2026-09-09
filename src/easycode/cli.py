@@ -6,7 +6,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from prompt_toolkit import PromptSession
@@ -16,12 +16,17 @@ from prompt_toolkit.keys import Keys
 
 from easycode.agent.loop import Agent
 from easycode.agentfactory import (
-    apply_api_format,
-    build_provider,
-    build_summarizer,
+    apply_api_format as apply_api_format,  # re-export: tests import these from cli
+)
+from easycode.agentfactory import (
+    build_provider as build_provider,
+)
+from easycode.agentfactory import (
     make_agent,
-    provider_kwargs,
     rebind_agent,
+)
+from easycode.agentfactory import (
+    provider_kwargs as provider_kwargs,
 )
 from easycode.approval import approval_key
 from easycode.config import Config
@@ -33,6 +38,9 @@ from easycode.ui.render import (
     show_diff_summary,
 )
 
+if TYPE_CHECKING:
+    from easycode.commands import CommandRegistry
+
 # Backwards-compatible alias: older callers (and any tests) referenced the
 # private name; keep it resolvable on this module.
 _rebind_agent = rebind_agent
@@ -43,7 +51,7 @@ app = typer.Typer(help="easycode — a CLI coding agent", no_args_is_help=False)
 
 
 
-def build_commands(agent: Agent, roots: list[Path]) -> "CommandRegistry":
+def build_commands(agent: Agent, roots: list[Path]) -> CommandRegistry:
     """CommandRegistry with built-ins + user templates + skill commands."""
     from easycode.commands import Command, CommandRegistry
 
@@ -152,10 +160,10 @@ async def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: li
 
 @app.command()
 def main(
-    model: Annotated[Optional[str], typer.Option("--model", "-m", help="model alias to start with")] = None,
-    root: Annotated[Optional[Path], typer.Option("--root", "-r", help="workspace root (default: cwd)")] = None,
-    secondary_root: Annotated[Optional[list[Path]], typer.Option("--secondary-root", help="extra workspace root (repeatable)")] = None,
-    permission: Annotated[Optional[str], typer.Option("--permission", help=f"permission mode: {'/'.join(['ask', 'auto-review', 'allow-all'])}")] = None,
+    model: Annotated[str | None, typer.Option("--model", "-m", help="model alias to start with")] = None,
+    root: Annotated[Path | None, typer.Option("--root", "-r", help="workspace root (default: cwd)")] = None,
+    secondary_root: Annotated[list[Path] | None, typer.Option("--secondary-root", help="extra workspace root (repeatable)")] = None,
+    permission: Annotated[str | None, typer.Option("--permission", help="permission mode: ask/auto-review/allow-all")] = None,
 ) -> None:
     cfg = Config.load(start=root)
     if permission:
@@ -171,7 +179,7 @@ def main(
 def web(
     host: Annotated[str, typer.Option("--host", help="bind host")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", "-p", help="bind port")] = 8000,
-    root: Annotated[Optional[Path], typer.Option("--root", "-r", help="workspace root (default: cwd)")] = None,
+    root: Annotated[Path | None, typer.Option("--root", "-r", help="workspace root (default: cwd)")] = None,
 ) -> None:
     """Start the FastAPI web UI (serves frontend/dist if built)."""
     import uvicorn
@@ -303,7 +311,7 @@ def _cmd_model(cfg: Config, agent: Agent, current: str, rest: str) -> None:
         alias, model_str = alias.strip(), model_str.strip()
         if not alias or not model_str:
             console.print("[red]usage: /model <alias>=<litellm-model>[/]")
-            return None
+            return
         cfg.set_model_alias(alias, model_str)
         if cfg.default_model == alias or cfg.default_model not in cfg.models:
             cfg.set_default_model(alias)
@@ -318,8 +326,8 @@ def _cmd_model(cfg: Config, agent: Agent, current: str, rest: str) -> None:
             model_switched(cfg.resolve_model(alias))
         else:
             console.print(f"[red]unknown alias: {alias} (use /model <alias>=<name> to add)[/]")
-        return None
-    return None
+        return
+    return
 
 
 def _cmd_undo(agent) -> None:
@@ -327,9 +335,9 @@ def _cmd_undo(agent) -> None:
         summary = agent.undo_turn()
     except RuntimeError as exc:
         console.print(f"[yellow]{exc}[/]")
-        return None
+        return
     _render_rollback(summary)
-    return None
+    return
 
 
 def _cmd_redo(agent) -> None:
@@ -337,9 +345,9 @@ def _cmd_redo(agent) -> None:
         summary = agent.redo_turn()
     except RuntimeError as exc:
         console.print(f"[yellow]{exc}[/]")
-        return None
+        return
     _render_rollback(summary)
-    return None
+    return
 
 
 def _render_rollback(summary: dict) -> None:

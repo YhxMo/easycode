@@ -13,7 +13,6 @@ from easycode.config import Config
 from easycode.credentials import Credential, delete_credential, load_credentials, save_credential
 from easycode.web.main import create_app
 
-
 # ---------------------------------------------------------------- credentials
 
 def test_credentials_read_write_delete_and_metadata(tmp_path):
@@ -118,7 +117,7 @@ def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str):  # noqa: ANN001
+    def factory(alias: str):
         from easycode.agent.loop import Agent
         from easycode.tools import build_registry
         from tests.conftest import FakeProvider
@@ -501,8 +500,8 @@ def test_multi_root_write_and_read(tmp_path):
     """With a context of primary + secondary, tools reach both roots."""
     import json as _json
 
-    from easycode.workspace import PathContext
     from easycode.tools import build_registry
+    from easycode.workspace import PathContext
 
     reg = build_registry(8000)
     primary = tmp_path / "p"
@@ -539,7 +538,7 @@ def test_multi_root_glob_and_grep(tmp_path):
     ctx = PathContext(primary=primary, secondary=[secondary])
 
     g = _json.loads(reg.execute("glob", {"pattern": "*.py"}, primary, ctx=ctx))
-    assert set(m["path"] for m in g["matches"] if isinstance(m, dict)) == {"b.py"}
+    assert {m["path"] for m in g["matches"] if isinstance(m, dict)} == {"b.py"}
 
     gr = _json.loads(reg.execute("grep", {"pattern": "v = "}, primary, ctx=ctx))
     files = {m["file"] for m in gr["matches"]}
@@ -599,7 +598,7 @@ def test_web_session_with_secondary_roots(tmp_path):
     cfg.root = primary
     created: list[Agent] = []
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         agent = Agent(
             provider=FakeProvider(script=[{"text": "ok"}]),
             registry=build_registry(8000),
@@ -626,8 +625,6 @@ def test_web_session_with_secondary_roots(tmp_path):
 # ---------------------------------------------------------------- P5-2 approval
 
 def test_needs_approval_modes(tmp_path):
-    import sys
-    import tempfile
 
     from easycode.approval import needs_approval, permission_parse
     from easycode.models.base import ToolCall
@@ -771,8 +768,6 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    broker = ApprovalBroker()
-
     class AutoBroker(ApprovalBroker):
         def add(self, approval_id: str):
             fut = super().add(approval_id)
@@ -802,11 +797,10 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
     events: list[dict] = []
 
     def worker():
-        with client:
-            with client.stream("POST", "/api/chat", json={"message": "write it"}) as r:
-                for line in r.iter_lines():
-                    if line.startswith("data: "):
-                        events.append(json.loads(line[6:]))
+        with client, client.stream("POST", "/api/chat", json={"message": "write it"}) as r:
+            for line in r.iter_lines():
+                if line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
 
     t = threading.Thread(target=worker)
     t.start()
@@ -818,11 +812,11 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
 
 
 async def test_web_approval_endpoint_unknown_id(tmp_path):
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
@@ -1054,7 +1048,7 @@ async def test_agent_routes_mcp_tool(tmp_path):
     fname = mcp_tool_name("demo", "add")
     script = [
         {"tool_calls": [("c1", fname, {"a": 10, "b": 32})], "text": ""},
-        {"text": f"sum is available"},
+        {"text": "sum is available"},
     ]
     agent = Agent(
         provider=FakeProvider(model="fake", script=script),
@@ -1084,11 +1078,9 @@ async def test_agent_routes_mcp_tool(tmp_path):
 @pytest.mark.asyncio
 async def test_subagent_reuses_mcp_manager(tmp_path):
     from easycode.agent.loop import Agent
-    from easycode.mcp import mcp_tool_name
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
-    fname = mcp_tool_name("demo", "add")
     script = [
         {"tool_calls": [("c1", "parallel_tasks", {"tasks": [{"name": "t", "prompt": "add numbers"}]})], "text": ""},
         {"text": "done"},
@@ -1239,8 +1231,8 @@ async def test_agent_summarizer_wired_in_loop(tmp_path):
 
 @pytest.mark.asyncio
 async def test_agent_no_summarizer_hard_trim(tmp_path):
-    from easycode.agent.loop import Agent
     from easycode.agent.context import History
+    from easycode.agent.loop import Agent
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
@@ -1283,7 +1275,7 @@ def test_prune_clears_old_tool_outputs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
     monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
-    from easycode.agent.loop import Agent, PRUNED_OUTPUT
+    from easycode.agent.loop import PRUNED_OUTPUT, Agent
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
@@ -1416,7 +1408,7 @@ def test_session_create_with_root_uses_session_root(tmp_path):
     cfg.root = primary
     agent_roots: list[str] = []
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = Path(kw.get("root")).resolve() if kw.get("root") else primary
         agent_roots.append(str(root))
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root)
@@ -1431,9 +1423,9 @@ def test_session_create_with_root_uses_session_root(tmp_path):
 def test_session_root_persistence_roundtrip(tmp_path):
     import json as _json
 
-    from easycode.web.session import SessionStore
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -1444,7 +1436,7 @@ def test_session_root_persistence_roundtrip(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = Path(kw.get("root")).resolve() if kw.get("root") else primary
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root)
 
@@ -1459,17 +1451,17 @@ def test_session_root_persistence_roundtrip(tmp_path):
 
 
 def test_legacy_session_without_root_loads(tmp_path):
-    from easycode.web.session import SessionStore
-    from tests.conftest import FakeProvider
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=primary)
 
     store = SessionStore(cfg, primary, factory)
@@ -1488,11 +1480,11 @@ def test_legacy_session_without_root_loads(tmp_path):
 
 
 def test_workspaces_endpoints(tmp_path):
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
@@ -1502,7 +1494,7 @@ def test_workspaces_endpoints(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = Path(kw.get("root")).resolve() if kw.get("root") else primary
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root)
 
@@ -1523,11 +1515,11 @@ def test_workspaces_endpoints(tmp_path):
 
 def test_chat_root_creates_session_in_project(tmp_path):
     """First message with root creates a session bound to that project."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
@@ -1538,7 +1530,7 @@ def test_chat_root_creates_session_in_project(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = str(Path(kw.get("root")).resolve()) if kw.get("root") else str(primary)
         agent = Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=Path(root))
         agents.append(agent)
@@ -1559,9 +1551,9 @@ def test_chat_root_creates_session_in_project(tmp_path):
 # ---------------------------------------------------------------- secondary roots & finder picker
 
 def test_session_secondary_roots_persist(tmp_path):
-    from easycode.web.session import SessionStore
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -1574,7 +1566,7 @@ def test_session_secondary_roots_persist(tmp_path):
     cfg.root = primary
     built: list[Agent] = []
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = Path(kw.get("root")).resolve() if kw.get("root") else primary
         sec = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
         agent = Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root, secondary_roots=sec)
@@ -1598,11 +1590,11 @@ def test_session_secondary_roots_persist(tmp_path):
 
 
 def test_chat_root_with_secondary_roots(tmp_path):
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
@@ -1614,7 +1606,7 @@ def test_chat_root_with_secondary_roots(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = Path(kw.get("root")).resolve() if kw.get("root") else primary
         sec = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
         agent = Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root, secondary_roots=sec)
@@ -1643,11 +1635,11 @@ def test_choose_workspaces_endpoint(tmp_path, monkeypatch):
         "choose_folders_via_finder",
         lambda multiple=False, prompt="选择目录": ["/tmp/a", "/tmp/b"] if multiple else ["/tmp/a"],
     )
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     primary.mkdir()
@@ -1656,7 +1648,7 @@ def test_choose_workspaces_endpoint(tmp_path, monkeypatch):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=primary)
 
     store = SessionStore(cfg, primary, factory)
@@ -1675,18 +1667,18 @@ def test_choose_unsupported_returns_empty(tmp_path, monkeypatch):
 
     monkeypatch.setattr(m, "finder_supported", lambda: False)
     monkeypatch.setattr(m, "choose_folders_via_finder", lambda multiple=False, prompt="选择目录": [])
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=primary)
 
     store = SessionStore(cfg, primary, factory)
@@ -1702,11 +1694,11 @@ def test_choose_unsupported_returns_empty(tmp_path, monkeypatch):
 
 def test_workspaces_projects_from_sessions_and_save(tmp_path):
     """GET merges config + session bindings; POST /projects persists per-root."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     proj = tmp_path / "proj"
@@ -1717,7 +1709,7 @@ def test_workspaces_projects_from_sessions_and_save(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = Path(kw.get("root")).resolve() if kw.get("root") else primary
         secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root, secondary_roots=secs)
@@ -1761,18 +1753,18 @@ def test_workspaces_projects_from_sessions_and_save(tmp_path):
 
 def test_spa_fallback_no_405_on_api_posts(tmp_path):
     """Production static serving must not turn unknown /api POSTs into 405s."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=primary)
 
     store = SessionStore(cfg, primary, factory)
@@ -1795,11 +1787,11 @@ def test_spa_fallback_no_405_on_api_posts(tmp_path):
 
 def test_save_project_with_session_id_updates_session(tmp_path):
     """Editing secondary roots on a locked session updates its agent + disk state."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     proj = tmp_path / "proj"
@@ -1811,7 +1803,7 @@ def test_save_project_with_session_id_updates_session(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         root = Path(kw.get("root")).resolve() if kw.get("root") else primary
         secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root, secondary_roots=secs)
@@ -1866,9 +1858,9 @@ def test_data_dir_migrates_from_legacy_name(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- permission mode (web)
 
 def test_session_permission_persistence(tmp_path):
-    from easycode.web.session import SessionStore
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -1878,7 +1870,7 @@ def test_session_permission_persistence(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=Path(kw.get("root") or primary))
 
     store1 = SessionStore(cfg, primary, factory)
@@ -1899,18 +1891,18 @@ def test_session_permission_persistence(tmp_path):
 
 
 def test_session_permission_endpoint(tmp_path):
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=primary)
 
     store = SessionStore(cfg, primary, factory)
@@ -1930,18 +1922,18 @@ def test_session_permission_endpoint(tmp_path):
 
 
 def test_chat_with_permission_mode_on_existing_session(tmp_path):
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):  # noqa: ANN001
+    def factory(alias: str, **kw):
         return Agent(provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=primary)
 
     store = SessionStore(cfg, primary, factory)

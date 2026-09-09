@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,7 +33,7 @@ DEFAULT_MODELS: dict[str, str] = {
     "claude-opus5": "anthropic/claude-opus-5",
 }
 
-DEFAULT_TOOLS = {name: True for name in ("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks")}
+DEFAULT_TOOLS = dict.fromkeys(("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks"), True)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "default_model": "deepseek-v4flash",
@@ -72,7 +71,7 @@ class ModelSpec:
     provider: str | None = None
 
     @classmethod
-    def parse(cls, value: str | dict[str, Any]) -> "ModelSpec":
+    def parse(cls, value: str | dict[str, Any]) -> ModelSpec:
         if isinstance(value, str):
             return cls(model=value, api_format=infer_api_format(value))
         if isinstance(value, dict):
@@ -155,7 +154,7 @@ class Config:
     skills_enabled: bool = True
 
     @classmethod
-    def load(cls, start: Path | None = None) -> "Config":
+    def load(cls, start: Path | None = None) -> Config:
         load_dotenv(find_env_file(start) if find_env_file(start) else None, override=False)
         cfg_path = find_config_file(start)
         raw: dict[str, Any] = {}
