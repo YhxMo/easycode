@@ -239,8 +239,11 @@ You only read files.
 
 
 def test_subagent_inherits_model_credentials(tmp_path):
+    """Fallback path (directly constructed parent, no factory): the parent's
+    provider is reused verbatim, with or without a spec."""
     from easycode.agent.builtin_tools import make_subagent
     from easycode.agent.loop import Agent
+    from easycode.agents import AgentSpec
     from easycode.models.litellm_provider import LiteLLMProvider
     from easycode.tools import build_registry
 
@@ -250,3 +253,66 @@ def test_subagent_inherits_model_credentials(tmp_path):
     assert child.provider.model == parent.provider.model
     assert child.provider.kwargs == parent.provider.kwargs
     assert child.history is not parent.history
+
+    inherit = make_subagent(parent, AgentSpec(name="plain", description="no model"))
+    assert inherit.provider.model == parent.provider.model
+    assert inherit.provider.kwargs == parent.provider.kwargs
+
+
+def test_subagent_model_alias_resolved_with_own_credentials(tmp_path, monkeypatch):
+    """A spec model alias resolves through the parent's factory: its own
+    credential and a summarizer; a spec without model inherits the parent alias."""
+    from easycode.agent.builtin_tools import make_subagent
+    from easycode.agentfactory import make_agent
+    from easycode.config import Config
+    from easycode.credentials import Credential, save_credential
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    proj = tmp_path / "proj"
+    agents_dir = proj / ".easycode" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "writer.md").write_text(
+        """---
+description: Writes files
+model: child
+---
+You write.
+""",
+        encoding="utf-8",
+    )
+    (agents_dir / "plain.md").write_text(
+        """---
+description: Inherits the parent model
+---
+You inherit.
+""",
+        encoding="utf-8",
+    )
+    (proj / "easycode.config.json").write_text(
+        json.dumps(
+            {
+                "default_model": "parent",
+                "models": {
+                    "parent": {"model": "parent-model", "key_id": "parent-key"},
+                    "child": {"model": "child-model", "key_id": "child-key"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    creds_path = tmp_path / "home" / ".easycode" / "credentials.json"
+    save_credential(Credential(key_id="parent-key", api_key="sk-parent"), path=creds_path)
+    save_credential(Credential(key_id="child-key", api_key="sk-child"), path=creds_path)
+
+    cfg = Config.load(start=proj)
+    parent = make_agent(cfg, "parent", proj)
+
+    child = make_subagent(parent, parent.agents.get("writer"))
+    assert child.provider.model == "child-model"
+    assert child.provider.kwargs["api_key"] == "sk-child"
+    assert child.model_alias == "child"
+    assert child.summarizer is not None
+
+    inherit = make_subagent(parent, parent.agents.get("plain"))
+    assert inherit.provider.model == "parent-model"
+    assert inherit.provider.kwargs["api_key"] == "sk-parent"

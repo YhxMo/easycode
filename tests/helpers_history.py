@@ -11,8 +11,9 @@ earlier assistant) into a strict one-to-one pairing contract:
   result, in declaration (stream) order;
 * a duplicated result, a missing result, a re-used id from an older turn, or a
   result that appears *before* its declaring assistant are all rejected;
-* ``system`` messages are exempt (a compacted summary or an injected skill body
-  carries no tool pairing obligation).
+* ``system`` messages are exempt only when no result is pending: one injected
+  between a declaring assistant and its tool results breaks the protocol
+  (OpenAI-compatible providers require the results to follow immediately).
 
 The companion ``validated_payload`` wrapper lets test cases enforce the
 invariant at a payload boundary, and ``ValidatingFakeProvider`` wires the same
@@ -53,14 +54,19 @@ def assert_valid_tool_protocol(messages: list[Message]) -> None:
     * at the end the pending queue must be empty, so no declared call is left
       unpaired (missing result).
 
-    ``system`` messages are skipped.  Raises :class:`ProtocolViolation` on the
-    first violation; returns ``None`` when the sequence is fully paired.
+    ``system`` messages are allowed only while no result is pending.  Raises
+    :class:`ProtocolViolation` on the first violation; returns ``None`` when the
+    sequence is fully paired.
     """
     pending: deque[str] = deque()
     fulfilled: set[str] = set()
     for m in messages:
         role = m.get("role")
         if role == "system":
+            if pending:
+                raise ProtocolViolation(
+                    "system message interleaved between tool_calls and their results"
+                )
             continue
         if role == "assistant":
             for tc in m.get("tool_calls") or []:

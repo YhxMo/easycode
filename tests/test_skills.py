@@ -10,6 +10,7 @@ from easycode.agent.loop import Agent
 from easycode.skills import SkillRegistry
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
+from tests.helpers_history import assert_valid_tool_protocol
 
 
 def test_skill_discovery_and_override(tmp_path):
@@ -108,6 +109,56 @@ Special instructions to follow
     # After use_skill, system message is injected into history
     assert any("[skill: my-skill]" in str(m.get("content")) for m in agent.history.messages)
     assert any("Special instructions to follow" in str(m.get("content")) for m in agent.history.messages)
+
+
+@pytest.mark.asyncio
+async def test_use_skill_in_batch_keeps_tool_protocol(tmp_path):
+    """A skill loaded in a multi-tool batch is injected after all tool results."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "safety").mkdir()
+    (skills_dir / "safety" / "SKILL.md").write_text(
+        """---
+description: Safety skill
+---
+Safety instructions
+""",
+        encoding="utf-8",
+    )
+    reg = SkillRegistry.discover([], user_dir=skills_dir)
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+
+    script = [
+        {
+            "tool_calls": [
+                ("s1", "use_skill", {"name": "safety"}),
+                ("g1", "glob", {"pattern": "*.py"}),
+            ],
+            "text": "",
+        },
+        {"text": "done"},
+    ]
+    agent = Agent(
+        provider=FakeProvider(script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        skills=reg,
+    )
+
+    events = [ev async for ev in agent.respond("load skill and list files")]
+    assert events[-1].kind == "done"
+
+    payload = agent.history.payload()
+    assistant_idx = next(
+        i for i, m in enumerate(payload) if m["role"] == "assistant" and m.get("tool_calls")
+    )
+    assert [m["role"] for m in payload[assistant_idx + 1 : assistant_idx + 3]] == [
+        "tool",
+        "tool",
+    ]
+    assert payload[assistant_idx + 3]["role"] == "system"
+    assert "[skill: safety]" in payload[assistant_idx + 3]["content"]
+    assert_valid_tool_protocol(payload)
 
 
 @pytest.mark.asyncio

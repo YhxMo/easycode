@@ -42,19 +42,11 @@ def create_app(
     broker = approval_broker or ApprovalBroker()
 
     def factory(alias: str, **agent_kwargs: object) -> object:
-        from pathlib import Path
-
         root_kw = agent_kwargs.get("root")
         session_root = Path(root_kw).resolve() if isinstance(root_kw, str) and root_kw else cfg.root
         roots = agent_kwargs.get("secondary_roots") if agent_kwargs.get("secondary_roots") else None
         secondary = [Path(r).resolve() for r in (roots or [])] or None
-        return make_agent(
-            cfg,
-            alias,
-            session_root,
-            secondary_roots=secondary,
-            extra_safe_dirs=[Path(d).expanduser() for d in cfg.extra_safe_dirs],
-        )
+        return make_agent(cfg, alias, session_root, secondary_roots=secondary)
 
     store = session_store or SessionStore(cfg, cfg.root, factory)
     store.load_all()

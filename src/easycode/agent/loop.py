@@ -59,6 +59,26 @@ class AgentEvent:
     error: str | None = None
 
 
+def file_change(name: str, result: str) -> dict | None:
+    """Extract a real file change from a tool result, else ``None``.
+
+    Only ``write_file``/``edit_file`` results that succeeded, were not a
+    dry-run preview, and carry a path count as changes.
+    """
+    if name not in ("write_file", "edit_file"):
+        return None
+    try:
+        data = json.loads(result)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("status") != "ok" or data.get("dry_run"):
+        return None
+    path = data.get("path")
+    if not path:
+        return None
+    return {"tool": name, "path": path, "diff": data.get("diff") or ""}
+
+
 @dataclass
 class Agent:
     provider: Provider
@@ -66,7 +86,7 @@ class Agent:
     root: Path
     history: History = field(default_factory=History)
     enabled_tools: set[str] | None = None
-    hook: Callable[[str, ToolCall, str], None] | None = None
+    model_alias: str | None = None
     summarizer: Summarizer | None = None
     subagent_factory: Callable[[str], Agent] | None = None
     include_parallel_tool: bool = True
@@ -81,6 +101,7 @@ class Agent:
     _review_items: list[dict] = field(default_factory=list)
     _review_decisions: list[bool] = field(default_factory=list)
     _consecutive_review_denials: int = 0
+    _pending_system: list[str] = field(default_factory=list)
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     mcp_manager: MCPSessionManager | None = None
     max_context_tokens: int = 32_000
@@ -260,6 +281,12 @@ class Agent:
                             }
                         ),
                     )
+                # Skill bodies load while tools run; inject them only after the
+                # batch's results so assistant tool_calls stay adjacent to their
+                # tool messages (OpenAI-compatible providers require this).
+                for content in self._pending_system:
+                    self.history.add({"role": "system", "content": content})
+                self._pending_system.clear()
         yield AgentEvent(kind="error", error=f"hit max tool iterations ({max_iterations})")
         yield AgentEvent(kind="done")
 
@@ -346,8 +373,6 @@ class Agent:
             if requires_approval and grant is None:
                 grant = grant_for_toolcall(tc, ctx)
             result = await self._dispatch_tool(tc, grant=grant)
-        if self.hook:
-            self.hook(tc.name, tc, result)
         if self.permission_mode == PERM_AUTO_REVIEW:
             self._collect_review(tc, result)
         self.history.add_tool(tc.id, tc.name, self._model_view(tc.name, result))
@@ -359,16 +384,8 @@ class Agent:
             yield AgentEvent(kind="done")
 
     def _collect_review(self, tc: ToolCall, result: str) -> None:
-        try:
-            data = json.loads(result)
-        except json.JSONDecodeError:
-            return
-        if not isinstance(data, dict) or data.get("status") != "ok":
-            return
-        path = data.get("path")
-        diff = data.get("diff")
-        if path:
-            self._review_items.append({"tool": tc.name, "path": path, "diff": diff or ""})
+        if change := file_change(tc.name, result):
+            self._review_items.append(change)
 
     async def _auto_review(self, tc: ToolCall, reason: str) -> ReviewDecision:
         if self.review_handler is None:
@@ -394,7 +411,7 @@ class Agent:
         """Compact model-facing view of a tool result.
 
         The full result (including the diff) still streams to the UI and the
-        review/hook channels, but the model does not need to re-read the diff
+        review channel, but the model does not need to re-read the diff
         it just produced — align with opencode where edit/write return a short
         confirmation and keep the diff out of the LLM-visible output.
         """

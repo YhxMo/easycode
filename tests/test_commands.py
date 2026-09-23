@@ -128,6 +128,29 @@ Template $ARGUMENTS
     assert custom["kind"] == "template"
 
 
+def test_unknown_command_does_not_create_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    cfg = Config.load(start=proj)
+    cfg.root = proj
+
+    def factory(alias: str, **kwargs):
+        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
+
+    store = SessionStore(cfg, proj, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+
+    with client:
+        r = client.post("/api/chat", json={"message": "/nope"})
+        assert r.status_code == 400
+        assert client.get("/api/sessions").json() == []
+
+    sessions_dir = tmp_path / ".easycode" / "sessions"
+    assert not list(sessions_dir.glob("*.json"))
+
+
 def test_web_chat_command_expansion(tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()

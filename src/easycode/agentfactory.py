@@ -98,12 +98,29 @@ def build_provider(cfg: Config, alias: str) -> LiteLLMProvider:
     return LiteLLMProvider(model, **kwargs)
 
 
-def build_summarizer(cfg: Config, alias: str, max_chars: int = 8_000):
-    """LLM summarizer for an alias (same credentials as the stream provider)."""
+def _bind_model(agent: Agent, cfg: Config, alias: str) -> None:
+    """Bind provider/summarizer/reviewer/limits for ``alias`` onto ``agent``.
+
+    ``provider_kwargs`` is read once per binding. The reviewer gets its own
+    kwargs copy because subagents may mutate ``provider.kwargs``.
+    """
     from easycode.agent.summarizer import LLMSummarizer
+    from easycode.reviewer import AutoReviewer
 
     model, kwargs = provider_kwargs(cfg, alias)
-    return LLMSummarizer(model, max_chars=max_chars, **kwargs)
+    agent.provider = LiteLLMProvider(model, **kwargs)
+    agent.review_handler = AutoReviewer(LiteLLMProvider(model, **dict(kwargs))).review
+    agent.summarizer = LLMSummarizer(
+        model, max_chars=int(cfg.compaction["summary_max_chars"]), **kwargs
+    )
+    agent.model_limits = cfg.get_model_limits(alias)
+    agent.model_alias = alias
+    agent.history.max_tokens = agent.compactor.usable_tokens(
+        agent.max_context_tokens, agent.model_limits
+    )
+
+
+rebind_agent = _bind_model
 
 
 def make_agent(
@@ -111,9 +128,7 @@ def make_agent(
     model_alias: str,
     root: Path,
     secondary_roots: list[Path] | None = None,
-    extra_safe_dirs: list[Path] | None = None,
 ) -> Agent:
-    provider = build_provider(cfg, model_alias)
     registry = build_registry(cfg.max_tool_result_chars)
     enabled = {name for name, on in cfg.tools.items() if on}
     discovery_roots = [root, *(Path(p) for p in (secondary_roots or []))]
@@ -123,41 +138,20 @@ def make_agent(
     agents = AgentRegistry.discover(discovery_roots)
     skills = SkillRegistry.discover(discovery_roots) if cfg.skills_enabled else None
     agent = Agent(
-        provider=provider,
+        provider=LiteLLMProvider(model_alias),  # rebound below from one credential read
         registry=registry,
         root=root,
         enabled_tools=enabled,
         secondary_roots=list(secondary_roots or []),
-        extra_safe_dirs=list(extra_safe_dirs or []),
+        extra_safe_dirs=cfg.path_context(root=root, secondary=[]).extra_safe_dirs,
         permission_mode=cfg.permission_mode,
         permission_rules=dict(cfg.permission_rules),
         mcp_servers=cfg.mcp_servers,
         max_context_tokens=cfg.max_context_tokens,
         compaction=dict(cfg.compaction),
-        model_limits=cfg.get_model_limits(model_alias),
-        summarizer=build_summarizer(
-            cfg, model_alias, max_chars=int(cfg.compaction.get("summary_max_chars", 8_000))
-        ),
         agents=agents,
         skills=skills,
     )
-    from easycode.reviewer import AutoReviewer
-
-    reviewer = AutoReviewer(build_provider(cfg, model_alias))
-    agent.review_handler = reviewer.review
+    rebind_agent(agent, cfg, model_alias)
+    agent.subagent_factory = lambda alias: make_agent(cfg, alias, root, secondary_roots)
     return agent
-
-
-def rebind_agent(agent: Agent, cfg: Config, alias: str) -> None:
-    """Switch the model while preserving conversation history."""
-    agent.provider = build_provider(cfg, alias)
-    from easycode.reviewer import AutoReviewer
-
-    agent.review_handler = AutoReviewer(build_provider(cfg, alias)).review
-    agent.summarizer = build_summarizer(
-        cfg, alias, max_chars=int(cfg.compaction.get("summary_max_chars", 8_000))
-    )
-    agent.model_limits = cfg.get_model_limits(alias)
-    agent.history.max_tokens = agent.compactor.usable_tokens(
-        agent.max_context_tokens, agent.model_limits
-    )

@@ -255,6 +255,44 @@ async def test_write_file_model_view_strips_diff(tmp_path):
     assert "diff" not in payload_tools[0]["content"]
 
 
+async def test_auto_review_ignores_reads_and_dry_runs(tmp_path):
+    """Auto-review collects only real changes: no reads, no dry-run previews."""
+    import json as _json
+
+    (tmp_path / "f.txt").write_text("old\n", encoding="utf-8")
+    script = [
+        {
+            "tool_calls": [
+                ("c1", "read_file", {"path": "f.txt"}),
+                (
+                    "c2",
+                    "edit_file",
+                    {
+                        "path": "f.txt",
+                        "old_string": "old",
+                        "new_string": "new",
+                        "dry_run": True,
+                    },
+                ),
+                ("c3", "write_file", {"path": "f.txt", "content": "real change\n"}),
+            ],
+            "text": "",
+        },
+        {"text": "done"},
+    ]
+    agent, _provider = make_agent(tmp_path, script)
+    agent.permission_mode = "auto-review"
+    events = await collect(agent, "change it")
+
+    reviews = [e for e in events if e.kind == "review"]
+    assert len(reviews) == 1
+    changes = _json.loads(reviews[0].content)["changes"]
+    assert len(changes) == 1
+    assert changes[0]["tool"] == "write_file"
+    assert changes[0]["path"] == "f.txt"
+    assert "real change" in changes[0]["diff"]
+
+
 async def test_edit_file_model_view_strips_diff_review_keeps(tmp_path):
     """P7-1: same for edit_file — the auto-review diff stays complete."""
     import json as _json

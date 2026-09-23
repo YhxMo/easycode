@@ -13,7 +13,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
-from easycode.agent.loop import Agent
+from easycode.agent.loop import Agent, file_change
 from easycode.agentfactory import make_agent, rebind_agent
 from easycode.approval import approval_key
 from easycode.config import Config
@@ -122,13 +122,7 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
 
 def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: list[Path] | None) -> None:
     ctx = cfg.path_context(root=workdir, secondary=[str(p) for p in (secondary_root or [])])
-    agent = make_agent(
-        cfg,
-        current,
-        workdir,
-        secondary_roots=ctx.secondary,
-        extra_safe_dirs=[Path(d).expanduser() for d in cfg.extra_safe_dirs],
-    )
+    agent = make_agent(cfg, current, workdir, secondary_roots=ctx.secondary)
     commands = build_commands(agent, ctx.roots)
     console.print()
     banner(cfg.resolve_model(current))
@@ -266,25 +260,13 @@ def _cmd_help(cfg: Config, current: str, commands, agent) -> None:
 async def _cmd_run(agent, rest) -> None:
     task = rest or "完成当前工作区的修改任务"
     edits: list[dict] = []
-    prev_hook = agent.hook
-
-    def hook(name: str, tc, result: str) -> None:
-        if name in ("edit_file", "write_file"):
-            try:
-                data = json.loads(result)
-            except json.JSONDecodeError:
-                return
-            if data.get("status") == "ok" and data.get("diff"):
-                edits.append({"path": data.get("path", "?"), "diff": data.get("diff", "")})
-        if prev_hook:
-            prev_hook(name, tc, result)
-
-    agent.hook = hook
     console.print(f"[bold cyan]/run[/] {task}")
-    try:
-        await run_turn(agent, task)
-    finally:
-        agent.hook = prev_hook
+    async for ev in agent.respond(task):
+        render_event(ev)
+        if ev.kind == "tool_result" and ev.tool_call:
+            change = file_change(ev.tool_call.name, ev.tool_result or "")
+            if change:
+                edits.append(change)
     show_diff_summary(edits)
 
 
@@ -308,14 +290,17 @@ def _cmd_model(cfg: Config, agent: Agent, current: str, rest: str) -> None:
     else:
         alias = rest
         if alias in cfg.models:
+            try:
+                rebind_agent(agent, cfg, alias)
+            except ValueError as exc:
+                console.print(f"[red]{exc}[/]")
+                return
             cfg.set_default_model(alias)
             cfg.save()
-            rebind_agent(agent, cfg, alias)
             model_switched(cfg.resolve_model(alias))
         else:
             console.print(f"[red]unknown alias: {alias} (use /model <alias>=<name> to add)[/]")
         return
-    return
 
 
 if __name__ == "__main__":

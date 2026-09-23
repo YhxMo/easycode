@@ -144,8 +144,9 @@ async def run_use_skill(agent: Agent, tc: ToolCall) -> str:
             },
             ensure_ascii=False,
         )
-    # inject the body into the conversation once (stays for the session)
-    agent.history.add({"role": "system", "content": f"[skill: {skill.name}]\n{skill.body}"})
+    # inject the body into the conversation once (stays for the session); the
+    # loop flushes it after this batch's tool results to keep the tool protocol
+    agent._pending_system.append(f"[skill: {skill.name}]\n{skill.body}")
     return json.dumps(
         {"status": "ok", "skill": skill.name, "loaded": True},
         ensure_ascii=False,
@@ -200,7 +201,9 @@ def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
     if spec is not None and spec.model:
         model = spec.model
     if agent.subagent_factory:
-        sub = agent.subagent_factory(model or agent.provider.model)
+        # the factory resolves aliases; without a spec model, inherit the
+        # parent's alias so credentials and api_format stay correct
+        sub = agent.subagent_factory(model or agent.model_alias or agent.provider.model)
     else:
         from easycode.agent.loop import Agent  # deferred: call-time, avoids cycle
         from easycode.models.litellm_provider import LiteLLMProvider

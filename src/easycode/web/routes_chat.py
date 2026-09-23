@@ -54,10 +54,19 @@ def _build_web_commands(roots: list[Path], skills) -> CommandRegistry:
     return reg
 
 
-def _expand_command(message: str, sess: Session, cfg: Config) -> str:
+def _new_session_roots(req: ChatRequest, cfg: Config, store: SessionStore) -> list[Path]:
+    """Workspace roots a brand-new session would discover commands/skills from."""
+    root = str(Path(req.root).expanduser().resolve()) if req.root else None
+    secondary = [str(p) for p in store._resolve_secondary(root, req.secondary_roots)]
+    if root:
+        return [Path(root), *(Path(p) for p in secondary)]
+    return [Path(cfg.root), *(Path(p) for p in secondary)]
+
+
+def _expand_command(message: str, roots: list[Path], skills) -> str:
     """Resolve a leading '/' message: expand the selected prompt template or skill."""
 
-    reg = _build_web_commands(_session_roots(sess, cfg), sess.agent.skills)
+    reg = _build_web_commands(roots, skills)
     resolved = reg.resolve(message)
     if resolved is None:
         raise HTTPException(400, f"unknown command: {message.split()[0]}")
@@ -155,6 +164,17 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         # the caller claims for it must match, else 409 (never silently ignore).
         if req.session_id:
             _assert_session_workspace_match(req.session_id, req.root, req.secondary_roots)
+        raw_message = req.message
+        is_command = raw_message.strip().startswith("/")
+        if is_command and not req.session_id:
+            # Resolve the command BEFORE creating the session: an unknown command
+            # must not leave an empty session behind.
+            try:
+                roots = _new_session_roots(req, cfg, store)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
+            req.message = _expand_command(req.message, roots, skills)
         try:
             sess = (
                 _get_session(req.session_id, **kwargs) if kwargs else _get_session(req.session_id)
@@ -170,9 +190,10 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         # serialized (two near-simultaneous starts run, never interleave).
         if sess._lock.locked():
             raise HTTPException(409, "session busy")
-        raw_message = req.message
-        if raw_message.strip().startswith("/"):
-            req.message = _expand_command(req.message, sess, cfg)
+        if is_command and req.session_id:
+            req.message = _expand_command(
+                req.message, _session_roots(sess, cfg), sess.agent.skills
+            )
 
         async def gen():
             # Hold the per-session lock across the ENTIRE stream (including
