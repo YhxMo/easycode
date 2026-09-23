@@ -41,14 +41,14 @@ import type { ProjectAction } from "./ProjectMenu";
 import { basename, DEFAULT_PROJECT } from "./lib/paths";
 import { SecondaryEditor } from "./SecondaryEditor";
 
-const EMPTY_MODELS: ModelsInfo = { default: "deepseek-v4flash", models: {} };
+const EMPTY_MODELS: ModelsInfo = { default: "deepseek-v4flash", models: {}, providers: {}, limits: {} };
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
-  const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ default: "", projects: [] });
+  const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ projects: [] });
   const [chosenRoot, setChosenRoot] = useState<string | null>(null);
   // One pair of states serves both the new-session draft and the open session:
   // a session event updates them in place, and openSession resets them.
@@ -61,7 +61,7 @@ export default function App() {
   // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
   const openSeqRef = useRef(0);
 
   // Escape closes the mobile drawer. Scoped to when the drawer is open so
@@ -77,6 +77,11 @@ export default function App() {
   }, [sidebarOpen]);
 
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  const setProjects = useCallback(
+    (projects: WorkspaceProject[]) => setWorkspaces((w) => ({ ...w, projects })),
+    [],
+  );
 
   const refreshSessions = useCallback(() => {
     fetchSessions().then(setSessions).catch(() => {});
@@ -143,7 +148,7 @@ export default function App() {
     // Scroll only the message pane. scrollIntoView can walk up to ancestor
     // overflow containers (e.g. .app with overflow:hidden), scrolling the
     // whole UI out of view.
-    const pane = document.querySelector(".chat-main");
+    const pane = mainRef.current;
     pane?.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
   }, [items]);
 
@@ -251,7 +256,7 @@ export default function App() {
     setDeleteTarget(null);
     refreshSessions();
     refreshArchived();
-  }, [deleteTarget, currentId, openSession, refreshSessions, refreshArchived]);
+  }, [deleteTarget, currentId, openSession, refreshSessions, refreshArchived, setDeleteTarget]);
 
   const restoreArchived = useCallback(
     async (session: SessionSummary) => {
@@ -282,7 +287,7 @@ export default function App() {
           setEditTarget({ root, name: proj?.name ?? (root ? basename(root) : DEFAULT_PROJECT) });
         } else if (action === "pin" || action === "unpin") {
           const r = await pinProject(root, action === "pin");
-          setWorkspaces((w) => ({ ...w, projects: r.projects }));
+          setProjects(r.projects);
           refreshSessions();
           showToast("ok", action === "pin" ? "已置顶" : "已取消置顶");
         } else if (action === "reveal") {
@@ -295,7 +300,7 @@ export default function App() {
             return;
           }
           const r = await createWorktree(root);
-          setWorkspaces((w) => ({ ...w, projects: r.projects }));
+          setProjects(r.projects);
           refreshSessions();
           showToast("ok", `已创建永久工作树 ${r.name ?? ""}`);
         } else if (action === "archive") {
@@ -310,14 +315,23 @@ export default function App() {
         showToast("err", e instanceof Error ? e.message : String(e));
       }
     },
-    [projectMeta, refreshSessions, refreshArchived, sessions, showToast],
+    [
+      projectMeta,
+      refreshSessions,
+      refreshArchived,
+      sessions,
+      setEditTarget,
+      setProjects,
+      setRemoveTarget,
+      showToast,
+    ],
   );
 
   const confirmRemoveProject = useCallback(async () => {
     if (!removeTarget) return;
     try {
       const r = await removeProject(removeTarget.root);
-      setWorkspaces((w) => ({ ...w, projects: r.projects }));
+      setProjects(r.projects);
       refreshSessions();
       if (currentId === null && removeTarget.root === chosenRoot) setChosenRoot(null);
       showToast("ok", `已移除项目（删除 ${r.deleted_sessions} 条会话）`);
@@ -326,7 +340,7 @@ export default function App() {
     } finally {
       setRemoveTarget(null);
     }
-  }, [removeTarget, refreshSessions, chosenRoot, currentId, showToast]);
+  }, [removeTarget, refreshSessions, chosenRoot, currentId, setProjects, setRemoveTarget, showToast]);
 
   // sessions grouped by project root (null = default project); pinned projects first
   const groups = useMemo(() => {
@@ -348,7 +362,7 @@ export default function App() {
     });
   }, [sessions, projectMeta]);
 
-  const currentRoot = sessions.find((s) => s.id === currentId)?.root ?? null;
+  const currentRoot = currentSession?.root ?? null;
   const projectName = currentRoot ? basename(currentRoot) : DEFAULT_PROJECT;
   const exploration = useMemo(() => {
     let reads = 0;
@@ -415,7 +429,7 @@ export default function App() {
         onProjectAction={runProjectAction}
         onSetChosenRoot={setChosenRoot}
         onSetSecondary={setSecondary}
-        onSetWorkspaces={setWorkspaces}
+        onProjects={setProjects}
         onToggleArchived={() => setShowArchived(!showArchived)}
         onDeleteSession={setDeleteTarget}
         onRestoreSession={restoreArchived}
@@ -444,7 +458,7 @@ export default function App() {
             <span aria-hidden="true">☰</span>
           </button>
           <div className="chat-context">
-            <strong>{currentId ? sessions.find((s) => s.id === currentId)?.title : "新会话"}</strong>
+            <strong>{currentId ? currentSession?.title : "新会话"}</strong>
             <span className="context-path" title={currentRoot ?? DEFAULT_PROJECT}>
               <span aria-hidden="true">⌘</span> {projectName}
             </span>
@@ -461,7 +475,7 @@ export default function App() {
             </span>
           </div>
         </header>
-        <div className="chat-main">
+        <div className="chat-main" ref={mainRef}>
           {items.length === 0 && (
             <div className="empty">
               <div className="empty-icon" aria-hidden="true">&gt;_</div>
@@ -481,7 +495,6 @@ export default function App() {
               </span>
             </div>
           )}
-          <div ref={endRef} />
         </div>
         <div className="composer-area">
           <div className="chat-input">
@@ -630,7 +643,7 @@ export default function App() {
                         undefined,
                         editTarget.name,
                       );
-                      setWorkspaces((w) => ({ ...w, projects: r.projects }));
+                      setProjects(r.projects);
                       refreshSessions();
                       showToast("ok", "已保存项目设置");
                     } catch (e) {
@@ -658,7 +671,7 @@ export default function App() {
               secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
               disabled={false}
               onSecondary={() => {}}
-              onWorkspaces={setWorkspaces}
+              onProjects={setProjects}
               onError={(msg) => showToast("err", msg)}
             />
           </Modal>

@@ -65,8 +65,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.fetchSessions.mockResolvedValue([session("A", "会话A")]);
   m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
-  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {} });
+  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
+  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.fetchSession.mockResolvedValue({ ...session("A", "会话A"), messages: [] });
   // streamChat/resolve default so a stray call doesn't hit the network.
@@ -142,7 +142,6 @@ describe("App · 会话归属", () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([{ ...session("old", "旧会话"), root: "/p" }]);
     m.fetchWorkspaces.mockResolvedValue({
-      default: "",
       projects: [{ root: "/p", secondary: ["/s1", "/s2"] }],
     });
     const stream = controllableStream();

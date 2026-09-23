@@ -48,7 +48,7 @@ export interface SidebarProps {
   onProjectAction: (root: string | null, action: ProjectAction) => void;
   onSetChosenRoot: (root: string | null) => void;
   onSetSecondary: (secondary: string[]) => void;
-  onSetWorkspaces: (workspaces: WorkspacesInfo) => void;
+  onProjects: (projects: WorkspaceProject[]) => void;
   onToggleArchived: () => void;
   onDeleteSession: (session: SessionSummary) => void;
   onRestoreSession: (session: SessionSummary) => void;
@@ -77,7 +77,7 @@ export function Sidebar({
   onProjectAction,
   onSetChosenRoot,
   onSetSecondary,
-  onSetWorkspaces,
+  onProjects,
   onToggleArchived,
   onDeleteSession,
   onRestoreSession,
@@ -102,7 +102,7 @@ export function Sidebar({
             disabled={busy}
             onRoot={onSetChosenRoot}
             onSecondary={onSetSecondary}
-            onWorkspaces={onSetWorkspaces}
+            onProjects={onProjects}
             onError={onError}
           />
         ) : currentRoot ? (
@@ -119,7 +119,7 @@ export function Sidebar({
             sessionId={currentId}
             disabled={busy}
             onSecondary={onSetSecondary}
-            onWorkspaces={onSetWorkspaces}
+            onProjects={onProjects}
             onError={onError}
           />
         )}

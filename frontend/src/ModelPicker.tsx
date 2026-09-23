@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { AddModelBody, ModelsInfo, UpdateModelBody } from "./api";
 import { addModel, deleteModel, fetchModel, fetchModels, switchModel, updateModel } from "./api";
 
@@ -16,8 +17,103 @@ function apiFormatLabel(value: string): string {
   return API_FORMATS.find((f) => f.value === value)?.label ?? value;
 }
 
-function modelValue(entry: ModelsInfo["models"][string]): string {
-  return entry.model;
+interface ModelForm {
+  alias: string;
+  model: string;
+  provider: string;
+  base_url: string;
+  api_key: string;
+  api_format: string;
+  clear_key: boolean;
+}
+
+/** Fields shared by the add and edit dialogs (API Key row differs). */
+function ModelFields({
+  form,
+  setForm,
+  formatRef,
+  formatOpen,
+  setFormatOpen,
+}: {
+  form: ModelForm;
+  setForm: Dispatch<SetStateAction<ModelForm>>;
+  formatRef: RefObject<HTMLDivElement | null>;
+  formatOpen: boolean;
+  setFormatOpen: (open: boolean) => void;
+}) {
+  return (
+    <>
+      <label>
+        别名
+        <input
+          value={form.alias}
+          placeholder="如 my-gpt"
+          onChange={(e) => setForm({ ...form, alias: e.target.value })}
+        />
+      </label>
+      <label>
+        模型名
+        <input
+          value={form.model}
+          placeholder="如 gpt-4o"
+          onChange={(e) => setForm({ ...form, model: e.target.value })}
+        />
+      </label>
+      <div className="modal-field">
+        <label>
+          供应商
+          <input
+            value={form.provider}
+            placeholder="如 bailian、rightcode"
+            onChange={(e) => setForm({ ...form, provider: e.target.value })}
+          />
+        </label>
+      </div>
+      <div className="modal-field">
+        <span className="modal-field-label">接口格式</span>
+        <div className="custom-dropdown" ref={formatRef}>
+          <button
+            type="button"
+            className="custom-dropdown-trigger form-trigger"
+            onClick={() => setFormatOpen(!formatOpen)}
+          >
+            <span className="dropdown-value">{apiFormatLabel(form.api_format)}</span>
+            <span className="dropdown-caret" aria-hidden="true">
+              ⌄
+            </span>
+          </button>
+          {formatOpen && (
+            <div className="custom-dropdown-menu provider-menu">
+              {API_FORMATS.map((f) => (
+                <button
+                  type="button"
+                  key={f.value}
+                  className={`custom-dropdown-item ${f.value === form.api_format ? "active" : ""}`}
+                  onClick={() => {
+                    setForm({ ...form, api_format: f.value });
+                    setFormatOpen(false);
+                  }}
+                >
+                  <span className="dropdown-item-check" aria-hidden="true">
+                    {f.value === form.api_format ? "✓" : ""}
+                  </span>
+                  <span className="dropdown-item-text">{f.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <label>
+        Base URL
+        <input
+          value={form.base_url}
+          placeholder="https://api.example.com/v1"
+          onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+        />
+      </label>
+    </>
+  );
 }
 
 function providerLabel(provider: string): string {
@@ -260,12 +356,7 @@ export function ModelPicker({
 
   const activeModel = models.models[current] !== undefined ? current : Object.keys(models.models)[0] || "";
   const displayNameFor = (alias: string) => models.models[alias]?.model || alias;
-  const providerFor = (alias: string) => {
-    const explicit = models.providers?.[alias];
-    if (explicit) return explicit;
-    const value = modelValue(models.models[alias]);
-    return value.includes("/") ? value.split("/", 1)[0] : "custom";
-  };
+  const providerFor = (alias: string) => models.providers[alias] ?? "custom";
   const providerGroups = Object.keys(models.models)
     .sort()
     .reduce<Record<string, string[]>>((groups, alias) => {
@@ -391,7 +482,7 @@ export function ModelPicker({
                 <dl>
                   <div>
                     <dt>模型</dt>
-                    <dd>{modelValue(previewEntry)}</dd>
+                    <dd>{previewEntry.model}</dd>
                   </div>
                   <div>
                     <dt>提供商</dt>
@@ -416,75 +507,13 @@ export function ModelPicker({
         <div className="modal-overlay" onClick={() => setShowAdd(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>添加模型</h3>
-            <label>
-              别名
-              <input
-                value={form.alias}
-                placeholder="如 my-gpt"
-                onChange={(e) => setForm({ ...form, alias: e.target.value })}
-              />
-            </label>
-            <label>
-              模型名
-              <input
-                value={form.model}
-                placeholder="如 gpt-4o"
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              />
-            </label>
-            <div className="modal-field">
-              <label>
-                供应商
-                <input
-                  value={form.provider}
-                  placeholder="如 bailian、rightcode"
-                  onChange={(e) => setForm({ ...form, provider: e.target.value })}
-                />
-              </label>
-            </div>
-            <div className="modal-field">
-              <span className="modal-field-label">接口格式</span>
-              <div className="custom-dropdown" ref={formatRef}>
-                <button
-                  type="button"
-                  className="custom-dropdown-trigger form-trigger"
-                  onClick={() => setFormatOpen(!formatOpen)}
-                >
-                  <span className="dropdown-value">{apiFormatLabel(form.api_format ?? "openai_compatible")}</span>
-                  <span className="dropdown-caret" aria-hidden="true">
-                    ⌄
-                  </span>
-                </button>
-                {formatOpen && (
-                  <div className="custom-dropdown-menu provider-menu">
-                    {API_FORMATS.map((f) => (
-                      <button
-                        type="button"
-                        key={f.value}
-                        className={`custom-dropdown-item ${f.value === form.api_format ? "active" : ""}`}
-                        onClick={() => {
-                          setForm({ ...form, api_format: f.value });
-                          setFormatOpen(false);
-                        }}
-                      >
-                        <span className="dropdown-item-check" aria-hidden="true">
-                          {f.value === form.api_format ? "✓" : ""}
-                        </span>
-                        <span className="dropdown-item-text">{f.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            <label>
-              Base URL
-              <input
-                value={form.base_url}
-                placeholder="https://api.example.com/v1"
-                onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-              />
-            </label>
+            <ModelFields
+              form={form}
+              setForm={setForm}
+              formatRef={formatRef}
+              formatOpen={formatOpen}
+              setFormatOpen={setFormatOpen}
+            />
             <label>
               API Key
               <input
@@ -516,75 +545,13 @@ export function ModelPicker({
         <div className="modal-overlay" onClick={() => setShowEdit(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>编辑模型</h3>
-            <label>
-              别名
-              <input
-                value={form.alias}
-                placeholder="如 my-gpt"
-                onChange={(e) => setForm({ ...form, alias: e.target.value })}
-              />
-            </label>
-            <label>
-              模型名
-              <input
-                value={form.model}
-                placeholder="如 gpt-4o"
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              />
-            </label>
-            <div className="modal-field">
-              <label>
-                供应商
-                <input
-                  value={form.provider}
-                  placeholder="如 bailian、rightcode"
-                  onChange={(e) => setForm({ ...form, provider: e.target.value })}
-                />
-              </label>
-            </div>
-            <div className="modal-field">
-              <span className="modal-field-label">接口格式</span>
-              <div className="custom-dropdown" ref={formatRef}>
-                <button
-                  type="button"
-                  className="custom-dropdown-trigger form-trigger"
-                  onClick={() => setFormatOpen(!formatOpen)}
-                >
-                  <span className="dropdown-value">{apiFormatLabel(form.api_format ?? "openai_compatible")}</span>
-                  <span className="dropdown-caret" aria-hidden="true">
-                    ⌄
-                  </span>
-                </button>
-                {formatOpen && (
-                  <div className="custom-dropdown-menu provider-menu">
-                    {API_FORMATS.map((f) => (
-                      <button
-                        type="button"
-                        key={f.value}
-                        className={`custom-dropdown-item ${f.value === form.api_format ? "active" : ""}`}
-                        onClick={() => {
-                          setForm({ ...form, api_format: f.value });
-                          setFormatOpen(false);
-                        }}
-                      >
-                        <span className="dropdown-item-check" aria-hidden="true">
-                          {f.value === form.api_format ? "✓" : ""}
-                        </span>
-                        <span className="dropdown-item-text">{f.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            <label>
-              Base URL
-              <input
-                value={form.base_url}
-                placeholder="https://api.example.com/v1"
-                onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-              />
-            </label>
+            <ModelFields
+              form={form}
+              setForm={setForm}
+              formatRef={formatRef}
+              formatOpen={formatOpen}
+              setFormatOpen={setFormatOpen}
+            />
             <label>
               API Key
               <span className="secret-input-row">

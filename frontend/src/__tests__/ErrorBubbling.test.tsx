@@ -45,8 +45,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.fetchSessions.mockResolvedValue([]);
   m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
-  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {} });
+  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
+  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.streamChat.mockResolvedValue(undefined);
   m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "s1", permission_mode: mode }));

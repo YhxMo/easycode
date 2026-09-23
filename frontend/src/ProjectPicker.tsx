@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { WorkspacesInfo } from "./api";
+import type { WorkspaceProject, WorkspacesInfo } from "./api";
 import { chooseWorkspace } from "./api";
 import { basename, DEFAULT_PROJECT } from "./lib/paths";
 import { SecondaryEditor } from "./SecondaryEditor";
@@ -11,7 +11,7 @@ export function ProjectPicker({
   disabled,
   onRoot,
   onSecondary,
-  onWorkspaces,
+  onProjects,
   onError,
 }: {
   workspaces: WorkspacesInfo;
@@ -20,7 +20,7 @@ export function ProjectPicker({
   disabled: boolean;
   onRoot: (r: string | null) => void;
   onSecondary: (r: string[]) => void;
-  onWorkspaces: (w: WorkspacesInfo) => void;
+  onProjects: (projects: WorkspaceProject[]) => void;
   onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -41,7 +41,7 @@ export function ProjectPicker({
   // switching the main root shows that project's bound secondary roots
   useEffect(() => {
     const proj = (workspaces.projects ?? []).find((p) => p.root === root);
-    onSecondary((proj?.secondary ?? []).filter((x) => x !== undefined));
+    onSecondary(proj?.secondary ?? []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
 
@@ -58,10 +58,7 @@ export function ProjectPicker({
         onRoot(chosen);
         // register in the local pool so the dropdown keeps showing it
         if (!(workspaces.projects ?? []).some((p) => p.root === chosen)) {
-          onWorkspaces({
-            ...workspaces,
-            projects: [...(workspaces.projects ?? []), { root: chosen, secondary: [] }],
-          });
+          onProjects([...(workspaces.projects ?? []), { root: chosen, secondary: [] }]);
         }
       }
     } catch (e) {
@@ -152,7 +149,7 @@ export function ProjectPicker({
           secondary={secondary}
           disabled={disabled}
           onSecondary={onSecondary}
-          onWorkspaces={onWorkspaces}
+          onProjects={onProjects}
           onError={onError}
         />
         {error && <div className="picker-error">{error}</div>}

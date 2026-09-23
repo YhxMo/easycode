@@ -93,9 +93,6 @@ export function stampTurnMeta(items: Item[], model: string | undefined, duration
 
 export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
   switch (ev.type) {
-    case "session":
-      // The session id is foreground state (set by the caller), not items.
-      return prev;
     case "text":
       return appendOrExtendAssistant(prev, ev.content ?? "");
     case "cancelled":

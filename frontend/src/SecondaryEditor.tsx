@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { WorkspacesInfo } from "./api";
+import type { WorkspaceProject } from "./api";
 import { chooseWorkspace, saveProject } from "./api";
 import { basename, DEFAULT_PROJECT } from "./lib/paths";
 
@@ -9,7 +9,7 @@ export function SecondaryEditor({
   sessionId,
   disabled,
   onSecondary,
-  onWorkspaces,
+  onProjects,
   onError,
 }: {
   root: string | null;
@@ -17,7 +17,7 @@ export function SecondaryEditor({
   sessionId?: string | null;
   disabled: boolean;
   onSecondary: (r: string[]) => void;
-  onWorkspaces?: (w: WorkspacesInfo) => void;
+  onProjects?: (projects: WorkspaceProject[]) => void;
   onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -34,7 +34,7 @@ export function SecondaryEditor({
         sessionId ?? undefined,
       );
       onSecondary(saved);
-      onWorkspaces?.({ projects } as WorkspacesInfo);
+      onProjects?.(projects);
       return saved;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

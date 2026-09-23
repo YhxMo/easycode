@@ -113,8 +113,8 @@ describe("App · 删除会话模态框", () => {
     vi.clearAllMocks();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchArchivedSessions.mockResolvedValue([]);
-    m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
-    m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {} });
+    m.fetchWorkspaces.mockResolvedValue({ projects: [] });
+    m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
     m.fetchCommands.mockResolvedValue({ commands: [] });
     m.fetchSession.mockResolvedValue({
       ...session("s1", "会话A"),
@@ -148,7 +148,7 @@ describe("App · 删除会话模态框", () => {
 
   it("流进行中删除当前会话：停止流、清空视图并恢复空闲", async () => {
     const user = userEvent.setup();
-    m.cancelSessionChat.mockResolvedValue({ ok: true, cancelled: true });
+    m.cancelSessionChat.mockResolvedValue(undefined);
     m.deleteSession.mockResolvedValue(undefined);
     const stream = abortableStream();
 

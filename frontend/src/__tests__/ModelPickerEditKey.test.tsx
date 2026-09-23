@@ -37,7 +37,9 @@ const m = vi.mocked(api);
 
 const MODELS: api.ModelsInfo = {
   default: "alpha",
-  models: { alpha: { model: "m-alpha", api_format: "openai_compatible", key_id: "model-1" } },
+  models: { alpha: { model: "m-alpha", key_id: "model-1" } },
+  providers: { alpha: "openai" },
+  limits: {},
 };
 
 const DETAIL: api.EditableModel = {
@@ -54,7 +56,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.fetchSessions.mockResolvedValue([]);
   m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
+  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   m.fetchModels.mockResolvedValue(MODELS);
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.streamChat.mockResolvedValue(undefined);

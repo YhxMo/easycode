@@ -72,8 +72,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.fetchSessions.mockResolvedValue([]);
   m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
-  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {} });
+  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
+  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.streamChat.mockResolvedValue(undefined);
   // Echo the requested mode back so the App's optimistic update is confirmed
@@ -226,7 +226,6 @@ describe("App", () => {
           name: "write_file",
           args: {},
           decision: "approved",
-          always: false,
         },
       ],
     });
@@ -414,7 +413,6 @@ describe("App", () => {
     const s1 = { ...session("s1", "会话A"), root: "/workspace/projA" };
     m.fetchSessions.mockResolvedValue([s1]);
     m.fetchWorkspaces.mockResolvedValue({
-      default: "",
       projects: [{ root: "/workspace/projA", secondary: [], name: "Project A", pinned: true }],
     });
 

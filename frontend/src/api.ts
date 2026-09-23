@@ -1,4 +1,5 @@
 import type { HistoryMessage } from "./lib/history";
+import type { ApprovalState } from "./types";
 
 export interface ToolCall {
   id: string;
@@ -25,10 +26,9 @@ export interface SessionSummary {
   permission_mode?: string;
   root?: string | null;
   secondary_roots?: string[];
-  archived?: boolean;
 }
 
-export type ApprovalDecision = "approved" | "denied" | "expired";
+export type ApprovalDecision = Exclude<ApprovalState, "pending">;
 
 export interface ApprovalRecord {
   tool_call_id: string;
@@ -37,7 +37,6 @@ export interface ApprovalRecord {
   reason?: string;
   scope?: string;
   decision: ApprovalDecision;
-  always: boolean;
 }
 
 export interface SessionDetail extends SessionSummary {
@@ -46,7 +45,7 @@ export interface SessionDetail extends SessionSummary {
   user_times?: string[];
 }
 
-export type ModelEntry = { model: string; key_id?: string; api_format: string; provider?: string };
+export type ModelEntry = { model: string; key_id?: string };
 
 export interface ModelLimits {
   context: number;
@@ -55,8 +54,8 @@ export interface ModelLimits {
 export interface ModelsInfo {
   default: string;
   models: Record<string, ModelEntry>;
-  providers?: Record<string, string>;
-  limits?: Record<string, ModelLimits | null>;
+  providers: Record<string, string>;
+  limits: Record<string, ModelLimits | null>;
 }
 
 export interface WorkspaceProject {
@@ -67,7 +66,6 @@ export interface WorkspaceProject {
 }
 
 export interface WorkspacesInfo {
-  default: string;
   projects: WorkspaceProject[];
 }
 
@@ -103,7 +101,6 @@ export interface AddModelBody {
 export interface EditableModel {
   alias: string;
   model: string;
-  key_id?: string | null;
   provider?: string | null;
   base_url?: string | null;
   has_api_key: boolean;
@@ -121,40 +118,51 @@ export interface UpdateModelBody {
   api_format?: string;
 }
 
-async function json<T>(resp: Response): Promise<T> {
-  if (!resp.ok) {
-    let detail = `HTTP ${resp.status}`;
-    try {
-      const body = (await resp.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      // Keep the HTTP status when the server did not return JSON.
-    }
-    throw new Error(detail);
+/** Backend ``detail`` message for a failed response, else the fallback. */
+async function errorDetail(resp: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await resp.json()) as { detail?: string };
+    if (body.detail) return String(body.detail);
+  } catch {
+    // Keep the fallback when the server did not return JSON.
   }
+  return fallback;
+}
+
+async function json<T>(resp: Response): Promise<T> {
+  if (!resp.ok) throw new Error(await errorDetail(resp, `HTTP ${resp.status}`));
   return (await resp.json()) as T;
 }
 
+/** Fetch + JSON decode + backend-detail errors for one endpoint. */
+async function request<T>(url: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  const resp = await fetch(url, {
+    method: init.method ?? "GET",
+    ...(init.body === undefined
+      ? {}
+      : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(init.body) }),
+  });
+  return json<T>(resp);
+}
+
 export function fetchSessions(): Promise<SessionSummary[]> {
-  return fetch("/api/sessions").then((r) => json<SessionSummary[]>(r));
+  return request("/api/sessions");
 }
 
 export function fetchArchivedSessions(): Promise<SessionSummary[]> {
-  return fetch("/api/sessions?archived=1").then((r) => json<SessionSummary[]>(r));
+  return request("/api/sessions?archived=1");
 }
 
 export function fetchSession(id: string): Promise<SessionDetail> {
-  return fetch(`/api/sessions/${id}`).then((r) => json<SessionDetail>(r));
+  return request(`/api/sessions/${id}`);
 }
 
 export function deleteSession(id: string): Promise<void> {
-  return fetch(`/api/sessions/${id}`, { method: "DELETE" }).then((r) => {
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  });
+  return request(`/api/sessions/${id}`, { method: "DELETE" });
 }
 
 export function fetchWorkspaces(): Promise<WorkspacesInfo> {
-  return fetch("/api/workspaces").then((r) => json<WorkspacesInfo>(r));
+  return request("/api/workspaces");
 }
 
 export function saveProject(
@@ -163,147 +171,98 @@ export function saveProject(
   sessionId?: string | null,
   name?: string,
 ): Promise<{ root: string | null; secondary: string[]; projects: WorkspaceProject[] }> {
-  return fetch("/api/workspaces/projects", {
+  return request("/api/workspaces/projects", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root, secondary, session_id: sessionId ?? null, name }),
-  }).then((r) => json<{ root: string | null; secondary: string[]; projects: WorkspaceProject[] }>(r));
+    body: { root, secondary, session_id: sessionId ?? null, name },
+  });
 }
 
-export function pinProject(
-  root: string | null,
-  pinned: boolean,
-): Promise<{ ok: boolean; root: string | null; pinned: boolean; projects: WorkspaceProject[] }> {
-  return fetch("/api/workspaces/pin", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root, pinned }),
-  }).then((r) => json<{ ok: boolean; root: string | null; pinned: boolean; projects: WorkspaceProject[] }>(r));
+export function pinProject(root: string | null, pinned: boolean): Promise<{ projects: WorkspaceProject[] }> {
+  return request("/api/workspaces/pin", { method: "POST", body: { root, pinned } });
 }
 
 export function revealInFinder(root: string | null): Promise<{ ok: boolean; supported: boolean; path?: string }> {
-  return fetch("/api/workspaces/reveal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root }),
-  }).then((r) => json<{ ok: boolean; supported: boolean; path?: string }>(r));
+  return request("/api/workspaces/reveal", { method: "POST", body: { root } });
 }
 
 export function createWorktree(
   root: string,
-): Promise<{ ok: boolean; root: string; name?: string; notes?: string[]; projects: WorkspaceProject[] }> {
-  return fetch("/api/workspaces/worktree", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root }),
-  }).then((r) => json<{ ok: boolean; root: string; name?: string; notes?: string[]; projects: WorkspaceProject[] }>(r));
+): Promise<{ name?: string; projects: WorkspaceProject[] }> {
+  return request("/api/workspaces/worktree", { method: "POST", body: { root } });
 }
 
 export function archiveProjectChats(
   root: string | null,
-): Promise<{ ok: boolean; archived_sessions: number; projects: WorkspaceProject[] }> {
-  return fetch("/api/workspaces/archive", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root }),
-  }).then((r) => json<{ ok: boolean; archived_sessions: number; projects: WorkspaceProject[] }>(r));
+): Promise<{ archived_sessions: number; projects: WorkspaceProject[] }> {
+  return request("/api/workspaces/archive", { method: "POST", body: { root } });
 }
 
 export function removeProject(
   root: string | null,
-): Promise<{ ok: boolean; deleted_sessions: number; projects: WorkspaceProject[] }> {
-  return fetch("/api/workspaces/projects/remove", {
+): Promise<{ deleted_sessions: number; projects: WorkspaceProject[] }> {
+  return request("/api/workspaces/projects/remove", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ root, delete_sessions: true }),
-  }).then((r) => json<{ ok: boolean; deleted_sessions: number; projects: WorkspaceProject[] }>(r));
+    body: { root, delete_sessions: true },
+  });
 }
 
-export function setSessionArchived(
-  sessionId: string,
-  archived: boolean,
-): Promise<{ ok: boolean; archived: boolean }> {
-  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
+export function setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ archived }),
-  }).then((r) => json<{ ok: boolean; archived: boolean }>(r));
+    body: { archived },
+  });
 }
 
 export function chooseWorkspace(
   multiple = false,
   prompt = "选择目录",
 ): Promise<{ paths: string[]; supported: boolean }> {
-  return fetch("/api/workspaces/choose", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ multiple, prompt }),
-  }).then((r) => json<{ paths: string[]; supported: boolean }>(r));
+  return request("/api/workspaces/choose", { method: "POST", body: { multiple, prompt } });
 }
 
 export function fetchModels(): Promise<ModelsInfo> {
-  return fetch("/api/models").then((r) => json<ModelsInfo>(r));
+  return request("/api/models");
 }
 
 export function switchModel(alias: string): Promise<ModelsInfo> {
-  return fetch("/api/models", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ alias }),
-  }).then((r) => json<ModelsInfo>(r));
+  return request("/api/models", { method: "POST", body: { alias } });
 }
 
 export function addModel(body: AddModelBody): Promise<ModelsInfo> {
-  return fetch("/api/models/add", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  }).then((r) => json<ModelsInfo>(r));
+  return request("/api/models/add", { method: "POST", body });
 }
 
 export function fetchModel(alias: string): Promise<EditableModel> {
-  return fetch(`/api/models/${encodeURIComponent(alias)}`).then((r) => json<EditableModel>(r));
+  return request(`/api/models/${encodeURIComponent(alias)}`);
 }
 
 export function updateModel(alias: string, body: UpdateModelBody): Promise<ModelsInfo> {
-  return fetch(`/api/models/${encodeURIComponent(alias)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  }).then((r) => json<ModelsInfo>(r));
+  return request(`/api/models/${encodeURIComponent(alias)}`, { method: "PUT", body });
 }
 
 export function deleteModel(alias: string): Promise<ModelsInfo> {
-  return fetch(`/api/models/${encodeURIComponent(alias)}`, {
-    method: "DELETE",
-  }).then((r) => json<ModelsInfo>(r));
+  return request(`/api/models/${encodeURIComponent(alias)}`, { method: "DELETE" });
 }
 
 export function submitApproval(approvalId: string, approve: boolean, always = false): Promise<void> {
-  return fetch(`/api/approval/${encodeURIComponent(approvalId)}`, {
+  return request(`/api/approval/${encodeURIComponent(approvalId)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approve, always }),
-  }).then((r) => {
-    if (!r.ok) throw new Error(`approval HTTP ${r.status}`);
+    body: { approve, always },
   });
 }
 
 export function setSessionPermission(
   sessionId: string,
   mode: string,
-): Promise<{ id: string; permission_mode: string }> {
-  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/permission`, {
+): Promise<{ permission_mode: string }> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/permission`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
-  }).then((r) => json<{ id: string; permission_mode: string }>(r));
+    body: { mode },
+  });
 }
 
-export function cancelSessionChat(sessionId: string): Promise<{ ok: boolean; cancelled: boolean }> {
-  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/cancel`, {
-    method: "POST",
-  }).then((r) => json<{ ok: boolean; cancelled: boolean }>(r));
+export function cancelSessionChat(sessionId: string): Promise<void> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: "POST" });
 }
 
 export async function streamChat(

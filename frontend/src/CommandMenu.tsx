@@ -21,16 +21,6 @@ function CommandIcon() {
   );
 }
 
-function BuiltinIcon() {
-  return (
-    <svg className="command-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="8" x2="12" y2="12" />
-      <line x1="12" y1="16" x2="12.01" y2="16" />
-    </svg>
-  );
-}
-
 export function CommandMenu({
   commands,
   open,
@@ -51,10 +41,11 @@ export function CommandMenu({
   if (!open || filtered.length === 0) return null;
   const idx = clampCommandIndex(filtered, index);
 
-  // Group by category: 技能 (skill), 自定义命令 (template), 内置命令 (builtin)
+  // filterCommands returns the list grouped by kind (skill → template →
+  // builtin), which is exactly the section order below; the cursor index
+  // therefore always names the same item that is highlighted.
   const skills = filtered.filter((c) => c.kind === "skill");
   const templates = filtered.filter((c) => c.kind === "template");
-  const builtins = filtered.filter((c) => c.kind === "builtin");
 
   let globalCounter = 0;
 
@@ -78,13 +69,7 @@ export function CommandMenu({
                 }}
               >
                 <div className="command-item-left">
-                  {c.kind === "skill" ? (
-                    <SkillIcon />
-                  ) : c.kind === "template" ? (
-                    <CommandIcon />
-                  ) : (
-                    <BuiltinIcon />
-                  )}
+                  {c.kind === "skill" ? <SkillIcon /> : <CommandIcon />}
                   <span className="command-name">/{c.name}</span>
                   {c.argument_hint && <span className="command-hint">{c.argument_hint}</span>}
                   <span className="command-desc" title={c.description}>
@@ -105,7 +90,6 @@ export function CommandMenu({
       <div className="command-menu-scroll">
         {renderSection("技能", skills)}
         {renderSection("命令", templates)}
-        {renderSection("内置命令", builtins)}
       </div>
       <div className="command-scrim" onClick={onClose} />
     </div>

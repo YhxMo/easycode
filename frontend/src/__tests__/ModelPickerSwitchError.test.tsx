@@ -45,14 +45,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.fetchSessions.mockResolvedValue([]);
   m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
+  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   // Two models so a switch to a second one can be attempted.
   m.fetchModels.mockResolvedValue({
     default: "alpha",
-    models: {
-      alpha: { model: "m-alpha", api_format: "openai_compatible" },
-      beta: { model: "m-beta", api_format: "openai_compatible" },
-    },
+    models: { alpha: { model: "m-alpha" }, beta: { model: "m-beta" } },
+    providers: { alpha: "openai", beta: "openai" },
+    limits: {},
   });
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.streamChat.mockResolvedValue(undefined);
