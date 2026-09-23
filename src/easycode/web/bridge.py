@@ -116,7 +116,8 @@ async def stream_chat_with_approval(
     """Agent turn with human approval interleaved.
 
     Yields (kind, payload) pairs:
-    - ("text", chunk) / ("event", AgentEvent) for the normal stream
+    - ("event", AgentEvent) for the normal stream; token-level text is
+      coalesced into larger ``AgentEvent(kind="text")`` chunks
     - ("approval", (approval_id, tool_call, reason, scope)) when the user must decide
     - ("event", AgentEvent(kind="cancelled")) once ``cancel_event`` fires
 
@@ -139,7 +140,7 @@ async def stream_chat_with_approval(
         text = "".join(buf)
         buf = []
         last_flush = time.monotonic()
-        return ("text", text)
+        return ("event", AgentEvent(kind="text", content=text))
 
     async def run_turn() -> None:
         prev = agent.approval_handler

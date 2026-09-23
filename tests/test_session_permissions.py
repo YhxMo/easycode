@@ -53,6 +53,13 @@ def test_session_permission_persistence(tmp_path):
     assert restored.permission_mode == "auto-review"
     assert restored.agent.permission_mode == "auto-review"
 
+    # 权限只以 Agent 为准：直接改 Agent 后，摘要与落盘都读到新值。
+    restored.agent.permission_mode = "allow-all"
+    assert restored.summary["permission_mode"] == "allow-all"
+    store2.record_exchange(restored)
+    saved = json.loads(store2._path(s.id).read_text(encoding="utf-8"))
+    assert saved["permission_mode"] == "allow-all"
+
 
 def test_session_permission_endpoint(tmp_path):
     from easycode.agent.loop import Agent

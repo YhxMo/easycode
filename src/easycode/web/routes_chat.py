@@ -12,7 +12,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from easycode.agent.loop import AgentEvent
 from easycode.config import Config
 from easycode.skills import SkillRegistry
 from easycode.web.bridge import (
@@ -187,7 +186,6 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 # Mutations belong under the lock so they cannot race a concurrent
                 # permission change (which is rejected with 409 while busy).
                 if perm_mode:
-                    sess.permission_mode = perm_mode
                     sess.agent.permission_mode = perm_mode
                 if sess.title == "新会话":
                     sess.title = raw_message.strip()[:30]
@@ -202,8 +200,6 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                         if kind == "approval":
                             approval_id, tc, reason, scope = payload
                             yield approval_required_sse(approval_id, tc, reason, scope)
-                        elif kind == "text":
-                            yield event_to_sse(AgentEvent(kind="text", content=payload))
                         else:
                             yield event_to_sse(payload)
             finally:

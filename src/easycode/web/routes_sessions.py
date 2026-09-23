@@ -77,7 +77,6 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
                 mode = permission_parse(req.mode)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
-            sess.permission_mode = mode
             sess.agent.permission_mode = mode
             store.record_exchange(sess)
             return {"id": sess.id, "permission_mode": mode}

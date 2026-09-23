@@ -52,13 +52,17 @@ class Session:
     messages: list[dict] = field(default_factory=list)
     root: str | None = None  # project (primary workspace root); None = default project
     secondary_roots: list[str] = field(default_factory=list)
-    permission_mode: str = "ask"  # ask | auto-review | allow-all
     cancel_event: Any | None = None  # asyncio.Event; set by the cancel endpoint
     always_allow: list[str] = field(default_factory=list)  # approval_key() scopes, persists
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+
+    @property
+    def permission_mode(self) -> str:
+        """The live agent owns the mode; the session only reads it for output."""
+        return self.agent.permission_mode
 
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
@@ -122,8 +126,7 @@ class SessionStore:
         agent = (
             self.agent_factory(alias, **agent_kwargs) if agent_kwargs else self.agent_factory(alias)
         )
-        mode = permission_mode or self.cfg.permission_mode
-        agent.permission_mode = mode
+        agent.permission_mode = permission_mode or self.cfg.permission_mode
         sess = Session(
             id=sid,
             title="新会话",
@@ -132,7 +135,6 @@ class SessionStore:
             agent=agent,
             root=root,
             secondary_roots=[str(p) for p in secondary],
-            permission_mode=mode,
         )
         self._sessions[sid] = sess
         self._flush(sess)
@@ -223,7 +225,6 @@ class SessionStore:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 root = data.get("root")
                 secondary = list(data.get("secondary_roots") or [])
-                permission_mode = data.get("permission_mode") or self.cfg.permission_mode
                 agent_kwargs: dict = {}
                 if root:
                     agent_kwargs["root"] = root
@@ -232,7 +233,7 @@ class SessionStore:
                 agent = self.agent_factory(
                     data.get("model_alias") or self.cfg.default_model, **agent_kwargs
                 )
-                agent.permission_mode = permission_mode
+                agent.permission_mode = data.get("permission_mode") or self.cfg.permission_mode
                 messages = list(data.get("messages") or [])
                 agent.history.messages = messages
                 # Rebuild the rolling-compaction summary from the head
@@ -250,7 +251,6 @@ class SessionStore:
                     messages=messages,
                     root=root,
                     secondary_roots=secondary,
-                    permission_mode=permission_mode,
                     always_allow=list(data.get("always_allow") or []),
                     approval_log=list(data.get("approval_log") or []),
                     user_times=list(data.get("user_times") or []),

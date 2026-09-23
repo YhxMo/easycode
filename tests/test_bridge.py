@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
-from easycode.agent.loop import Agent, AgentEvent
+from easycode.agent.loop import Agent
+from easycode.models.base import StreamEvent
 from easycode.tools import build_registry
 from easycode.web.bridge import ApprovalBroker, event_to_sse, stream_chat_with_approval
 from tests.conftest import FakeProvider
@@ -29,9 +31,8 @@ async def run_chat(agent: Agent, msg: str, **kw) -> list[str]:
     broker = ApprovalBroker()
     lines: list[str] = []
     async for kind, payload in stream_chat_with_approval(agent, msg, broker, **kw):
-        if kind == "text":
-            lines.append(event_to_sse(AgentEvent(kind="text", content=str(payload))))
-        elif kind == "event":
+        assert kind in {"event", "approval"}
+        if kind == "event":
             lines.append(event_to_sse(payload))
     return lines
 
@@ -74,4 +75,44 @@ async def test_tool_events_are_not_coalesced(tmp_path):
     assert kinds.count("tool_result") == 1
     assert kinds[-1] == "done"
     texts = "".join(e["content"] for e in events if e["type"] == "text")
-    assert texts == WORD
+    assert texts == WORD    # text flushes before the tool call, and the final answer lands before done
+    assert kinds.index("tool_start") < kinds.index("tool_result") < kinds.index("text")
+
+
+class PausingProvider(FakeProvider):
+    """Streams some text, then blocks until cancelled (never finishes the turn)."""
+
+    def __init__(self, text: str, started: asyncio.Event) -> None:
+        super().__init__()
+        self.text = text
+        self.started = started
+
+    async def stream(self, messages, tools=None):
+        for token in self.text:
+            yield StreamEvent(kind="text", content=token)
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+async def test_cancel_flushes_buffered_text_then_cancelled(tmp_path):
+    started = asyncio.Event()
+    cancel = asyncio.Event()
+    agent = Agent(
+        provider=PausingProvider(WORD, started),
+        registry=build_registry(8000),
+        root=tmp_path,
+    )
+
+    async def trigger():
+        await started.wait()
+        # let the bridge drain the queue into its buffer before cancelling
+        for _ in range(20):
+            await asyncio.sleep(0)
+        cancel.set()
+
+    trig = asyncio.create_task(trigger())
+    # large thresholds keep the partial text buffered until cancellation
+    lines = await run_chat(agent, "hi", flush_chars=10_000, flush_seconds=60, cancel_event=cancel)
+    await trig
+    events = parse_events(lines)
+    assert events == [{"type": "text", "content": WORD}, {"type": "cancelled", "content": "cancelled"}]
