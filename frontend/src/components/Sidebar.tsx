@@ -38,17 +38,16 @@ export interface SidebarProps {
   groups: Array<[string | null, SessionSummary[]]>;
   projectMeta: Map<string | null, WorkspaceProject>;
   chosenRoot: string | null;
-  chosenSecondary: string[];
   currentRoot: string | null;
-  currentSecondary: string[];
+  /** Secondary roots of the draft (new session) or open session. */
+  secondary: string[];
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
   onToggleCollapsed: (key: string) => void;
   onNewChatInProject: (root: string | null) => void;
   onProjectAction: (root: string | null, action: ProjectAction) => void;
   onSetChosenRoot: (root: string | null) => void;
-  onSetChosenSecondary: (secondary: string[]) => void;
-  onSetCurrentSecondary: (secondary: string[]) => void;
+  onSetSecondary: (secondary: string[]) => void;
   onSetWorkspaces: (workspaces: WorkspacesInfo) => void;
   onToggleArchived: () => void;
   onDeleteSession: (session: SessionSummary) => void;
@@ -69,17 +68,15 @@ export function Sidebar({
   groups,
   projectMeta,
   chosenRoot,
-  chosenSecondary,
   currentRoot,
-  currentSecondary,
+  secondary,
   onNewSession,
   onOpenSession,
   onToggleCollapsed,
   onNewChatInProject,
   onProjectAction,
   onSetChosenRoot,
-  onSetChosenSecondary,
-  onSetCurrentSecondary,
+  onSetSecondary,
   onSetWorkspaces,
   onToggleArchived,
   onDeleteSession,
@@ -101,10 +98,10 @@ export function Sidebar({
           <ProjectPicker
             workspaces={workspaces}
             root={chosenRoot}
-            secondary={chosenSecondary}
+            secondary={secondary}
             disabled={busy}
             onRoot={onSetChosenRoot}
-            onSecondary={onSetChosenSecondary}
+            onSecondary={onSetSecondary}
             onWorkspaces={onSetWorkspaces}
             onError={onError}
           />
@@ -118,10 +115,10 @@ export function Sidebar({
         {currentId !== null && (
           <SecondaryEditor
             root={currentRoot}
-            secondary={currentSecondary}
+            secondary={secondary}
             sessionId={currentId}
             disabled={busy}
-            onSecondary={onSetCurrentSecondary}
+            onSecondary={onSetSecondary}
             onWorkspaces={onSetWorkspaces}
             onError={onError}
           />

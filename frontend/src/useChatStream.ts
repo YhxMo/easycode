@@ -2,7 +2,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { ChatOptions } from "./api";
 import { cancelSessionChat, streamChat } from "./api";
-import { applyChatEvent, stampTurnMeta } from "./chatStream";
+import { applyChatEvent, expirePending, stampTurnMeta } from "./chatStream";
 import { isAbortError } from "./lib/history";
 import type { Item } from "./types";
 
@@ -10,9 +10,10 @@ export interface UseChatStreamParams {
   input: string;
   currentId: string | null;
   chosenRoot: string | null;
-  chosenSecondary: string[];
-  chosenPermission: string;
-  currentPermission: string;
+  /** Secondary roots of the session being composed (draft) or viewed. */
+  secondary: string[];
+  /** Permission mode of the session being composed (draft) or viewed. */
+  permission: string;
   /** Model name at send time, stamped onto the turn's assistant messages for the reply meta row. */
   currentModelName: string;
   refreshSessions: () => void;
@@ -36,15 +37,19 @@ export function useChatStream(params: UseChatStreamParams) {
 
   const [items, setItems] = useState<Item[]>([]);
 
-  // Request generation + per-session stream
-  // ownership. currentRequestRef holds the token of the *active* request; a
-  // stale/aborted request is one whose token no longer matches. openSeqRef
-  // guards openSession against out-of-order fetchSession responses.
+  // Request generation + stream ownership. currentRequestRef holds the token
+  // of the *active* request; a stale/aborted request is one whose token no
+  // longer matches.
   const currentRequestRef = useRef<number | null>(null);
   const reqSeqRef = useRef(0);
-  const currentStreamSessionRef = useRef<string | null>(null);
   const sendAbortRef = useRef<AbortController | null>(null);
-  const openSeqRef = useRef(0);
+
+  /** Abandon the in-flight request: its events can no longer touch the view. */
+  const detach = useCallback(() => {
+    sendAbortRef.current?.abort();
+    sendAbortRef.current = null;
+    currentRequestRef.current = null;
+  }, []);
 
   const send = useCallback(async () => {
     const c = latest.current;
@@ -58,20 +63,20 @@ export function useChatStream(params: UseChatStreamParams) {
     // token that no longer matches currentRequestRef and drops all its events.
     const token = ++reqSeqRef.current;
     currentRequestRef.current = token;
-    currentStreamSessionRef.current = sessionId;
     const turnStartedAt = Date.now();
     const modelAtSend = c.currentModelName;
     const controller = new AbortController();
     sendAbortRef.current = controller;
     const opts: ChatOptions = {};
-    if (c.currentId === null) {
+    if (sessionId === null) {
       if (c.chosenRoot) opts.root = c.chosenRoot;
-      if (c.chosenSecondary.length) opts.secondary_roots = c.chosenSecondary;
+      if (c.secondary.length) opts.secondary_roots = c.secondary;
     }
-    opts.permission_mode = c.currentId === null ? c.chosenPermission : c.currentPermission;
+    opts.permission_mode = c.permission;
     opts.signal = controller.signal;
     const patches: Item[] = [
-      { kind: "user", text },
+      // Stamp the time at send: rendering must not fall back to the clock.
+      { kind: "user", text, time: new Date().toISOString() },
       { kind: "assistant", text: "" },
     ];
     setItems((prev) => [...prev, ...patches]);
@@ -80,10 +85,7 @@ export function useChatStream(params: UseChatStreamParams) {
         // Only the current request may touch the view.
         if (currentRequestRef.current !== token) return;
         if (ev.type === "session") {
-          if (ev.session_id) {
-            c.setCurrentId(ev.session_id);
-            currentStreamSessionRef.current = ev.session_id;
-          }
+          if (ev.session_id) c.setCurrentId(ev.session_id);
           c.refreshSessions();
           return;
         }
@@ -100,23 +102,19 @@ export function useChatStream(params: UseChatStreamParams) {
         setItems((prev) => applyChatEvent(prev, { type: "cancelled" }));
         return;
       }
-      setItems((prev) => [
-        ...prev,
-        { kind: "error", text: err instanceof Error ? err.message : String(err) },
-      ]);
+      // Route through the reducer so a network failure also interrupts any
+      // still-running tool card instead of leaving it spinning forever.
+      setItems((prev) =>
+        applyChatEvent(prev, {
+          type: "error",
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
     } finally {
       busyRef.current = false;
       setBusy(false);
       if (currentRequestRef.current === token) {
-        setItems((prev) =>
-          stampTurnMeta(
-            prev.map((it) =>
-              it.kind === "approval" && it.state === "pending" ? { ...it, state: "expired" } : it,
-            ),
-            modelAtSend,
-            Date.now() - turnStartedAt,
-          ),
-        );
+        setItems((prev) => stampTurnMeta(expirePending(prev), modelAtSend, Date.now() - turnStartedAt));
         c.refreshSessions();
       }
       sendAbortRef.current = null;
@@ -132,15 +130,5 @@ export function useChatStream(params: UseChatStreamParams) {
     }
   }, []);
 
-  return {
-    send,
-    stop,
-    busy,
-    items,
-    setItems,
-    currentRequestRef,
-    currentStreamSessionRef,
-    sendAbortRef,
-    openSeqRef,
-  };
+  return { send, stop, busy, items, setItems, detach };
 }

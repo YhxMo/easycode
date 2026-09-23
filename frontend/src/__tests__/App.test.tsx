@@ -174,6 +174,153 @@ describe("App", () => {
   });
 
 
+  it("流进行中点击当前会话：不刷新、不丢失本轮内容和待审批项", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
+    const stream = captureStream();
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("hi");
+    await user.type(screen.getByRole("textbox"), "do it");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => {
+      stream.get()?.({
+        type: "approval_required",
+        approval_id: "ap1",
+        tool_call: { id: "t1", name: "execute_shell", arguments: {} },
+        reason: "r1",
+      });
+    });
+    await screen.findByText("1/1 个问题");
+    expect(m.fetchSession).toHaveBeenCalledTimes(1);
+
+    // Re-open the current session while its turn is streaming.
+    await user.click(document.querySelector(".session-item") as HTMLElement);
+
+    // The stale disk snapshot must not replace this turn's items.
+    await waitFor(() => expect(screen.getByText("1/1 个问题")).toBeTruthy());
+    expect(m.fetchSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("历史审批不参与本轮序号：新审批显示 1/1", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue({
+      ...detail("s1", "会话A", [
+        { role: "user", content: "old" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [{ id: "hist1", function: { name: "write_file", arguments: "{}" } }],
+        },
+        { role: "tool", tool_call_id: "hist1", content: "ok" },
+      ]),
+      approvals: [
+        {
+          tool_call_id: "hist1",
+          name: "write_file",
+          args: {},
+          decision: "approved",
+          always: false,
+        },
+      ],
+    });
+    const stream = captureStream();
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await user.type(screen.getByRole("textbox"), "new task");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => {
+      stream.get()?.({
+        type: "approval_required",
+        approval_id: "ap1",
+        tool_call: { id: "t1", name: "execute_shell", arguments: {} },
+        reason: "r",
+      });
+    });
+    await screen.findByText("1/1 个问题");
+  });
+
+  it("命令菜单高亮与回车选中一致（按 kind 稳定排序）", async () => {
+    const user = userEvent.setup();
+    m.fetchCommands.mockResolvedValue({
+      commands: [
+        { name: "a", description: "", kind: "skill" },
+        { name: "b", description: "", kind: "template" },
+        { name: "c", description: "", kind: "skill" },
+      ],
+    });
+
+    render(<App />);
+    const box = await screen.findByRole("textbox");
+    await user.type(box, "/");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe("/c "));
+  });
+
+  it("已发送的用户消息时间不随后续渲染变化", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+      m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
+
+      render(<App />);
+      await screen.findByText("会话A");
+      await user.click(screen.getByText("会话A"));
+      await user.type(screen.getByRole("textbox"), "hi");
+      await user.click(screen.getByRole("button", { name: /发送消息/ }));
+
+      const timeEl = await waitFor(() => {
+        const el = document.querySelector(".msg-row.user time");
+        expect(el).toBeTruthy();
+        return el as HTMLElement;
+      });
+      const before = timeEl.textContent;
+
+      await act(async () => {
+        vi.advanceTimersByTime(120_000);
+      });
+      // A re-render (state change) must keep the stamped send time.
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "x" } });
+
+      expect(document.querySelector(".msg-row.user time")?.textContent).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("网络中断时工具卡片不再显示执行中", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
+    m.streamChat.mockImplementation(async (_sid, _msg, cb) => {
+      cb({ type: "tool_start", tool_call: { id: "t1", name: "execute_shell", arguments: {} } });
+      throw new Error("net");
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await user.type(screen.getByRole("textbox"), "run");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+
+    await screen.findByText("net");
+    expect(document.querySelector(".tool-card.running")).toBeNull();
+    expect(document.querySelector(".tool-card")?.textContent).not.toContain("执行中");
+  });
+
   it("多审批显示动态 position/total", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);

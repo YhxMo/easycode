@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
@@ -40,6 +41,20 @@ const m = vi.mocked(api);
 
 function session(id: string, title: string): api.SessionSummary {
   return { id, title, created_at: "2026-01-01T00:00:00Z", model_alias: "m", permission_mode: "ask" };
+}
+
+/** A streamChat mock that stays in-flight and rejects when its signal aborts. */
+function abortableStream() {
+  let onEvent: ((e: api.ChatEvent) => void) | undefined;
+  m.streamChat.mockImplementation((_sid, _msg, cb, opts) => {
+    onEvent = cb;
+    return new Promise<void>((_resolve, reject) => {
+      opts?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("aborted", "AbortError")),
+      );
+    });
+  });
+  return { get: () => onEvent };
 }
 
 describe("Modal 组件", () => {
@@ -129,5 +144,36 @@ describe("App · 删除会话模态框", () => {
     });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("将永久删除")).toBeNull();
+  });
+
+  it("流进行中删除当前会话：停止流、清空视图并恢复空闲", async () => {
+    const user = userEvent.setup();
+    m.cancelSessionChat.mockResolvedValue({ ok: true, cancelled: true });
+    m.deleteSession.mockResolvedValue(undefined);
+    const stream = abortableStream();
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("hi");
+    await user.type(screen.getByRole("textbox"), "long task");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    fireEvent.click(document.querySelector(".session-del") as HTMLElement);
+    await screen.findByRole("dialog");
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(m.cancelSessionChat).toHaveBeenCalledWith("s1"));
+    expect(m.deleteSession).toHaveBeenCalledWith("s1");
+
+    // A late event from the deleted session's stream must not reach the view.
+    await act(async () => {
+      stream.get()?.({ type: "text", content: "late-text" });
+    });
+    expect(screen.queryByText("late-text")).toBeNull();
+
+    // The aborted request settles and the app returns to idle.
+    await waitFor(() => expect(screen.getByText("已连接")).toBeTruthy());
   });
 });

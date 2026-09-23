@@ -9,6 +9,7 @@ import type {
 } from "./api";
 import {
   archiveProjectChats,
+  cancelSessionChat,
   createWorktree,
   deleteSession,
   fetchArchivedSessions,
@@ -26,6 +27,7 @@ import {
   submitApproval,
 } from "./api";
 import { useChatStream } from "./useChatStream";
+import { currentTurn } from "./chatStream";
 import { historyToItems } from "./lib/history";
 import type { ApprovalState, Item } from "./types";
 import { ApprovalSheet } from "./ApprovalSheet";
@@ -48,10 +50,10 @@ export default function App() {
   const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
   const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ default: "", projects: [] });
   const [chosenRoot, setChosenRoot] = useState<string | null>(null);
-  const [chosenSecondary, setChosenSecondary] = useState<string[]>([]);
-  const [currentSecondary, setCurrentSecondary] = useState<string[]>([]);
-  const [chosenPermission, setChosenPermission] = useState<string>("ask");
-  const [currentPermission, setCurrentPermission] = useState<string>("ask");
+  // One pair of states serves both the new-session draft and the open session:
+  // a session event updates them in place, and openSession resets them.
+  const [secondary, setSecondary] = useState<string[]>([]);
+  const [permission, setPermission] = useState<string>("ask");
   const [overlayOpen, setOverlayOpen] = useState(true);
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -60,6 +62,7 @@ export default function App() {
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
+  const openSeqRef = useRef(0);
 
   // Escape closes the mobile drawer. Scoped to when the drawer is open so
   // the desktop layout and the composer's own Escape (command menu) are
@@ -88,29 +91,18 @@ export default function App() {
     models.models[models.default]?.model ??
     models.default;
 
-  const {
-    send,
-    stop,
-    busy,
-    items,
-    setItems,
-    currentRequestRef,
-    currentStreamSessionRef,
-    sendAbortRef,
-    openSeqRef,
-  } = useChatStream({
+  const { send, stop, busy, items, setItems, detach } = useChatStream({
     input,
     currentId,
     chosenRoot,
-    chosenSecondary,
-    chosenPermission,
-    currentPermission,
+    secondary,
+    permission,
     currentModelName,
     refreshSessions,
     setInput,
     setCurrentId,
     onApprovalRequired: () => setOverlayOpen(true),
-      });
+  });
 
   const decideApproval = useCallback(
     async (item: Extract<Item, { kind: "approval" }>, approve: boolean, always: boolean) => {
@@ -189,15 +181,17 @@ export default function App() {
 
   const openSession = useCallback(
     async (id: string | null) => {
-      const token = ++openSeqRef.current;
-      // Switching to a *different* session aborts the previous chat stream so
-      // its events cannot leak into the new view. Re-opening the same
-      // session is a refresh and does not cancel the in-flight request.
-      if (id === null || id !== currentStreamSessionRef.current) {
-        sendAbortRef.current?.abort();
-        sendAbortRef.current = null;
-        currentRequestRef.current = null;
+      // Re-opening the session that is currently streaming must not reload the
+      // stale disk snapshot: that would drop this turn's items and its pending
+      // approval while the stream keeps appending events.
+      if (id !== null && id === currentId && busy) {
+        setSidebarOpen(false);
+        return;
       }
+      const token = ++openSeqRef.current;
+      // Switching sessions abandons the previous stream so its events cannot
+      // leak into the new view.
+      detach();
       setCurrentId(id);
       setItems([]);
       setOverlayOpen(true);
@@ -209,19 +203,19 @@ export default function App() {
           // request may apply its result.
           if (openSeqRef.current !== token) return;
           setItems(historyToItems(detail.messages, detail.approvals, detail.user_times));
-          setCurrentSecondary(detail.secondary_roots ?? []);
-          setCurrentPermission(detail.permission_mode ?? "ask");
+          setSecondary(detail.secondary_roots ?? []);
+          setPermission(detail.permission_mode ?? "ask");
         } catch (e) {
           if (openSeqRef.current !== token) return;
           setOverlayOpen(false);
           showToast("err", `打开会话失败: ${e instanceof Error ? e.message : String(e)}`);
         }
       } else {
-        setCurrentSecondary([]);
-        setCurrentPermission("ask");
+        setSecondary([]);
+        setPermission("ask");
       }
     },
-    [showToast, currentRequestRef, currentStreamSessionRef, openSeqRef, sendAbortRef, setItems],
+    [showToast, currentId, busy, detach, setItems],
   );
 
   const projectMeta = useMemo(() => {
@@ -233,8 +227,6 @@ export default function App() {
   const newSession = useCallback(() => {
     openSession(null);
     setChosenRoot(null);
-    setChosenSecondary([]);
-    setChosenPermission("ask");
     setSidebarOpen(false);
     refreshSessions();
   }, [openSession, refreshSessions]);
@@ -247,16 +239,19 @@ export default function App() {
 
   const confirmDeleteSession = useCallback(async () => {
     if (!deleteTarget) return;
+    const isCurrent = currentId === deleteTarget.id;
+    if (isCurrent) {
+      // Stop the backend turn before the session disappears; openSession(null)
+      // below aborts the local reader and resets the view.
+      await cancelSessionChat(deleteTarget.id).catch(() => {});
+    }
     await deleteSession(deleteTarget.id).catch(() => {});
     setArchived((prev) => prev.filter((x) => x.id !== deleteTarget.id));
-    if (currentId === deleteTarget.id) {
-      setCurrentId(null);
-      setItems([]);
-    }
+    if (isCurrent) openSession(null);
     setDeleteTarget(null);
     refreshSessions();
     refreshArchived();
-  }, [deleteTarget, currentId, refreshSessions, refreshArchived, setItems]);
+  }, [deleteTarget, currentId, openSession, refreshSessions, refreshArchived]);
 
   const restoreArchived = useCallback(
     async (session: SessionSummary) => {
@@ -272,8 +267,7 @@ export default function App() {
       const proj = root ? projectMeta.get(root) : null;
       openSession(null);
       setChosenRoot(root);
-      setChosenSecondary(proj?.secondary ?? []);
-      setChosenPermission("ask");
+      setSecondary(proj?.secondary ?? []);
       setSidebarOpen(false);
       refreshSessions();
     },
@@ -368,34 +362,30 @@ export default function App() {
   }, [items]);
   const lastItem = items[items.length - 1];
   const activeTool = lastItem?.kind === "tool" && !lastItem.done;
-  const pendingApprovals = useMemo(
-    () => items.filter((it): it is Extract<Item, { kind: "approval" }> => it.kind === "approval" && it.state === "pending"),
-    [items],
-  );
+  // Approval counters are scoped to the current turn (items after the last
+  // user message): restored history approvals must not inflate "n/m".
+  const { pendingApprovals, approvalPosition, approvalTotal } = useMemo(() => {
+    const approvals = currentTurn(items).filter(
+      (it): it is Extract<Item, { kind: "approval" }> => it.kind === "approval",
+    );
+    const firstPending = approvals.findIndex((it) => it.state === "pending");
+    return {
+      pendingApprovals: approvals.filter((it) => it.state === "pending"),
+      // the sheet shows the first *pending* approval; its 1-based position
+      // advances as earlier approvals are resolved.
+      approvalPosition: firstPending >= 0 ? firstPending + 1 : 1,
+      approvalTotal: approvals.length,
+    };
+  }, [items]);
   const pendingApproval = pendingApprovals.length > 0;
-  // the sheet shows the first *pending* approval; its queue position is
-  // its 1-based index among every approval item, so it advances as earlier
-  // approvals are resolved instead of being hard-coded to 1.
-  const approvalQueue = useMemo(
-    () => items.filter((it): it is Extract<Item, { kind: "approval" }> => it.kind === "approval"),
-    [items],
-  );
-  const approvalPosition = useMemo(
-    () => Math.max(1, approvalQueue.findIndex((it) => it.state === "pending") + 1),
-    [approvalQueue],
-  );
-  const approvalTotal = approvalQueue.length;
 
   const changePermission = useCallback(
     async (mode: string) => {
-      if (currentId === null) {
-        setChosenPermission(mode);
-        return;
-      }
-      setCurrentPermission(mode);
+      setPermission(mode);
+      if (currentId === null) return;
       try {
         const r = await setSessionPermission(currentId, mode);
-        setCurrentPermission(r.permission_mode);
+        setPermission(r.permission_mode);
       } catch {
         refreshSessions();
       }
@@ -416,17 +406,15 @@ export default function App() {
         groups={groups}
         projectMeta={projectMeta}
         chosenRoot={chosenRoot}
-        chosenSecondary={chosenSecondary}
         currentRoot={currentRoot}
-        currentSecondary={currentSecondary}
+        secondary={secondary}
         onNewSession={newSession}
         onOpenSession={openSession}
         onToggleCollapsed={toggleProjectCollapsed}
         onNewChatInProject={newChatInProject}
         onProjectAction={runProjectAction}
         onSetChosenRoot={setChosenRoot}
-        onSetChosenSecondary={setChosenSecondary}
-        onSetCurrentSecondary={setCurrentSecondary}
+        onSetSecondary={setSecondary}
         onSetWorkspaces={setWorkspaces}
         onToggleArchived={() => setShowArchived(!showArchived)}
         onDeleteSession={setDeleteTarget}
@@ -563,7 +551,7 @@ export default function App() {
                 <div className="chat-input-perm">
                   <PermissionPicker
                     compact
-                    value={currentId === null ? chosenPermission : currentPermission}
+                    value={permission}
                     disabled={busy}
                     onChange={changePermission}
                   />

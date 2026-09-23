@@ -105,6 +105,67 @@ describe("App · 会话归属", () => {
     expect(document.querySelector(".session-item.active")).toBeNull();
   });
 
+  it("新会话选择完全访问后，session 事件后仍保持，下一轮发送 permission_mode=allow-all", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([]);
+    const stream = controllableStream();
+
+    render(<App />);
+    await screen.findByRole("button", { name: /请求批准/ });
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+
+    await user.type(screen.getByRole("textbox"), "first");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
+    await stream.finish();
+
+    // The created session inherits the draft's permission selection.
+    await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
+
+    await user.type(screen.getByRole("textbox"), "second");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(2));
+    expect(m.streamChat).toHaveBeenLastCalledWith(
+      "A",
+      "second",
+      expect.any(Function),
+      expect.objectContaining({ permission_mode: "allow-all" }),
+    );
+  });
+
+  it("新会话选择的次目录在 session 事件后仍显示", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([{ ...session("old", "旧会话"), root: "/p" }]);
+    m.fetchWorkspaces.mockResolvedValue({
+      default: "",
+      projects: [{ root: "/p", secondary: ["/s1", "/s2"] }],
+    });
+    const stream = controllableStream();
+
+    render(<App />);
+    await screen.findByText("旧会话");
+    await user.click(screen.getByRole("button", { name: "在此项目下新建会话" }));
+    expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 2 个目录");
+
+    await user.type(screen.getByRole("textbox"), "go");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
+    await stream.finish();
+
+    await waitFor(() =>
+      expect(document.querySelector(".sec-toggle small")?.textContent).toContain(
+        "已连接 2 个目录",
+      ),
+    );
+  });
+
   it("使用 SSE 返回的会话 id，而不是列表中的最新会话", async () => {
     const user = userEvent.setup();
     const stream = controllableStream();

@@ -3,7 +3,7 @@ import type { ChatEvent } from "./api";
 import type { ApprovalState, Item } from "./types";
 
 /** Resolve every pending approval to "expired" (turn ended / cancelled / error). */
-function expirePending(items: Item[]): Item[] {
+export function expirePending(items: Item[]): Item[] {
   return items.map((it) =>
     it.kind === "approval" && it.state === "pending" ? { ...it, state: "expired" } : it,
   );
@@ -20,18 +20,17 @@ function interruptPending(items: Item[]): Item[] {
   );
 }
 
-/**
- * Whether the *current turn* (everything after the last user message) has already
- * started a tool. Faithful to the previous `ranTool` ref, which was true for the
- * lifetime of a stream once any `tool_start` had been seen: a tool_start always
- * pushes a `tool` item after the user message, and nothing removes items, so the
- * presence of a tool card in the trailing segment is equivalent.
- */
-function currentTurnStartedTool(items: Item[]): boolean {
+/** Index of the last user item (-1 when the list has none). */
+function currentTurnStart(items: Item[]): number {
   for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i].kind === "user") return items.slice(i + 1).some((it) => it.kind === "tool");
+    if (items[i].kind === "user") return i;
   }
-  return items.some((it) => it.kind === "tool");
+  return -1;
+}
+
+/** Items belonging to the current turn: everything after the last user item. */
+export function currentTurn(items: Item[]): Item[] {
+  return items.slice(currentTurnStart(items) + 1);
 }
 
 function appendOrExtendAssistant(prev: Item[], content: string): Item[] {
@@ -61,20 +60,21 @@ function fillToolResult(prev: Item[], ev: Extract<ChatEvent, { type: "tool_resul
 
 function finishDone(prev: Item[]): Item[] {
   const withExpired = expirePending(prev);
-  const last = withExpired[withExpired.length - 1];
-  const ranTool = currentTurnStartedTool(withExpired);
-  const noReply = ranTool && (last?.kind !== "assistant" || !(last.text ?? "").trim());
-  if (!noReply) return withExpired;
-  const msg =
-    last?.kind === "tool" && !last.done
-      ? "⚠ 回合已结束但工具未返回结果"
-      : "✓ 已完成（模型未输出文字回复，工具可能已生效）";
+  // Judge the whole current turn, not just its last item: a review card or a
+  // finished tool may follow the final assistant text, and an error must never
+  // be contradicted by a "completed" notice.
+  const turn = currentTurn(withExpired);
+  const reported = turn.some(
+    (it) => it.kind === "error" || (it.kind === "assistant" && it.text.trim()),
+  );
+  if (reported || !turn.some((it) => it.kind === "tool")) return withExpired;
+  const last = turn[turn.length - 1];
+  if (last?.kind === "tool" && !last.done) {
+    return [...withExpired, { kind: "error", text: "⚠ 回合已结束但工具未返回结果" }];
+  }
   return [
     ...withExpired,
-    {
-      kind: noReply && last?.kind === "tool" && !last.done ? "error" : "notice",
-      text: msg,
-    },
+    { kind: "notice", text: "✓ 已完成（模型未输出文字回复，工具可能已生效）" },
   ];
 }
 
@@ -85,15 +85,9 @@ function finishDone(prev: Item[]): Item[] {
  * (kept when the model replied purely via tools) stays clean.
  */
 export function stampTurnMeta(items: Item[], model: string | undefined, durationMs: number): Item[] {
-  let lastUser = -1;
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i].kind === "user") {
-      lastUser = i;
-      break;
-    }
-  }
+  const lastUser = currentTurnStart(items);
   return items.map((it, idx) =>
-    idx > lastUser && it.kind === "assistant" && (it.text ?? "").trim() ? { ...it, model, durationMs } : it,
+    idx > lastUser && it.kind === "assistant" && it.text.trim() ? { ...it, model, durationMs } : it,
   );
 }
 

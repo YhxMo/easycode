@@ -1,13 +1,21 @@
 import type { CommandInfo } from "../api";
 
+/** Display order of the command-menu sections; also the cursor order. */
+const KIND_ORDER: Record<CommandInfo["kind"], number> = { skill: 0, template: 1, builtin: 2 };
+
 export function filterCommands(commands: CommandInfo[], query: string): CommandInfo[] {
   const q = (query.startsWith("/") ? query.slice(1) : query).toLowerCase();
-  return commands.filter(
-    (c) =>
-      c.name.startsWith(q) ||
-      (q.length > 0 && c.name.includes(q)) ||
-      c.description.toLowerCase().includes(q),
-  );
+  // The filtered list is the single source of order: it is grouped by kind
+  // (matching the menu sections), so the highlighted item and the item picked
+  // by Enter are always the same. Array#sort is stable within a kind.
+  return commands
+    .filter(
+      (c) =>
+        c.name.startsWith(q) ||
+        (q.length > 0 && c.name.includes(q)) ||
+        c.description.toLowerCase().includes(q),
+    )
+    .sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
 }
 
 /** Clamp a command-list cursor to a valid index (0 when the list is empty). */
