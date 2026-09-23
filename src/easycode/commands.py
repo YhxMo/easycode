@@ -49,6 +49,21 @@ class Command:
         return text
 
 
+def build_registry(
+    roots: list[Path],
+    skills: SkillRegistry | None,
+    builtins: tuple[tuple[str, str], ...] = (),
+) -> CommandRegistry:
+    """Registry with optional builtins + user templates + skill commands."""
+    reg = CommandRegistry()
+    for name, desc in builtins:
+        reg.register(Command(name=name, description=desc, kind="builtin"))
+    reg.discover_templates(roots)
+    if skills:
+        reg.add_skill_commands(skills)
+    return reg
+
+
 class CommandRegistry:
     def __init__(self) -> None:
         self._commands: dict[str, Command] = {}

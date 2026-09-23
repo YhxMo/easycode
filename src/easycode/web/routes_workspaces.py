@@ -54,10 +54,6 @@ def _normalise_root(root: str | None) -> str | None:
     return str(Path(root).expanduser().resolve())
 
 
-def _config_dir(cfg: Config) -> Path:
-    return cfg.config_path.parent if cfg.config_path else cfg.root
-
-
 def _session_primary(sess: Session) -> str | None:
     """Canonical primary root for a session ('default' → None key)."""
     return _normalise_root(sess.root)
@@ -121,7 +117,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         if root and not Path(root).is_dir():
             raise HTTPException(422, f"not a directory: {root}")
         # Validate every secondary before mutating anything: all-or-nothing.
-        sec_paths, sec_err = normalise_secondary(req.secondary, _config_dir(cfg))
+        sec_paths, sec_err = normalise_secondary(req.secondary, cfg.base_dir())
         if sec_err is not None:
             raise HTTPException(422, sec_err)
         secondary = sorted({str(p) for p in sec_paths})

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from easycode.agent.loop import Agent
@@ -184,3 +185,20 @@ Expanded prompt: $ARGUMENTS
     messages = provider.calls[0]
     user_msg = next(m for m in messages if m["role"] == "user")
     assert user_msg["content"] == "Expanded prompt: how are you"
+
+
+@pytest.mark.asyncio
+async def test_handle_command_smoke_help_agents_model_list(tmp_path, monkeypatch):
+    """The CLI builtins that had no coverage still run without raising."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode import cli
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    cfg = Config.load(start=proj)
+    agent = Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
+    commands = cli.build_commands(agent, [proj])
+
+    assert await cli.handle_command("/help", cfg, agent, cfg.default_model, commands) is None
+    assert await cli.handle_command("/agents", cfg, agent, cfg.default_model, commands) is None
+    assert await cli.handle_command("/model", cfg, agent, cfg.default_model, commands) is None

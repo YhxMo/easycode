@@ -70,7 +70,7 @@ def test_history_condense_noop_when_few_messages():
 async def test_agent_condenses_when_over_budget(tmp_path):
     calls = []
 
-    async def fake_summarizer(messages) -> str:
+    async def fake_summarizer(messages, previous_summary=None) -> str:
         calls.append(messages)
         return "COMPRESSED"
 

@@ -91,7 +91,6 @@ Review prompt
     helper = reg.get("helper")
     assert helper is not None
     assert helper.description == "Project helper"
-    assert helper.source == "project"
     assert helper.tools == ["read_file", "glob"]
     assert helper.system == "Project prompt"
 

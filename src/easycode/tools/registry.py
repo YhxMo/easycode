@@ -54,6 +54,13 @@ def json_out(status: str, payload: dict) -> str:
     return json.dumps({"status": status, **payload}, ensure_ascii=False, default=str)
 
 
+def tool_scope(root: Path, ctx: PathContext | None) -> PathContext:
+    """Effective sandbox context for a tool call; ``root`` alone when absent."""
+    from easycode.workspace import PathContext
+
+    return ctx if ctx is not None else PathContext(primary=root)
+
+
 class ToolRegistry:
     def __init__(self, max_result_chars: int = MAX_DEFAULT_CHARS) -> None:
         self._tools: dict[str, Tool] = {}

@@ -9,7 +9,7 @@ from litellm import acompletion
 
 from easycode.models.base import Message
 
-Summarizer = Callable[[list[Message]], Awaitable[str | None]]
+Summarizer = Callable[[list[Message], str | None], Awaitable[str | None]]
 
 TOOL_OUTPUT_MAX_CHARS = 2_000
 
@@ -89,7 +89,7 @@ def build_prompt(previous_summary: str | None, context: str) -> str:
 class LLMSummarizer:
     """Summarize a transcript chunk with a non-streaming LLM call.
 
-    ``summarize`` accepts an optional ``previous_summary`` so repeated
+    Callable as ``summarizer(messages, previous_summary)`` so repeated
     compactions merge into one rolling summary instead of overwriting it.
     """
 
@@ -98,7 +98,7 @@ class LLMSummarizer:
         self.max_chars = max_chars
         self.kwargs = kwargs
 
-    async def summarize(
+    async def __call__(
         self, messages: list[Message], previous_summary: str | None = None
     ) -> str | None:
         context = self._to_transcript(messages)

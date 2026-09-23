@@ -204,7 +204,7 @@ async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
     )
     asked: list[str] = []
 
-    async def approval(tc):
+    async def approval(tc, _reason):
         grant = grant_for_toolcall(tc, parent.path_context())
         asked.append(tc.name)
         return grant if grant else True

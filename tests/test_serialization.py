@@ -87,7 +87,7 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a"):
+        def factory(alias: str = "fake-a", **_):
             return _agent(
                 tmp_path,
                 GateProvider(
@@ -140,7 +140,7 @@ def test_inflight_chat_permission_archive_409(tmp_path) -> None:
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a"):
+        def factory(alias: str = "fake-a", **_):
             return _agent(tmp_path, GateProvider(gate=gate, script=[{"text": "done"}]))
 
         store = SessionStore(cfg, tmp_path, factory)
@@ -184,7 +184,7 @@ def test_cancel_during_inflight_not_gated(tmp_path) -> None:
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a"):
+        def factory(alias: str = "fake-a", **_):
             return _agent(tmp_path, GateProvider(gate=gate, script=[{"text": "late"}]))
 
         store = SessionStore(cfg, tmp_path, factory)
@@ -215,7 +215,7 @@ def test_flush_concurrent_unique_tmp_and_atomic(tmp_path) -> None:
     file on disk."""
     cfg = _make_cfg(tmp_path)
 
-    def factory(alias: str = "fake-a"):
+    def factory(alias: str = "fake-a", **_):
         from tests.conftest import FakeProvider
 
         return _agent(tmp_path, FakeProvider(script=[{"text": "ok"}]))

@@ -112,7 +112,7 @@ def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str):
+    def factory(alias: str, **_):
         from easycode.agent.loop import Agent
         from easycode.tools import build_registry
         from tests.conftest import FakeProvider
@@ -645,8 +645,9 @@ def test_web_session_with_secondary_roots(tmp_path):
 
 def test_needs_approval_modes(tmp_path):
 
-    from easycode.approval import needs_approval, permission_parse
+    from easycode.approval import needs_approval
     from easycode.models.base import ToolCall
+    from easycode.policy import permission_parse
     from easycode.workspace import PathContext
 
     primary = tmp_path / "work"
@@ -716,7 +717,7 @@ async def test_agent_approval_rejected_skips_tool(tmp_path):
         root=tmp_path,
     )
 
-    async def handler(tc: ToolCall) -> bool:
+    async def handler(tc: ToolCall, _reason: str) -> bool:
         return False
 
     agent.approval_handler = handler
@@ -752,7 +753,7 @@ async def test_agent_approval_approved_forces_allowed(tmp_path):
         root=tmp_path,
     )
 
-    async def handler(tc: ToolCall) -> bool:
+    async def handler(tc: ToolCall, _reason: str) -> bool:
         return True
 
     agent.approval_handler = handler
@@ -841,7 +842,7 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
 
-    def factory(alias: str):
+    def factory(alias: str, **_):
         return Agent(
             provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path
         )
@@ -884,7 +885,7 @@ async def test_web_approval_endpoint_unknown_id(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str):
+    def factory(alias: str, **_):
         return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path)
 
     store = SessionStore(cfg, tmp_path, factory)

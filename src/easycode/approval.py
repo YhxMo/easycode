@@ -17,19 +17,7 @@ import shlex
 from pathlib import Path
 
 from easycode.models.base import ToolCall
-from easycode.policy import (
-    PERM_ALLOW_ALL,
-    SANDBOX_DANGER_FULL_ACCESS,
-)
-from easycode.policy import (
-    PERM_ASK as PERM_ASK,  # re-export: config/loop import the mode constants from here
-)
-from easycode.policy import (
-    PERM_AUTO_REVIEW as PERM_AUTO_REVIEW,
-)
-from easycode.policy import (
-    permission_parse as permission_parse,  # re-export: config imports it from here
-)
+from easycode.policy import PERM_ALLOW_ALL, SANDBOX_DANGER_FULL_ACCESS
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
 NETWORK_HINTS = (

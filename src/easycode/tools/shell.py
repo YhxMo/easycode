@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from easycode.approval import destructive_command_reason
 from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
 from easycode.sandbox import child_env, sandbox_command
-from easycode.tools.registry import json_out
+from easycode.tools.registry import json_out, tool_scope
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
 
@@ -50,7 +50,7 @@ def execute_shell(
     ctx: PathContext | None = None,
     grant: ToolGrant | None = None,
 ) -> str:
-    scope = ctx or PathContext(primary=root)
+    scope = tool_scope(root, ctx)
     # Under the sandboxed presets (ask / auto-review) a clearly destructive
     # command (rm -rf /, git reset --hard, git clean, git push --force) is
     # denied outright, before any validation or sandbox, and cannot be
@@ -85,10 +85,8 @@ def execute_shell(
         # approval grant covers it. Any declared root the grant does NOT cover is
         # rejected, so a shell can never write outside the workspace unprompted.
         if declared:
-            granted = {
-                str(p.resolve()).rstrip("/") for p in (grant.writable_roots if grant else ())
-            }
-            missing = [str(p) for p in declared if str(p).rstrip("/") not in granted]
+            granted = {p.resolve() for p in (grant.writable_roots if grant else ())}
+            missing = [str(p) for p in declared if p not in granted]
             if missing:
                 return json_out(
                     "error",

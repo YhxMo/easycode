@@ -41,8 +41,6 @@ def render_event(ev: AgentEvent) -> None:
         console.print(f"[dim]  └→ {snippet}[/]", highlight=False, soft_wrap=True)
     elif ev.kind == "error":
         console.print(Panel(ev.error or "unknown error", title="error", border_style="red"))
-    elif ev.kind == "cancelled":
-        console.print("\n[dim]⏹ 已中断[/]")
     elif ev.kind == "done":
         console.print("\n")
 

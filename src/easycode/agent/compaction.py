@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from easycode.agent.context import History
-from easycode.agent.summarizer import LLMSummarizer, Summarizer
+from easycode.agent.summarizer import Summarizer
 
 COMPACTION_DEFAULTS: dict[str, Any] = {
     "auto": True,
@@ -96,10 +96,7 @@ class Compactor:
         )
         if tail_start is not None and summarizer is not None:
             messages = history.messages[:tail_start]
-            if isinstance(summarizer, LLMSummarizer):
-                summary = await summarizer.summarize(messages, previous_summary=history.summary)
-            else:
-                summary = await summarizer(messages)
+            summary = await summarizer(messages, history.summary)
             if summary and history.condense_from(summary, tail_start):
                 return
         history.trim()

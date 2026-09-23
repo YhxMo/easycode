@@ -12,25 +12,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from easycode.agent.context import SUMMARY_PREFIX, History
 from easycode.agent.loop import Agent
 from easycode.credentials import data_home
 from easycode.workspace import normalise_secondary
 
-AgentFactory = Callable[[str], Agent]
-
-
-def _summary_text(msg: dict) -> str:
-    """Extract the rolling-compaction summary body from a summary system message.
-
-    ``History.condense_from`` writes the summary as
-    ``f"{SUMMARY_PREFIX}\n{summary}"``, so ``summary`` is the exact text after the
-    prefix (and its following newline). Used to rebuild ``history.summary`` on
-    reload so the next compaction can roll the prior summary forward instead of
-    starting from scratch.
-    """
-    content = str(msg.get("content") or "")
-    return content[len(SUMMARY_PREFIX) :].lstrip()
+#: Creates an agent for an alias; implementations may accept extra kwargs
+#: (root/secondary_roots) from ``SessionStore.create``.
+AgentFactory = Callable[..., Agent]
 
 
 def _now() -> str:
@@ -123,9 +111,7 @@ class SessionStore:
             agent_kwargs["root"] = root
         if secondary:
             agent_kwargs["secondary_roots"] = [str(p) for p in secondary]
-        agent = (
-            self.agent_factory(alias, **agent_kwargs) if agent_kwargs else self.agent_factory(alias)
-        )
+        agent = self.agent_factory(alias, **agent_kwargs)
         agent.permission_mode = permission_mode or self.cfg.permission_mode
         sess = Session(
             id=sid,
@@ -139,10 +125,6 @@ class SessionStore:
         self._sessions[sid] = sess
         self._flush(sess)
         return sess
-
-    def _base_dir(self) -> Path:
-        """Anchor for resolving relative workspace paths (config dir, not CWD)."""
-        return self.cfg.config_path.parent if self.cfg.config_path else Path(self.cfg.root)
 
     def _projects_secondary(self, root: str | None) -> list[str]:
         """cfg.workspace_projects secondary bindings for ``root``.
@@ -169,7 +151,7 @@ class SessionStore:
                 secondary_roots if secondary_roots is not None else self._projects_secondary(root)
             )
         ]
-        paths, err = normalise_secondary(raw, self._base_dir())
+        paths, err = normalise_secondary(raw, self.cfg.base_dir())
         if err is not None:
             raise ValueError(err)
         return paths
@@ -236,12 +218,6 @@ class SessionStore:
                 agent.permission_mode = data.get("permission_mode") or self.cfg.permission_mode
                 messages = list(data.get("messages") or [])
                 agent.history.messages = messages
-                # Rebuild the rolling-compaction summary from the head
-                # summary system message (if any) so the next compaction can merge
-                # into the prior summary instead of starting from nothing. Kept in
-                # sync with messages[0] because both derive from the same source.
-                if messages and History.is_summary(messages[0]):
-                    agent.history.summary = _summary_text(messages[0])
                 sess = Session(
                     id=data["id"],
                     title=data.get("title", "新会话"),

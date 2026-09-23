@@ -43,8 +43,6 @@ def _event_payload(ev: AgentEvent) -> dict:
         payload["result"] = ev.tool_result
     elif ev.kind == "error" and ev.error:
         payload["error"] = ev.error
-    elif ev.kind == "approval" and ev.tool_call:
-        payload["tool_call"] = _tool_call_dict(ev.tool_call)
     elif ev.kind == "review" and ev.content:
         payload["content"] = ev.content
     elif ev.kind == "cancelled":
@@ -144,13 +142,8 @@ async def stream_chat_with_approval(
     async def run_turn() -> None:
         prev = agent.approval_handler
 
-        async def approval_handler(tc: ToolCall) -> bool:
-            from easycode.approval import (
-                approval_key,
-                approval_reason,
-                approval_scope,
-                grant_for_toolcall,
-            )
+        async def approval_handler(tc: ToolCall, reason: str) -> bool:
+            from easycode.approval import approval_key, approval_scope, grant_for_toolcall
 
             scope = approval_scope(tc)
             grant = grant_for_toolcall(tc, agent.path_context())
@@ -162,11 +155,6 @@ async def stream_chat_with_approval(
                 return True
             approval_id = uuid.uuid4().hex[:12]
             fut = broker.add(approval_id)
-            reason = (
-                agent.mcp_manager.approval_reason(tc.name)
-                if agent.mcp_manager and agent.mcp_manager.requires_approval(tc.name)
-                else approval_reason(tc, agent.path_context())
-            )
             await q.put(("approval", (approval_id, tc, reason, scope)))
             decision = "expired"
             always = False
@@ -207,31 +195,27 @@ async def stream_chat_with_approval(
                 agent.approval_handler = prev
             await q.put(("end", None))
 
+    if cancel_event is None:
+        # No caller-supplied cancellation: a never-set event keeps one code path.
+        cancel_event = asyncio.Event()
     task = asyncio.create_task(run_turn())
-    get_task: asyncio.Task | None = asyncio.create_task(q.get()) if cancel_event else None
-    watcher: asyncio.Task | None = (
-        asyncio.create_task(cancel_event.wait()) if cancel_event else None
-    )
+    get_task = asyncio.create_task(q.get())
+    watcher = asyncio.create_task(cancel_event.wait())
 
     try:
         while True:
-            if cancel_event is not None and watcher is not None and watcher.done():
+            if watcher.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 if buf:
                     yield give_text()
                 yield ("event", AgentEvent(kind="cancelled"))
                 break
-            if cancel_event is not None:
-                done, _ = await asyncio.wait(
-                    {get_task, watcher}, return_when=asyncio.FIRST_COMPLETED
-                )
-                if watcher in done:
-                    continue  # re-check cancellation at loop top
-                kind, payload = get_task.result()
-                get_task = asyncio.create_task(q.get())
-            else:
-                kind, payload = await q.get()
+            done, _ = await asyncio.wait({get_task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+            if watcher in done:
+                continue  # re-check cancellation at loop top
+            kind, payload = get_task.result()
+            get_task = asyncio.create_task(q.get())
             if kind == "end":
                 break
             if kind == "approval":
@@ -257,7 +241,7 @@ async def stream_chat_with_approval(
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        if get_task is not None and not get_task.done():
+        if not get_task.done():
             get_task.cancel()
-        if watcher is not None and not watcher.done():
+        if not watcher.done():
             watcher.cancel()

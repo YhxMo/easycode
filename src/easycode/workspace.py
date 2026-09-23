@@ -41,6 +41,12 @@ class ToolGrant:
     writable_roots: tuple[Path, ...] = ()
 
 
+def secret_paths() -> tuple[Path, Path]:
+    """The credential file and its atomic-write temp sibling (always blocked)."""
+    cred = data_home() / "credentials.json"
+    return cred, cred.with_suffix(".tmp")
+
+
 def resolve_workspace_path(raw: str | Path, base: Path | None = None) -> Path:
     """Resolve a configured workspace path to an absolute canonical path.
 
@@ -56,15 +62,16 @@ def resolve_workspace_path(raw: str | Path, base: Path | None = None) -> Path:
     return p.resolve()
 
 
-def validate_writable_roots(raw: list[str], base: Path | None) -> tuple[list[Path], str | None]:
-    """Strict validation for a shell tool's explicit ``writable_roots``.
+def _normalise_roots(
+    raw: list[str] | None, base: Path | None, *, allow_relative: bool
+) -> tuple[list[Path], str | None]:
+    """Resolve + validate + de-duplicate a root list.
 
-    Used to authorize external-write access for ``execute_shell``. An
-    entry must be an absolute, canonical, existing, non-sensitive directory
-    (never a plain file, missing path, ``.git``/``.easycode``, or something under
-    the data home). Relative paths are rejected outright — we never resolve the
-    model's declaration against a drifting CWD. Returns ``(paths, error)`` where
-    a non-None ``error`` means the caller must fail closed.
+    Returns ``(paths, error)``; when ``error`` is non-None the caller must fail
+    closed. Every entry must be an existing, canonical, non-sensitive directory.
+    Relative entries resolve against ``base`` when ``allow_relative``; otherwise
+    they are rejected outright — a shell's explicit writable root must never be
+    resolved against a drifting CWD.
     """
     out: list[Path] = []
     seen: set[Path] = set()
@@ -72,10 +79,13 @@ def validate_writable_roots(raw: list[str], base: Path | None) -> tuple[list[Pat
         s = str(raw_item).strip()
         if not s:
             continue
-        p = Path(s).expanduser()
-        if not p.is_absolute():
-            return out, f"writable root must be an absolute path: {s}"
-        p = p.resolve()
+        if allow_relative:
+            p = resolve_workspace_path(s, base)
+        else:
+            p = Path(s).expanduser()
+            if not p.is_absolute():
+                return out, f"writable root must be an absolute path: {s}"
+            p = p.resolve()
         err = root_error(p)
         if err is not None:
             return out, err
@@ -83,31 +93,18 @@ def validate_writable_roots(raw: list[str], base: Path | None) -> tuple[list[Pat
             seen.add(p)
             out.append(p)
     return out, None
+
+
+def validate_writable_roots(raw: list[str], base: Path | None) -> tuple[list[Path], str | None]:
+    """Strict validation for a shell tool's explicit ``writable_roots``."""
+    return _normalise_roots(raw, base, allow_relative=False)
 
 
 def normalise_secondary(
     secondary: list[str] | None, base: Path | None
 ) -> tuple[list[Path], str | None]:
-    """Resolve + validate + de-duplicate a secondary/extra_safe list.
-
-    Returns ``(paths, error)``; when ``error`` is non-None the caller must
-    reject the registration (422). Every entry must be an existing directory
-    and never a sensitive root.
-    """
-    out: list[Path] = []
-    seen: set[Path] = set()
-    for raw in secondary or []:
-        s = str(raw).strip()
-        if not s:
-            continue
-        p = resolve_workspace_path(s, base)
-        err = root_error(p)
-        if err is not None:
-            return out, err
-        if p not in seen:
-            seen.add(p)
-            out.append(p)
-    return out, None
+    """Resolve + validate + de-duplicate a secondary/extra_safe list."""
+    return _normalise_roots(secondary, base, allow_relative=True)
 
 
 def root_error(path: Path, *, require_dir: bool = True) -> str | None:
@@ -122,8 +119,8 @@ def root_error(path: Path, *, require_dir: bool = True) -> str | None:
     p = path.resolve()
     if p.name in SENSITIVE_ROOT_NAMES:
         return f"sensitive directory cannot be a workspace root: {p}"
-    cred = data_home() / "credentials.json"
-    if p == cred.resolve() or p.is_relative_to(cred.resolve()):
+    cred = secret_paths()[0].resolve()
+    if p == cred or p.is_relative_to(cred):
         return f"sensitive path cannot be a workspace root: {p}"
     if p.is_relative_to(data_home().resolve()):
         return f"directory under the data home cannot be a workspace root: {p}"
@@ -184,8 +181,7 @@ class PathContext:
                 if resolved not in seen:
                     seen.add(resolved)
                     out.append(resolved)
-        cred = data_home() / "credentials.json"
-        for secret in (cred, cred.with_suffix(".tmp")):
+        for secret in secret_paths():
             resolved = secret.resolve()
             if resolved not in seen:
                 seen.add(resolved)
@@ -201,8 +197,7 @@ class PathContext:
         an approval grant (approval never grants credential access).
         """
         p = path.resolve()
-        cred = data_home() / "credentials.json"
-        for secret in (cred, cred.with_suffix(".tmp")):
+        for secret in secret_paths():
             sp = secret.resolve()
             if p == sp or p.is_relative_to(sp):
                 return True
@@ -247,7 +242,7 @@ class PathContext:
             return False
         if self.sandbox_mode != SANDBOX_WORKSPACE_WRITE:
             return False
-        if any(p.is_relative_to(d.resolve()) for d in self.protected_paths()):
+        if self.is_protected_path(p):
             return False
         return any(p.is_relative_to(d) for d in self.writable_roots())
 

@@ -24,7 +24,13 @@ class History:
     max_messages: int = 100
     max_chars: int = 400_000
     max_tokens: int = 32_000
-    summary: str | None = None
+
+    @property
+    def summary(self) -> str | None:
+        """Latest rolling compaction summary, derived from ``messages[0]``."""
+        if self.messages and self.is_summary(self.messages[0]):
+            return str(self.messages[0]["content"])[len(SUMMARY_PREFIX) :].lstrip()
+        return None
 
     def set_system(self, content: str) -> None:
         self.system = {"role": "system", "content": content}
@@ -59,14 +65,19 @@ class History:
         out.extend(self.messages)
         return out
 
-    def estimate_chars(self) -> int:
-        total = sum(len(str(m.get("content") or "")) for m in self.messages)
-        total += sum(
-            len(str(tc.get("function", {}).get("arguments") or ""))
-            for m in self.messages
+    @staticmethod
+    def _text(messages: list[Message]) -> str:
+        """Concatenated content + tool-call arguments of a message list."""
+        text = "".join(str(m.get("content") or "") for m in messages)
+        text += "".join(
+            str(tc.get("function", {}).get("arguments") or "")
+            for m in messages
             for tc in (m.get("tool_calls") or [])
         )
-        return total
+        return text
+
+    def estimate_chars(self) -> int:
+        return len(self._text(self.messages))
 
     def estimate_tokens(self) -> int:
         """Token estimate via litellm if possible, else the cheap heuristic.
@@ -108,13 +119,7 @@ class History:
         chars/4 assumption badly under-counts non-ASCII-heavy transcripts,
         so count non-ASCII separately.
         """
-        text = "".join(str(m.get("content") or "") for m in messages)
-        text += "".join(
-            str(tc.get("function", {}).get("arguments") or "")
-            for m in messages
-            for tc in (m.get("tool_calls") or [])
-        )
-        return History.estimate_text_tokens(text)
+        return History.estimate_text_tokens(History._text(messages))
 
     def over_budget(self, extra: int = 0) -> bool:
         """Cheap-gated budget check for the completion payload.
@@ -163,9 +168,8 @@ class History:
         """Replace messages before ``tail_start`` with a summary; keep the tail.
 
         ``tail_start`` is first snapped to a non-tool boundary so the kept
-        tail never begins with an orphaned ``tool`` result.
-
-        Records ``summary`` so the next compaction can merge into it.
+        tail never begins with an orphaned ``tool`` result. The summary lives
+        as the head system message, so the next compaction can merge into it.
         """
         if tail_start <= 0 or tail_start >= len(self.messages):
             return False
@@ -181,7 +185,6 @@ class History:
             "content": f"{SUMMARY_PREFIX}\n{summary}",
         }
         self.messages = [summary_msg, *recent]
-        self.summary = summary
         return True
 
     def _coalesce_tail_start(self, idx: int) -> int:

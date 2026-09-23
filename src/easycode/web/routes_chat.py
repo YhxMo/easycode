@@ -45,13 +45,9 @@ def _session_roots(sess: Session, cfg: Config) -> list[Path]:
 
 def _build_web_commands(roots: list[Path], skills) -> CommandRegistry:
     """Discover executable prompt templates and skill commands for the Web UI."""
-    from easycode.commands import CommandRegistry
+    from easycode.commands import build_registry
 
-    reg = CommandRegistry()
-    reg.discover_templates(roots)
-    if skills:
-        reg.add_skill_commands(skills)
-    return reg
+    return build_registry(roots, skills)
 
 
 def _new_session_roots(req: ChatRequest, cfg: Config, store: SessionStore) -> list[Path]:
@@ -76,11 +72,7 @@ def _expand_command(message: str, roots: list[Path], skills) -> str:
 
 def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: ApprovalBroker) -> None:
     """Connect chat and command endpoints to this app's session store."""
-    from easycode.web.routes_workspaces import (
-        _config_dir,
-        _normalise_root,
-        _session_primary,
-    )
+    from easycode.web.routes_workspaces import _normalise_root, _session_primary
     from easycode.web.session import project_key
 
     def _get_session(session_id: str | None, **agent_kwargs: object) -> Session:
@@ -104,12 +96,12 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 raise HTTPException(409, "workspace root does not match session primary")
         if secondary_raw:
             request_sec = sorted(
-                str(resolve_workspace_path(p, _config_dir(cfg)))
+                str(resolve_workspace_path(p, cfg.base_dir()))
                 for p in secondary_raw
                 if str(p).strip()
             )
             actual_sec = sorted(
-                str(resolve_workspace_path(p, _config_dir(cfg)))
+                str(resolve_workspace_path(p, cfg.base_dir()))
                 for p in (sess.secondary_roots or [])
             )
             if request_sec != actual_sec:
@@ -145,7 +137,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             raise HTTPException(422, "empty message")
         if req.root and not Path(req.root).expanduser().is_dir():
             raise HTTPException(422, f"workspace root is not a directory: {req.root}")
-        from easycode.approval import permission_parse
+        from easycode.policy import permission_parse
 
         perm_mode: str | None = None
         if req.permission_mode:
@@ -157,7 +149,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         if req.secondary_roots:
             kwargs["secondary_roots"] = req.secondary_roots
         if req.root:
-            kwargs["root"] = str(Path(req.root).expanduser().resolve())
+            kwargs["root"] = _normalise_root(req.root)
         if perm_mode and not req.session_id:
             kwargs["permission_mode"] = perm_mode
         # an existing session must answer its own project — a root/secondary
@@ -176,9 +168,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
             req.message = _expand_command(req.message, roots, skills)
         try:
-            sess = (
-                _get_session(req.session_id, **kwargs) if kwargs else _get_session(req.session_id)
-            )
+            sess = _get_session(req.session_id, **kwargs)
         except ValueError as exc:
             # Session creation can fail while building the agent (e.g. the
             # default model has no credential configured) or while validating

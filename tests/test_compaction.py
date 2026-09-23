@@ -64,7 +64,7 @@ async def test_agent_summarizer_wired_in_loop(tmp_path):
     agent.history.max_chars = 1_000  # force over-budget before the turn
     agent.compaction["preserve_recent_tokens"] = 2_000
 
-    async def fake_summarize(messages):
+    async def fake_summarize(messages, previous_summary=None):
         return "[synthetic summary]"
 
     agent.summarizer = fake_summarize
@@ -188,7 +188,7 @@ async def test_summarizer_merges_previous_summary(tmp_path, monkeypatch):
         captured["previous"] = previous_summary
         return "[merged]"
 
-    monkeypatch.setattr(LLMSummarizer, "summarize", fake_summarize)
+    monkeypatch.setattr(LLMSummarizer, "__call__", fake_summarize)
 
     agent = Agent(
         provider=FakeProvider(script=[{"text": "ok"}]),
@@ -197,15 +197,15 @@ async def test_summarizer_merges_previous_summary(tmp_path, monkeypatch):
         summarizer=LLMSummarizer("fake/a"),
         max_context_tokens=100_000,
     )
-    from easycode.agent.context import History
+    from easycode.agent.context import SUMMARY_PREFIX, History
 
     agent.history = History(max_tokens=100_000)
     agent.history.set_system("sys")
+    agent.history.add({"role": "system", "content": f"{SUMMARY_PREFIX}\n[first summary]"})
     agent.history.add_user("old " + "z" * 20_000)
     agent.history.add_assistant("old answer")
     agent.history.add_user("recent")
     agent.history.add_assistant("recent answer")
-    agent.history.summary = "[first summary]"
     agent.history.max_chars = 1_000
     agent.compaction["preserve_recent_tokens"] = 2_000
 

@@ -197,7 +197,7 @@ async def test_cancel_during_approval_completes_batch_without_running_tools(tmp_
 
     requested = asyncio.Event()
 
-    async def approve(tc):
+    async def approve(tc, _reason):
         requested.set()
         await asyncio.Event().wait()
 
@@ -263,7 +263,7 @@ async def test_closing_stream_keeps_valid_tool_history(tmp_path):
 
 def test_removed_undo_routes_are_unavailable(repo):
     cfg = Config.load()
-    store = SessionStore(cfg, repo, lambda alias: _agent(repo, SlowProvider()))
+    store = SessionStore(cfg, repo, lambda alias, **_: _agent(repo, SlowProvider()))
     with TestClient(
         create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
     ) as client:

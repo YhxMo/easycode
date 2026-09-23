@@ -154,7 +154,7 @@ def test_chat_with_tool_calls(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         provider = FakeProvider(script=list(script))
         return Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
 
@@ -200,7 +200,7 @@ def test_session_persistence(tmp_path, monkeypatch):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         return Agent(
             provider=FakeProvider(script=[{"text": "reply"}]),
             registry=build_registry(8000),
@@ -240,7 +240,7 @@ def test_load_all_preserves_condensed_summary(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         return Agent(
             provider=FakeProvider(script=[{"text": "reply"}]),
             registry=build_registry(8000),
@@ -421,7 +421,7 @@ def test_user_times_follow_compaction(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         return Agent(
             provider=FakeProvider(script=[{"text": "reply"}]),
             registry=build_registry(8000),

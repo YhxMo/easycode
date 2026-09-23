@@ -7,7 +7,7 @@ from pathlib import Path
 
 from easycode.credentials import data_home
 from easycode.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_READ_ONLY
-from easycode.workspace import PathContext, ToolGrant
+from easycode.workspace import PathContext, ToolGrant, secret_paths
 
 SEATBELT_EXECUTABLE = Path("/usr/bin/sandbox-exec")
 
@@ -70,9 +70,8 @@ def _secret_policy(include_write: bool, *, protect_all_data_home: bool = True) -
     write target either.
     """
     if not protect_all_data_home:
-        creds = data_home() / "credentials.json"
         out: list[str] = []
-        for p in (creds, creds.with_suffix(".tmp")):
+        for p in secret_paths():
             lit = _seatbelt_literal(p)
             out.append(f"(deny file-read* (literal {lit}))")
             if include_write:

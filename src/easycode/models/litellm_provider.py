@@ -45,22 +45,16 @@ class LiteLLMProvider(Provider):
         calls: dict[int, dict[str, Any]] = defaultdict(
             lambda: {"id": "", "name": "", "arguments": ""}
         )
-        saw_tool_calls = False
 
         async for chunk in response:
             if not getattr(chunk, "choices", None):
                 continue
             delta = chunk.choices[0].delta or {}
-            if not (getattr(delta, "content", None) or getattr(delta, "tool_calls", None)):
-                continue
-
-            if getattr(delta, "content", None):
-                content = getattr(delta, "content", None)
-                if content is not None:
-                    yield StreamEvent(kind="text", content=str(content))
+            content = getattr(delta, "content", None)
+            if content:
+                yield StreamEvent(kind="text", content=str(content))
 
             if getattr(delta, "tool_calls", None):
-                saw_tool_calls = True
                 for tc in delta.tool_calls:
                     if tc is None:
                         continue
@@ -74,7 +68,7 @@ class LiteLLMProvider(Provider):
                     if fn.get("arguments"):
                         slot["arguments"] += fn["arguments"]
 
-        if saw_tool_calls:
+        if calls:
             tool_calls: list[ToolCall] = []
             for idx in sorted(calls):
                 slot = calls[idx]

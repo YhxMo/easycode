@@ -10,7 +10,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from easycode.agent.compaction import COMPACTION_DEFAULTS
-from easycode.approval import PERM_ASK, permission_parse
+from easycode.policy import PERM_ASK, permission_parse
 from easycode.workspace import PathContext, resolve_workspace_path
 
 CONFIG_FILENAME = "easycode.config.json"
@@ -26,8 +26,10 @@ API_FORMATS = (
 )
 DEFAULT_API_FORMAT = "openai_compatible"
 
+DEFAULT_MODEL_ALIAS = "deepseek-v4flash"
+
 DEFAULT_MODELS: dict[str, str] = {
-    "deepseek-v4flash": "deepseek/deepseek-v4-flash",
+    DEFAULT_MODEL_ALIAS: "deepseek/deepseek-v4-flash",
     "gpt5.6-terra": "openai/gpt-5.6-terra",
     "gpt5.6-sol": "openai/gpt-5.6-sol",
     "claude-sonnet5": "anthropic/claude-sonnet-5",
@@ -38,14 +40,6 @@ DEFAULT_TOOLS = dict.fromkeys(
     ("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks"),
     True,
 )
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "default_model": "deepseek-v4flash",
-    "models": DEFAULT_MODELS,
-    "tools": DEFAULT_TOOLS,
-    "max_tool_result_chars": DEFAULT_MAX_TOOL_RESULT_CHARS,
-    "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
-}
 
 
 def _skills_enabled(raw: dict[str, Any]) -> bool:
@@ -132,7 +126,7 @@ class Config:
 
     config_path: Path | None = None
     root: Path = field(default_factory=Path.cwd)
-    default_model: str = "deepseek-v4flash"
+    default_model: str = DEFAULT_MODEL_ALIAS
     models: dict[str, ModelSpec] = field(
         default_factory=lambda: {k: ModelSpec(v) for k, v in DEFAULT_MODELS.items()}
     )
@@ -151,7 +145,7 @@ class Config:
 
     @classmethod
     def load(cls, start: Path | None = None) -> Config:
-        load_dotenv(find_env_file(start) if find_env_file(start) else None, override=False)
+        load_dotenv(find_env_file(start), override=False)
         cfg_path = find_config_file(start)
         raw: dict[str, Any] = {}
         if cfg_path:
@@ -172,7 +166,7 @@ class Config:
         return cls(
             config_path=cfg_path,
             root=root,
-            default_model=raw.get("default_model", DEFAULT_CONFIG["default_model"]),
+            default_model=raw.get("default_model", DEFAULT_MODEL_ALIAS),
             models=models,
             tools=tools,
             permission_rules=dict(raw.get("permissions") or {}),
@@ -244,6 +238,10 @@ class Config:
             limits = None
         self.model_limits_cache[model] = limits
         return limits
+
+    def base_dir(self) -> Path:
+        """Anchor for resolving relative workspace paths (config dir, not CWD)."""
+        return self.config_path.parent if self.config_path else self.root
 
     def path_context(
         self, root: Path | None = None, secondary: list[Path] | None = None

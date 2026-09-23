@@ -22,8 +22,6 @@ from easycode.agent.context import History
 from easycode.agent.summarizer import Summarizer
 from easycode.agent.system import build_system_prompt, find_agents_rules
 from easycode.approval import (
-    PERM_ASK,
-    PERM_AUTO_REVIEW,
     approval_reason,
     definitive_deny_reason,
     grant_for_toolcall,
@@ -32,6 +30,8 @@ from easycode.approval import (
 from easycode.models.base import Provider, ToolCall
 from easycode.policy import (
     APPROVAL_NEVER,
+    PERM_ASK,
+    PERM_AUTO_REVIEW,
     REVIEWER_AUTO,
     ExecutionPolicy,
     permission_rule_action,
@@ -94,7 +94,7 @@ class Agent:
     extra_safe_dirs: list[Path] = field(default_factory=list)
     permission_mode: str = PERM_ASK
     permission_rules: dict[str, Any] = field(default_factory=dict)
-    approval_handler: Callable[[ToolCall], Awaitable[bool]] | None = None
+    approval_handler: Callable[[ToolCall, str], Awaitable[bool]] | None = None
     review_handler: (
         Callable[[ToolCall, str, list[dict]], Awaitable[ReviewDecision | bool]] | None
     ) = None
@@ -203,9 +203,7 @@ class Agent:
             return 0
         return self.history.estimate_text_tokens(json.dumps(schemas, ensure_ascii=False))
 
-    async def respond(
-        self, user_input: str, max_iterations: int = MAX_TOOL_ITERATIONS
-    ) -> AsyncIterator[AgentEvent]:
+    async def respond(self, user_input: str) -> AsyncIterator[AgentEvent]:
         """Run a user turn; keep completed operations in history if it is interrupted."""
         await self.init_mcp()
         self.history.add_user(user_input)
@@ -213,15 +211,15 @@ class Agent:
         self._review_decisions = []
         self._consecutive_review_denials = 0
         try:
-            async with aclosing(self._turn(max_iterations)) as events:
+            async with aclosing(self._turn()) as events:
                 async for event in events:
                     yield event
         except Exception as exc:
             yield AgentEvent(kind="error", error=f"{type(exc).__name__}: {exc}")
             raise
 
-    async def _turn(self, max_iterations: int) -> AsyncIterator[AgentEvent]:
-        for _ in range(max_iterations):
+    async def _turn(self) -> AsyncIterator[AgentEvent]:
+        for _ in range(MAX_TOOL_ITERATIONS):
             schemas = self.tool_schemas()
             allowed = {schema["function"]["name"] for schema in schemas}
             await self.compactor.prepare(
@@ -287,7 +285,7 @@ class Agent:
                 for content in self._pending_system:
                     self.history.add({"role": "system", "content": content})
                 self._pending_system.clear()
-        yield AgentEvent(kind="error", error=f"hit max tool iterations ({max_iterations})")
+        yield AgentEvent(kind="error", error=f"hit max tool iterations ({MAX_TOOL_ITERATIONS})")
         yield AgentEvent(kind="done")
 
     async def _execute_tool(
@@ -354,7 +352,9 @@ class Agent:
                 )
             else:
                 yield AgentEvent(kind="approval", tool_call=tc, content=reason)
-                approved = bool(await self.approval_handler(tc)) if self.approval_handler else False
+                approved = (
+                    bool(await self.approval_handler(tc, reason)) if self.approval_handler else False
+                )
         yield AgentEvent(kind="tool_start", tool_call=tc)
         if not approved:
             result = json.dumps(
@@ -429,14 +429,14 @@ class Agent:
             compact["message"] = "preview only, file unchanged"
         return json.dumps(compact, ensure_ascii=False)
 
-    async def run_task(self, prompt: str, max_iterations: int = MAX_TOOL_ITERATIONS) -> str:
+    async def run_task(self, prompt: str) -> str:
         """Run a standalone subtask with a fresh history; return the final text.
 
         Raises RuntimeError when the provider reports an error mid-turn.
         """
         parts: list[str] = []
         errors: list[str] = []
-        async for ev in self.respond(prompt, max_iterations=max_iterations):
+        async for ev in self.respond(prompt):
             if ev.kind == "text" and ev.content:
                 parts.append(ev.content)
             elif ev.kind == "error" and ev.error:

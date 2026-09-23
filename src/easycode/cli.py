@@ -33,22 +33,20 @@ app = typer.Typer(help="easycode — a CLI coding agent", no_args_is_help=False)
 
 def build_commands(agent: Agent, roots: list[Path]) -> CommandRegistry:
     """CommandRegistry with built-ins + user templates + skill commands."""
-    from easycode.commands import Command, CommandRegistry
+    from easycode.commands import build_registry
 
-    reg = CommandRegistry()
-    for name, desc in (
-        ("help", "show this help"),
-        ("exit", "quit the REPL"),
-        ("model", "list / switch / add model aliases"),
-        ("run", "execute a change task and summarize diffs"),
-        ("skills", "list available skills"),
-        ("agents", "list delegatable agents"),
-    ):
-        reg.register(Command(name=name, description=desc, kind="builtin"))
-    reg.discover_templates(roots)
-    if agent.skills:
-        reg.add_skill_commands(agent.skills)
-    return reg
+    return build_registry(
+        roots,
+        agent.skills,
+        builtins=(
+            ("help", "show this help"),
+            ("exit", "quit the REPL"),
+            ("model", "list / switch / add model aliases"),
+            ("run", "execute a change task and summarize diffs"),
+            ("skills", "list available skills"),
+            ("agents", "list delegatable agents"),
+        ),
+    )
 
 
 async def run_turn(agent: Agent, user_input: str) -> None:
@@ -78,7 +76,7 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
     always_allow: set[str] = set()
     from easycode.agent.loop import ToolCall
 
-    async def approval_handler(tc: ToolCall) -> bool:
+    async def approval_handler(tc: ToolCall, _reason: str) -> bool:
         key = approval_key(tc)
         if key in always_allow:
             return True
@@ -112,7 +110,9 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
             stop = await handle_command(text, cfg, agent, current, commands)
             if stop is False:
                 return
-            current = cfg.default_model
+            # Track the model the agent is actually bound to, not the config
+            # default (a /model switch may have rebound it).
+            current = agent.provider.model
             continue
         try:
             await run_turn(agent, text)
@@ -147,7 +147,7 @@ def main(
 ) -> None:
     cfg = Config.load(start=root)
     if permission:
-        from easycode.approval import permission_parse
+        from easycode.policy import permission_parse
 
         cfg.permission_mode = permission_parse(permission)
     current = model or cfg.default_model
@@ -196,9 +196,9 @@ async def handle_command(
         await run_turn(agent, prompt)
         return None
 
-    if cmd.name == "/help" or cmd.name == "help":
-        return _cmd_help(cfg, current, commands, agent)
-    if cmd.name in ("exit", "quit"):
+    if cmd.name == "help":
+        return _cmd_help(current, commands, agent)
+    if cmd.name == "exit":
         return False
     if cmd.name == "run":
         return await _cmd_run(agent, rest)
@@ -214,7 +214,7 @@ async def handle_command(
     if cmd.name == "agents":
         if agent.agents:
             for a in agent.agents.list():
-                marker = f" [dim]({a.model or 'inherit'})[/]" if a.model else ""
+                marker = f" [dim]({a.model})[/]" if a.model else ""
                 console.print(f"  [cyan]{a.name}[/]{marker}: {a.description}")
         else:
             console.print("[dim]没有可用 agent（在 .easycode/agents/<name>.md 创建）[/]")
@@ -223,7 +223,7 @@ async def handle_command(
     return None
 
 
-def _cmd_help(cfg: Config, current: str, commands, agent) -> None:
+def _cmd_help(current: str, commands, agent) -> None:
     from rich.panel import Panel
 
     lines = ["[bold]Commands[/]"]

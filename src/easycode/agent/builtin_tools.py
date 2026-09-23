@@ -175,7 +175,7 @@ async def run_parallel(agent: Agent, tasks: list[dict], max_parallel: int) -> st
 
 
 async def run_builtin(agent: Agent, tc: ToolCall) -> str:
-    """Dispatch one builtin tool call to its runner (previously ``_run_builtin``)."""
+    """Dispatch one builtin tool call to its runner."""
     if tc.name == "parallel_tasks":
         try:
             sub_tasks = tc.arguments.get("tasks", [])
@@ -197,9 +197,7 @@ def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
     fallback builds an :class:`~easycode.agent.loop.Agent` directly via a
     deferred import to avoid a top-level circular reference.
     """
-    model = None
-    if spec is not None and spec.model:
-        model = spec.model
+    model = spec.model if spec is not None and spec.model else None
     if agent.subagent_factory:
         # the factory resolves aliases; without a spec model, inherit the
         # parent's alias so credentials and api_format stay correct
@@ -222,7 +220,6 @@ def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
             agents=agent.agents,
             skills=agent.skills,
         )
-    sub.root = agent.root
     sub.secondary_roots = list(agent.secondary_roots)
     sub.extra_safe_dirs = list(agent.extra_safe_dirs)
     sub.mcp_servers = agent.mcp_servers
@@ -231,19 +228,15 @@ def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
     sub.permission_rules = dict(agent.permission_rules)
     sub.approval_handler = agent.approval_handler
     sub.review_handler = agent.review_handler
-    if spec is None:
-        sub.history.set_system(sub._build_system())
-        return sub
-    if spec.tools is not None:
-        sub.enabled_tools = set(spec.tools)
-    if spec.permission:
-        sub.permission_mode = cap_permission(agent.permission_mode, spec.permission)
-    else:
-        sub.permission_mode = agent.permission_mode
-    if spec.system:
-        sub.system_override = spec.system
-    if spec.temperature is not None and hasattr(sub.provider, "kwargs"):
-        sub.provider.kwargs.setdefault("temperature", spec.temperature)
+    if spec is not None:
+        if spec.tools is not None:
+            sub.enabled_tools = set(spec.tools)
+        if spec.permission:
+            sub.permission_mode = cap_permission(agent.permission_mode, spec.permission)
+        if spec.system:
+            sub.system_override = spec.system
+        if spec.temperature is not None and hasattr(sub.provider, "kwargs"):
+            sub.provider.kwargs.setdefault("temperature", spec.temperature)
     sub.history.set_system(sub._build_system())
     return sub
 

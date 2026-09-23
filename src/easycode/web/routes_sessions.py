@@ -64,7 +64,7 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
 
     @app.post("/api/sessions/{session_id}/permission")
     async def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
-        from easycode.approval import permission_parse
+        from easycode.policy import permission_parse
 
         sess = store.get(session_id)
         if sess is None:

@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from easycode.tools.registry import json_out
+from easycode.tools.registry import json_out, tool_scope
 from easycode.workspace import PathContext, ToolGrant
 
 SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
@@ -25,8 +25,31 @@ MAX_READ_BYTES = 50 * 1024
 DEFAULT_READ_LIMIT = 2000
 
 
-def _scope(root: Path, ctx: PathContext | None) -> PathContext:
-    return ctx if ctx is not None else PathContext(primary=root)
+def _write_denied(scope: PathContext, p: Path, raw: str, grant: ToolGrant | None) -> str | None:
+    """Error JSON when a file write target is denied, else ``None``.
+
+    Shared by write_file and edit_file: the credential hard-deny first, then
+    the allowed/granted authorization check.
+    """
+    if scope.is_protected(p):
+        return json_out(
+            "error",
+            {
+                "message": f"path is protected (credentials): {raw}",
+                "in_allowed": False,
+                "class": scope.classify(p),
+            },
+        )
+    if scope.in_allowed(p) or (grant is not None and scope.grant_granted(p, grant)):
+        return None
+    return json_out(
+        "error",
+        {
+            "message": f"path outside allowed directories (needs approval): {raw}",
+            "in_allowed": False,
+            "class": scope.classify(p),
+        },
+    )
 
 
 class ReadFileArgs(BaseModel):
@@ -49,7 +72,7 @@ def read_file(
     ctx: PathContext | None = None,
     grant: ToolGrant | None = None,
 ) -> str:
-    scope = _scope(root, ctx)
+    scope = tool_scope(root, ctx)
     p = scope.resolve(args.path)
     if scope.is_protected(p):
         return json_out(
@@ -138,28 +161,12 @@ def write_file(
     ctx: PathContext | None = None,
     grant: ToolGrant | None = None,
 ) -> str:
-    scope = _scope(root, ctx)
+    scope = tool_scope(root, ctx)
     p = scope.resolve(args.path)
-    if scope.is_protected(p):
-        return json_out(
-            "error",
-            {
-                "message": f"path is protected (credentials): {args.path}",
-                "in_allowed": False,
-                "class": scope.classify(p),
-            },
-        )
+    if (err := _write_denied(scope, p, args.path, grant)) is not None:
+        return err
     granted = bool(grant and scope.grant_granted(p, grant))
     allowed = scope.in_allowed(p)
-    if not (allowed or granted):
-        return json_out(
-            "error",
-            {
-                "message": f"path outside allowed directories (needs approval): {args.path}",
-                "in_allowed": False,
-                "class": scope.classify(p),
-            },
-        )
     # an *external* write authorized only by a grant must target a parent
     # that already exists (relative / missing / file-as-directory requests are
     # rejected structurally rather than auto-creating anything outside the safe
@@ -230,30 +237,12 @@ def edit_file(
     ctx: PathContext | None = None,
     grant: ToolGrant | None = None,
 ) -> str:
-    scope = _scope(root, ctx)
+    scope = tool_scope(root, ctx)
     p = scope.resolve(args.path)
-    if scope.is_protected(p):
-        return json_out(
-            "error",
-            {
-                "message": f"path is protected (credentials): {args.path}",
-                "in_allowed": False,
-                "class": scope.classify(p),
-            },
-        )
     if not p.is_file():
         return json_out("error", {"message": f"not a file: {args.path}"})
-    granted = bool(grant and scope.grant_granted(p, grant))
-    allowed = scope.in_allowed(p)
-    if not (allowed or granted):
-        return json_out(
-            "error",
-            {
-                "message": f"path outside allowed directories (needs approval): {args.path}",
-                "in_allowed": False,
-                "class": scope.classify(p),
-            },
-        )
+    if (err := _write_denied(scope, p, args.path, grant)) is not None:
+        return err
     try:
         text = p.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -320,7 +309,7 @@ def grep(
         rx = re.compile(args.pattern)
     except re.error as exc:
         return json_out("error", {"message": f"invalid regex: {exc}"})
-    scope = _scope(root, ctx)
+    scope = tool_scope(root, ctx)
     matches: list[dict] = []
     for r in scope.roots:
         for p in _iter_files(r, include=args.include):
@@ -349,7 +338,7 @@ class GlobArgs(BaseModel):
 def glob(
     args: GlobArgs, *, root: Path, ctx: PathContext | None = None, grant: ToolGrant | None = None
 ) -> str:
-    scope = _scope(root, ctx)
+    scope = tool_scope(root, ctx)
     results: set[tuple[str, str | None]] = set()
 
     def record(p: Path, r: Path) -> None:

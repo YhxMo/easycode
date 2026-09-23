@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from easycode.agentfactory import provider_kwargs, rebind_agent
-from easycode.config import Config, infer_api_format
+from easycode.config import DEFAULT_MODEL_ALIAS, Config, ModelSpec
 from easycode.credentials import (
     Credential,
     delete_credential,
@@ -29,6 +29,15 @@ def infer_provider(model: str, api_format: str) -> str:
     return FORMAT_PROVIDERS.get(api_format, "custom")
 
 
+def _display_provider(spec: ModelSpec, credential: Credential | None) -> str:
+    """Supplier label for display: spec → credential → model/format inference."""
+    return (
+        spec.provider
+        or (credential.provider if credential else None)
+        or infer_provider(spec.model, spec.api_format)
+    )
+
+
 def models_response(cfg: Config) -> dict:
     """Snapshot of model records (no API keys leaked)."""
     providers: dict[str, str] = {}
@@ -36,11 +45,7 @@ def models_response(cfg: Config) -> dict:
     credentials = load_credentials()
     for alias, spec in cfg.models.items():
         credential = credentials.get(spec.key_id) if spec.key_id else None
-        providers[alias] = (
-            spec.provider
-            or (credential.provider if credential else None)
-            or infer_provider(spec.model, spec.api_format)
-        )
+        providers[alias] = _display_provider(spec, credential)
         limits[alias] = cfg.get_model_limits(alias)
     return {
         "default": cfg.default_model,
@@ -56,10 +61,8 @@ def get_model_detail(cfg: Config, alias: str) -> dict:
     if spec is None:
         raise LookupError(alias)
     cred = load_credentials().get(spec.key_id) if spec.key_id else None
-    api_format = spec.api_format or infer_api_format(spec.model)
-    provider = spec.provider or (
-        cred.provider if cred and cred.provider else infer_provider(spec.model, api_format)
-    )
+    api_format = spec.api_format
+    provider = _display_provider(spec, cred)
     api_key = cred.api_key if cred else ""
     base_url = cred.base_url if cred else None
     return {
@@ -188,7 +191,7 @@ def delete_model(cfg: Config, *, alias: str) -> dict:
     if spec.key_id:
         delete_credential(spec.key_id)
     if cfg.default_model == alias:
-        cfg.set_default_model(next(iter(cfg.models), "deepseek-v4flash"))
+        cfg.set_default_model(next(iter(cfg.models), DEFAULT_MODEL_ALIAS))
     cfg.save()
     return models_response(cfg)
 

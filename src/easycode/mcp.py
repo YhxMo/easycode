@@ -274,9 +274,7 @@ class MCPSession:
             }
 
     async def call(self, fname: str, arguments: dict[str, Any]) -> str:
-        entry = self.tools.get(fname)
-        if entry is None:
-            return json.dumps({"status": "error", "message": f"unknown MCP tool: {fname}"}, ensure_ascii=False)
+        entry = self.tools[fname]
         try:
             result = await self.transport.request("tools/call", {"name": entry["name"], "arguments": arguments or {}})
         except Exception as exc:  # noqa: BLE001
@@ -309,10 +307,6 @@ class MCPSessionManager:
         self._sessions: dict[str, MCPSession] = {}
         self._started = False
         self._lock = asyncio.Lock()
-
-    @property
-    def started(self) -> bool:
-        return self._started
 
     async def start(self) -> None:
         if self._started:

@@ -79,6 +79,46 @@ async def test_tool_events_are_not_coalesced(tmp_path):
     assert kinds.index("tool_start") < kinds.index("tool_result") < kinds.index("text")
 
 
+async def test_approval_required_event_carries_manager_reason(tmp_path):
+    """The approval prompt uses the reason the loop already computed."""
+    from easycode.mcp import MCPSession, MCPSessionManager, mcp_tool_name
+
+    fname = mcp_tool_name("demo", "danger")
+    mgr = MCPSessionManager({})
+    sess = MCPSession("demo", None)
+    sess.tools = {
+        fname: {
+            "name": "danger",
+            "schema": {
+                "type": "function",
+                "function": {"name": fname, "description": "danger", "parameters": {}},
+            },
+            "annotations": {},
+        }
+    }
+    mgr._sessions = {"demo": sess}
+
+    agent = Agent(
+        provider=FakeProvider(
+            script=[
+                {"tool_calls": [("c1", fname, {})], "text": ""},
+                {"text": WORD},
+            ]
+        ),
+        registry=build_registry(8000),
+        root=tmp_path,
+        mcp_manager=mgr,
+    )
+    broker = ApprovalBroker()
+    reasons: list[str] = []
+    async for kind, payload in stream_chat_with_approval(agent, "go", broker):
+        if kind == "approval":
+            approval_id, _tc, reason, _scope = payload
+            reasons.append(reason)
+            broker.resolve(approval_id, False)
+    assert reasons == [mgr.approval_reason(fname)]
+
+
 class PausingProvider(FakeProvider):
     """Streams some text, then blocks until cancelled (never finishes the turn)."""
 
