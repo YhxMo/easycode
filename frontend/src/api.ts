@@ -106,7 +106,8 @@ export interface EditableModel {
   key_id?: string | null;
   provider?: string | null;
   base_url?: string | null;
-  api_key: string;
+  has_api_key: boolean;
+  key_tail: string;
   api_format?: string | null;
 }
 

@@ -93,7 +93,7 @@ export function ModelPicker({
   const [revealKey, setRevealKey] = useState(false);
   const [formError, setFormError] = useState("");
   const [toast, setToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
-  const loadedKey = useRef<{ keyId: string | null; apiKey: string }>({ keyId: null, apiKey: "" });
+  const [hasStoredKey, setHasStoredKey] = useState(false);
   const [hovered, setHovered] = useState<{ alias: string; top: number } | null>(null);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -199,11 +199,11 @@ export function ModelPicker({
         model: detail.model,
         provider: detail.provider ?? "openai",
         base_url: detail.base_url ?? "",
-        api_key: detail.api_key,
+        api_key: "",
         api_format: detail.api_format ?? "openai_compatible",
         clear_key: false,
       });
-      loadedKey.current = { keyId: detail.key_id ?? null, apiKey: detail.api_key };
+      setHasStoredKey(detail.has_api_key);
       setFormError("");
       setEditingAlias(alias);
       setRevealKey(false);
@@ -228,9 +228,8 @@ export function ModelPicker({
         api_format: form.api_format,
         clear_key: form.clear_key,
       };
-      if (loadedKey.current.keyId || form.api_key !== loadedKey.current.apiKey) {
-        body.api_key = form.api_key;
-      }
+      const newKey = form.api_key.trim();
+      if (newKey) body.api_key = newKey;
       onChange(await updateModel(editingAlias, body));
       setShowEdit(false);
       setRevealKey(false);
@@ -610,7 +609,7 @@ export function ModelPicker({
               <button
                 type="button"
                 className="clear-key"
-                disabled={busy || (!form.api_key && !form.clear_key)}
+                disabled={busy || (!hasStoredKey && !form.api_key)}
                 onClick={() => setForm({ ...form, api_key: "", clear_key: true })}
               >
                 清除密钥
