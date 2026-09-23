@@ -118,8 +118,9 @@ Template $ARGUMENTS
     cmds = r.json()["commands"]
     names = [c["name"] for c in cmds]
     assert "custom" in names
-    assert "run" in names
-    assert "undo" in names
+    assert "run" not in names
+    assert "undo" not in names
+    assert "redo" not in names
 
     custom = next(c for c in cmds if c["name"] == "custom")
     assert custom["description"] == "Custom command"

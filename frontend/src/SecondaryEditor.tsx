@@ -1,9 +1,7 @@
 import { useState } from "react";
 import type { WorkspacesInfo } from "./api";
 import { chooseWorkspace, saveProject } from "./api";
-import { basename } from "./ProjectPicker";
-
-const DEFAULT_PROJECT = "default project";
+import { basename, DEFAULT_PROJECT } from "./lib/paths";
 
 export function SecondaryEditor({
   root,

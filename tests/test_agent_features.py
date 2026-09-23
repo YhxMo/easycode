@@ -1,4 +1,4 @@
-"""Phase 3 tests: AGENTS.md rules, context compression, parallel sub-agents."""
+"""AGENTS.md rules, context compression, parallel sub-agents."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def make_agent(tmp_path: Path, script: list[dict] | None = None, **kw) -> Agent:
     )
 
 
-# ---------- P3-2 AGENTS.md ----------
+# Project instructions
 
 
 async def test_agents_md_loaded_into_system_prompt(tmp_path):
@@ -52,7 +52,7 @@ def test_history_condense_replaces_old_messages():
     for i in range(30):
         h.add_user(f"user {i}")
         h.add_assistant(f"answer {i}")
-    ok = h.condense("EARLY SUMMARY", keep_recent=5)
+    ok = h.condense_from("EARLY SUMMARY", len(h.messages) - 5)
     assert ok is True
     roles = [m["role"] for m in h.messages]
     assert roles[0] == "system" and "EARLY SUMMARY" in h.messages[0]["content"]
@@ -64,7 +64,7 @@ def test_history_condense_noop_when_few_messages():
     h = History()
     h.add_user("hi")
     h.add_assistant("yo")
-    assert h.condense("S", keep_recent=5) is False
+    assert h.condense_from("S", 0) is False
 
 
 async def test_agent_condenses_when_over_budget(tmp_path):

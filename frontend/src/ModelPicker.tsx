@@ -113,10 +113,6 @@ export function ModelPicker({
   });
 
   useEffect(() => {
-    fetchModels().then(onChange).catch(() => {});
-  }, []);
-
-  useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpen(false);

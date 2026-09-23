@@ -1,6 +1,4 @@
-// Module-level pure helper block extracted from App.tsx (B5). Historical-message
-// reconstruction, tool-args normalization and the small clock/time formatters are
-// pure functions shared by App and the stream layer.
+// Convert persisted history into chat items.
 import type { ApprovalRecord } from "../api";
 import type { Item } from "../types";
 

@@ -23,15 +23,10 @@ export interface SessionSummary {
   created_at: string;
   model_alias: string;
   permission_mode?: string;
-  sandbox_mode?: "read-only" | "workspace-write" | "danger-full-access";
-  approval_policy?: "on-request" | "never";
-  approvals_reviewer?: "user" | "auto-review";
   root?: string | null;
   secondary_roots?: string[];
   archived?: boolean;
 }
-
-export type PermissionMode = "ask" | "auto-review" | "allow-all";
 
 export type ApprovalDecision = "approved" | "denied" | "expired";
 
@@ -55,7 +50,6 @@ export type ModelEntry = { model: string; key_id?: string; api_format: string; p
 
 export interface ModelLimits {
   context: number;
-  output: number;
 }
 
 export interface ModelsInfo {
@@ -114,7 +108,6 @@ export interface EditableModel {
   base_url?: string | null;
   api_key: string;
   api_format?: string | null;
-  has_api_key?: boolean;
 }
 
 export interface UpdateModelBody {
@@ -306,33 +299,10 @@ export function setSessionPermission(
   }).then((r) => json<{ id: string; permission_mode: string }>(r));
 }
 
-export interface RollbackResult {
-  ok: boolean;
-  undo_available?: boolean;
-  redo_available?: boolean;
-  restored?: string[];
-  message_only?: boolean;
-}
-
 export function cancelSessionChat(sessionId: string): Promise<{ ok: boolean; cancelled: boolean }> {
   return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/cancel`, {
     method: "POST",
   }).then((r) => json<{ ok: boolean; cancelled: boolean }>(r));
-}
-
-export function undoSession(sessionId: string, untilUser?: number): Promise<RollbackResult> {
-  const body = untilUser ? JSON.stringify({ until_user: untilUser }) : undefined;
-  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/undo`, {
-    method: "POST",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body,
-  }).then((r) => json<RollbackResult>(r));
-}
-
-export function redoSession(sessionId: string): Promise<RollbackResult> {
-  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/redo`, { method: "POST" }).then((r) =>
-    json<RollbackResult>(r),
-  );
 }
 
 export async function streamChat(

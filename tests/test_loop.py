@@ -125,7 +125,7 @@ async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
     called: list[str] = []
     agent.summarizer = fake_summarizer_that_marks(called)
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
 
     assert called, "a large tool schema must count toward the budget and trip compaction"
 
@@ -148,7 +148,7 @@ async def test_compaction_auto_false_skips_condense(tmp_path, monkeypatch):
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
     before = list(agent.history.messages)
 
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
 
     assert called == []  # no summarize, no trim
     assert agent.history.messages == before  # history untouched
@@ -173,7 +173,7 @@ async def test_compaction_auto_true_still_condenses(tmp_path, monkeypatch):
     called: list[str] = []
     agent.summarizer = fake_summarizer_that_marks(called)
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
 
     assert called, "expected compaction to fire when auto=True and over budget"
 
@@ -200,7 +200,7 @@ async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_pat
         return  # simulate provider failure surfaced as None
 
     agent.summarizer = failing_summarize
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
 
     assert "summarize" in log  # compaction attempted
     # no fabricated "(summary unavailable...)" note, and no injected summary
@@ -292,29 +292,19 @@ class _RaiseAfterToolProvider(FakeProvider):
         raise RuntimeError("provider blew up mid-turn")
 
 
-async def test_provider_exception_rolls_back_history_and_snapshot(tmp_path):
-    """a generic (non-cancel) provider exception must roll history and the
-    snapshot stack back to the turn start and surface an error event — it must
-    not leave ``[user]`` in history or a dangling snapshot record."""
-    from easycode.snapshot import FileSnapshotManager
-
+async def test_provider_exception_keeps_partial_text(tmp_path):
     provider = _RaiseAfterToolProvider()
     agent = Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
-    agent.snapshot_manager = FileSnapshotManager("s", agent.path_context().roots)
-
-    events: list[AgentEvent] = []
+    events = []
     with pytest.raises(RuntimeError, match="provider blew up"):
-        async for ev in agent.respond("hello"):
-            events.append(ev)
-
-    # history rolled back to turn start (empty, since this was the first turn)
-    assert agent.history.messages == []
-    assert agent.history.last_user_index() == -1
-    # snapshot stack has no dangling turn record
-    assert agent.snapshot_manager.stack == []
-    # an error event was surfaced to the UI before re-raising
-    errs = [e for e in events if e.kind == "error"]
-    assert errs and "provider blew up" in errs[0].error
+        async for event in agent.respond("hello"):
+            events.append(event)
+    assert agent.history.messages == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "full"},
+    ]
+    assert any(event.kind == "error" for event in events)
+    assert_valid_tool_protocol(agent.history.messages)
 
 
 # ---------------------------------------------- tool protocol one-to-one check

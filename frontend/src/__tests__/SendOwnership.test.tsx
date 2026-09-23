@@ -4,19 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
 
-// Regression tests: a new-session first-turn stream whose
-// finally block hijacks the foreground session ownership.
-//
-// Repro: user is in a brand-new session (currentId === null), sends a prompt,
-// and while the stream is still in flight (before the backend emits the
-// "session" event that binds the currentId) clicks "新会话" again to switch the
-// foreground to another blank session. The old stream's finally then runs
-// `setCurrentId(list[0].id)` unconditionally, silently re-routing the user's
-// input in the blank session to the previous stream's newly-created session.
-//
-// These tests drive App purely against a mocked ./api (no network, no real
-// ~/.easycode) and hold the SSE stream open with a controllable promise, so the
-// navigation happens deterministically before the turn completes.
+// New streams are identified by their SSE session event. Navigation abandons old events.
 vi.mock("../api", () => ({
   fetchSessions: vi.fn(),
   fetchArchivedSessions: vi.fn(),
@@ -26,8 +14,6 @@ vi.mock("../api", () => ({
   fetchCommands: vi.fn(),
   setSessionPermission: vi.fn(),
   streamChat: vi.fn(),
-  undoSession: vi.fn(),
-  redoSession: vi.fn(),
   submitApproval: vi.fn(),
   cancelSessionChat: vi.fn(),
   deleteSession: vi.fn(),
@@ -86,8 +72,6 @@ beforeEach(() => {
   // streamChat/resolve default so a stray call doesn't hit the network.
   m.streamChat.mockResolvedValue(undefined);
   m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "A", permission_mode: mode }));
-  m.undoSession.mockResolvedValue({ ok: true });
-  m.redoSession.mockResolvedValue({ ok: true });
   m.submitApproval.mockResolvedValue(undefined);
 });
 
@@ -108,14 +92,11 @@ describe("App · 会话归属", () => {
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
-    // While the stream is still pending, the user clicks 新会话 to switch the
-    // foreground to a fresh blank session again (openSession(null)). Because
-    // the stream never bound a session, this does NOT abort it — the old
-    // request token remains "active" and its finally would clear/hijack.
+    // Navigation invalidates the old stream even before its session event arrives.
     await user.click(screen.getByRole("button", { name: /新会话/ }));
     expect(headerTitle()).toBe("新会话");
 
-    // Now let the first turn complete; the old stream's finally runs.
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
     await stream.finish();
 
     // The completed (old) stream must refresh the list but must NOT take over
@@ -124,7 +105,7 @@ describe("App · 会话归属", () => {
     expect(document.querySelector(".session-item.active")).toBeNull();
   });
 
-  it("未中途导航时，新会话首轮流结束后仍回填新建会话 id（保持原行为）", async () => {
+  it("使用 SSE 返回的会话 id，而不是列表中的最新会话", async () => {
     const user = userEvent.setup();
     const stream = controllableStream();
 
@@ -136,8 +117,8 @@ describe("App · 会话归属", () => {
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
-    // No navigation whatsoever: the fallback must still claim the newly
-    // created session (list[0].id) so the turn is owned properly.
+    m.fetchSessions.mockResolvedValue([session("B", "另一个会话"), session("A", "会话A")]);
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
     await stream.finish();
 
     await waitFor(() => expect(headerTitle()).toBe("会话A"));

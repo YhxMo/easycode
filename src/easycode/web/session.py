@@ -20,25 +20,6 @@ from easycode.workspace import normalise_secondary
 AgentFactory = Callable[[str], Agent]
 
 
-#: Migration for sessions persisted with the *old* system prompt (which was stored
-#: as messages[0]). A freshly built agent already holds the current prompt in
-#: ``history.system``; on restore the embedded base system message is dropped so
-#: ``messages`` contains only the ordinary history (never a base system message, or
-#: it would break compaction / turn-boundary logic). Skill / custom system messages
-#: are preserved in place.
-#:
-#: The single leading system message is dropped UNLESS it is a rolling-compaction
-#: summary: ``condense_from`` injects a system message stamped with
-#: ``SUMMARY_PREFIX`` at the head, and that condensed context must survive a
-#: refresh/restart (crash-loop/regression: the summary was treated as a stale base
-#: prompt and silently stripped on every reload, losing all old context).
-def migrate_persisted_messages(persisted: list[dict]) -> list[dict]:
-    msgs = list(persisted)
-    if msgs and msgs[0].get("role") == "system" and not History.is_summary(msgs[0]):
-        msgs = msgs[1:]
-    return msgs
-
-
 def _summary_text(msg: dict) -> str:
     """Extract the rolling-compaction summary body from a summary system message.
 
@@ -49,11 +30,16 @@ def _summary_text(msg: dict) -> str:
     starting from scratch.
     """
     content = str(msg.get("content") or "")
-    return content[len(SUMMARY_PREFIX):].lstrip()
+    return content[len(SUMMARY_PREFIX) :].lstrip()
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def project_key(root: str | None) -> str:
+    """Canonical map key for a project root (default project → "")."""
+    return root or ""
 
 
 @dataclass
@@ -72,14 +58,6 @@ class Session:
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
-    #: Timestamps popped by a redo-able ``undo_turn`` so ``redo_turn`` can restore
-    #: the alignment of ``user_times`` with the surviving user messages.
-    _undone_user_times: list[str] = field(default_factory=list)
-    #: Per-session serialization. A chat stream holds this
-    #: for its whole lifecycle (including approval waits); concurrent chat / undo /
-    #: redo / permission / archive are rejected with 409 "session busy". The lock
-    #: is created lazily and is intentionally NOT serialized to disk (it is a
-    #: runtime-only primitive and is excluded from the manual ``_flush`` payload).
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def cancel_stream(self) -> bool:
@@ -88,36 +66,6 @@ class Session:
         if evt is None or evt.is_set():
             return False
         evt.set()
-        return True
-
-    def stash_undo_time(self) -> None:
-        """Pop the most recent user_timestamp and stash it for a redo.
-
-        A single-turn undo is redo-able, so the popped timestamp is
-        kept in ``_undone_user_times`` — a LIFO parallel of the agent's
-        ``_redo_stack`` — so a later ``redo_turn`` can restore exactly one
-        matching timestamp instead of draining the whole stash. When there is no
-        timestamp to pop (frontend compressed them away) this is a no-op.
-        """
-        if self.user_times:
-            self._undone_user_times.append(self.user_times.pop())
-
-    def drop_user_times(self, count: int) -> None:
-        """Drop ``count`` trailing user_timestamps (a batch undo discards redo)."""
-        for _ in range(min(count, len(self.user_times))):
-            self.user_times.pop()
-
-    def restore_redo_time(self) -> bool:
-        """Restore exactly ONE stashed timestamp (the most recently undone).
-
-        Returns True when a timestamp was restored. A single
-        ``redo_turn`` re-applies one user turn, so restore exactly one timestamp
-        from the LIFO stash (its end) — never drain the whole stash. A guard keeps
-        this a safe no-op when the stash is empty (nothing was undone).
-        """
-        if not self._undone_user_times:
-            return False
-        self.user_times.append(self._undone_user_times.pop())
         return True
 
     @property
@@ -171,7 +119,9 @@ class SessionStore:
             agent_kwargs["root"] = root
         if secondary:
             agent_kwargs["secondary_roots"] = [str(p) for p in secondary]
-        agent = self.agent_factory(alias, **agent_kwargs) if agent_kwargs else self.agent_factory(alias)
+        agent = (
+            self.agent_factory(alias, **agent_kwargs) if agent_kwargs else self.agent_factory(alias)
+        )
         mode = permission_mode or self.cfg.permission_mode
         agent.permission_mode = mode
         sess = Session(
@@ -192,33 +142,31 @@ class SessionStore:
         """Anchor for resolving relative workspace paths (config dir, not CWD)."""
         return self.cfg.config_path.parent if self.cfg.config_path else Path(self.cfg.root)
 
-    @staticmethod
-    def _project_key(root: str | None) -> str:
-        return root or ""
-
     def _projects_secondary(self, root: str | None) -> list[str]:
-        """cfg.workspace_projects secondary bindings for ``root`` (P1-1).
+        """cfg.workspace_projects secondary bindings for ``root``.
 
         When a session is created without explicit secondary roots, the
         config's persisted project→secondary binding for the matching primary
         is used, so secondary and extra_safe directories require no approval.
         """
-        key = self._project_key(root)
+        key = project_key(root)
         for proj in self.cfg.workspace_projects:
-            if self._project_key(proj.get("root")) == key:
+            if project_key(proj.get("root")) == key:
                 return list(proj.get("secondary") or [])
         return []
 
-    def _resolve_secondary(
-        self, root: str | None, secondary_roots: list[str] | None
-    ) -> list[Path]:
+    def _resolve_secondary(self, root: str | None, secondary_roots: list[str] | None) -> list[Path]:
         """Resolve + validate secondary roots; fall back to project binding.
 
-        Every entry must be an existing, canonical, non-sensitive directory
-        (P1-1); an invalid entry raises ValueError so the caller can reject the
+        Every entry must be an existing, canonical, non-sensitive directory; an invalid entry raises ValueError so the caller can reject the
         registration with a 4xx instead of silently accepting a bad root.
         """
-        raw = [str(p) for p in (secondary_roots if secondary_roots is not None else self._projects_secondary(root))]
+        raw = [
+            str(p)
+            for p in (
+                secondary_roots if secondary_roots is not None else self._projects_secondary(root)
+            )
+        ]
         paths, err = normalise_secondary(raw, self._base_dir())
         if err is not None:
             raise ValueError(err)
@@ -285,25 +233,21 @@ class SessionStore:
                     data.get("model_alias") or self.cfg.default_model, **agent_kwargs
                 )
                 agent.permission_mode = permission_mode
-                # Keep the NEW agent's current system prompt (agent_factory already
-                # set it via _build_system, e.g. the execute_shell writable_roots
-                # guidance). Restore only the ordinary history: drop a persisted
-                # embedded base system message, leave skill/custom system messages.
-                migrated = migrate_persisted_messages(list(data.get("messages") or []))
-                agent.history.messages = migrated
+                messages = list(data.get("messages") or [])
+                agent.history.messages = messages
                 # Rebuild the rolling-compaction summary from the head
                 # summary system message (if any) so the next compaction can merge
                 # into the prior summary instead of starting from nothing. Kept in
                 # sync with messages[0] because both derive from the same source.
-                if migrated and History.is_summary(migrated[0]):
-                    agent.history.summary = _summary_text(migrated[0])
+                if messages and History.is_summary(messages[0]):
+                    agent.history.summary = _summary_text(messages[0])
                 sess = Session(
                     id=data["id"],
                     title=data.get("title", "新会话"),
                     created_at=data.get("created_at", _now()),
                     model_alias=data.get("model_alias", self.cfg.default_model),
                     agent=agent,
-                    messages=migrated,
+                    messages=messages,
                     root=root,
                     secondary_roots=secondary,
                     permission_mode=permission_mode,
@@ -317,27 +261,11 @@ class SessionStore:
                 continue
 
     def record_exchange(self, session: Session) -> None:
-        """Persist current history after a turn.
-
-        a session that was deleted while its chat stream was still
-        in flight must not be re-persisted by the stream's ``finally`` — that
-        would resurrect it on disk (and a later ``load_all``). If the session is
-        no longer tracked this is a no-op.
-
-        keep ``user_times`` aligned with the user messages that survive in
-        ``history``. During a turn, compaction drops the OLDEST user messages
-        (front), so the surviving timestamps are the most-recent ``n_user``
-        entries. Undo/redo shift the count from the back and are handled at the
-        undo/redo endpoints (pop/stash + restore); once a redo is no longer
-        possible (a new turn or a batch undo invalidated the redo stack) any
-        stashed timestamps are dropped so they cannot be mis-reapplied later.
-        """
+        """Persist history and align timestamps after context compaction."""
         if session.id not in self._sessions:
             return
         session.messages = list(session.agent.history.messages)
         n_user = sum(1 for m in session.messages if m.get("role") == "user")
-        if not session.agent.redo_available():
-            session._undone_user_times.clear()
         if len(session.user_times) > n_user:
             session.user_times = list(session.user_times[-n_user:]) if n_user else []
         self._flush(session)

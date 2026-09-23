@@ -1354,36 +1354,6 @@ body {
   background: var(--panel);
 }
 
-.chat-input-rollback {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  justify-content: center;
-}
-
-.rb-btn {
-  background: #1c2129;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  width: 26px;
-  height: 20px;
-  line-height: 1;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.rb-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.rb-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
 .chat-input-perm {
   flex: none;
   width: 84px;
@@ -1572,8 +1542,6 @@ body {
   opacity: 0.5;
   cursor: default;
 }
-
-/* 2026 UI refresh — quiet Codex-inspired shell + OpenCode-style rollback */
 :root {
   color-scheme: dark;
   --bg: #101112;
@@ -2018,74 +1986,6 @@ input:focus-visible {
   margin: 0 auto;
   padding: 0 0 18px;
   background: linear-gradient(to top, var(--bg) 72%, transparent);
-}
-
-.rollback-banner {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  width: calc(100% - 24px);
-  margin: 0 auto -1px;
-  padding: 9px 12px 10px;
-  border: 1px solid var(--border-strong);
-  border-bottom: none;
-  border-radius: 10px 10px 0 0;
-  background: #1a1c1d;
-  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.18);
-}
-
-.rollback-icon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: #292c2e;
-  color: #c7cac7;
-}
-
-.rollback-copy {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 1px 9px;
-  align-items: baseline;
-}
-
-.rollback-copy strong {
-  color: #d6d8d5;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.rollback-copy > span {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rollback-copy small {
-  grid-column: 1 / -1;
-  color: var(--muted-2);
-  font-size: 9px;
-}
-
-.rollback-restore {
-  flex: none;
-  padding: 5px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: #242627;
-  color: var(--text);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.rollback-restore:hover:not(:disabled) {
-  background: #303234;
 }
 
 .chat-input {
@@ -3226,19 +3126,6 @@ body {
 
 .composer-hint {
   font-size: 11px;
-}
-
-.rollback-copy strong,
-.rollback-copy > span {
-  font-size: 13px;
-}
-
-.rollback-copy small {
-  font-size: 11px;
-}
-
-.rollback-restore {
-  font-size: 12px;
 }
 
 .sec-toggle-copy strong {

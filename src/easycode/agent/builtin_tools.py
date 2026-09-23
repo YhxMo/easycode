@@ -1,16 +1,4 @@
-"""Built-in subagent tools.
-
-Owns the three subagent tools ``parallel_tasks`` / ``task`` / ``use_skill``
-(schemas, runners, and the ``make_subagent`` construction logic together with
-the `subagent_factory` dependency-inversion hook).
-
-Dependency inversion: ``loop`` depends on this module (imports the schemas and
-calls ``run_builtin`` / ``make_subagent``); this module never imports ``loop``
-at the top level. ``Agent`` / ``AgentSpec`` / ``ToolCall`` are referenced only
-under ``TYPE_CHECKING``; the lone runtime ``Agent`` reference is a deferred,
-call-time import inside ``make_subagent``'s fallback branch (guarded by
-``agent.subagent_factory``), so no top-level circular import exists.
-"""
+"""Tool schemas and execution for task delegation and skill loading."""
 
 from __future__ import annotations
 
@@ -47,12 +35,20 @@ PARALLEL_TASKS_SCHEMA = {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "short task label"},
-                            "prompt": {"type": "string", "description": "self-contained task instructions"},
+                            "prompt": {
+                                "type": "string",
+                                "description": "self-contained task instructions",
+                            },
                         },
                         "required": ["name", "prompt"],
                     },
                 },
-                "max_parallel": {"type": "integer", "default": DEFAULT_MAX_PARALLEL, "minimum": 1, "maximum": 6},
+                "max_parallel": {
+                    "type": "integer",
+                    "default": DEFAULT_MAX_PARALLEL,
+                    "minimum": 1,
+                    "maximum": 6,
+                },
             },
             "required": ["tasks"],
         },
@@ -172,7 +168,9 @@ async def run_parallel(agent: Agent, tasks: list[dict], max_parallel: int) -> st
                 return {"name": name, "error": f"{type(exc).__name__}: {exc}"}
 
     results = await asyncio.gather(*(run_one(t) for t in tasks))
-    return json.dumps({"status": "ok", "count": len(results), "results": results}, ensure_ascii=False)
+    return json.dumps(
+        {"status": "ok", "count": len(results), "results": results}, ensure_ascii=False
+    )
 
 
 async def run_builtin(agent: Agent, tc: ToolCall) -> str:
@@ -207,28 +205,19 @@ def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
         from easycode.agent.loop import Agent  # deferred: call-time, avoids cycle
         from easycode.models.litellm_provider import LiteLLMProvider
 
-        if model and hasattr(agent.provider, "kwargs"):
-            provider = LiteLLMProvider(model, **agent.provider.kwargs)
-        else:
-            provider = LiteLLMProvider(model or agent.provider.model)
+        provider = LiteLLMProvider(
+            model or agent.provider.model, **getattr(agent.provider, "kwargs", {})
+        )
         sub = Agent(
             provider=provider,
             registry=agent.registry,
             root=agent.root,
             enabled_tools=agent.enabled_tools,
-            secondary_roots=list(agent.secondary_roots),
-            extra_safe_dirs=list(agent.extra_safe_dirs),
-            permission_mode=agent.permission_mode,
-            permission_rules=dict(agent.permission_rules),
-            mcp_servers=agent.mcp_servers,
-            mcp_manager=agent.mcp_manager,
             max_context_tokens=agent.max_context_tokens,
             compaction=dict(agent.compaction),
             model_limits=agent.model_limits,
             agents=agent.agents,
             skills=agent.skills,
-            approval_handler=agent.approval_handler,
-            review_handler=agent.review_handler,
         )
     sub.root = agent.root
     sub.secondary_roots = list(agent.secondary_roots)

@@ -18,8 +18,6 @@ vi.mock("../api", () => ({
   fetchCommands: vi.fn(),
   setSessionPermission: vi.fn(),
   streamChat: vi.fn(),
-  undoSession: vi.fn(),
-  redoSession: vi.fn(),
   submitApproval: vi.fn(),
   cancelSessionChat: vi.fn(),
   deleteSession: vi.fn(),
@@ -81,8 +79,6 @@ beforeEach(() => {
   // Echo the requested mode back so the App's optimistic update is confirmed
   // rather than being reverted to a stale value.
   m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "s1", permission_mode: mode }));
-  m.undoSession.mockResolvedValue({ ok: true });
-  m.redoSession.mockResolvedValue({ ok: true });
   m.submitApproval.mockResolvedValue(undefined);
 });
 
@@ -177,21 +173,6 @@ describe("App", () => {
     expect(screen.getByText("B-视图")).toBeTruthy();
   });
 
-  it("rollback 失败显示错误提示", async () => {
-    const user = userEvent.setup();
-    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
-    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "问题1" }]));
-    m.undoSession.mockRejectedValue(new Error("undo failed"));
-
-    render(<App />);
-    await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
-    await screen.findByText("问题1");
-
-    await user.click(screen.getByRole("button", { name: /撤销/ }));
-
-    await screen.findByText(/回滚失败.*undo failed/);
-  });
 
   it("多审批显示动态 position/total", async () => {
     const user = userEvent.setup();

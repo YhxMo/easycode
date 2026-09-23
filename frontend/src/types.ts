@@ -1,9 +1,4 @@
-// Shared UI domain types for the chat stream layer.
-//
-// Extracted from App.tsx during the B5 stream-layer split so that the reducer
-// (chatStream.ts), the useChatStream hook and the history helpers
-// (lib/history.ts) can all share one source of truth without reaching into
-// App's closure.
+// Shared chat UI types.
 export type ApprovalState = "pending" | "approved" | "denied" | "expired";
 
 export type Item =
@@ -37,10 +32,3 @@ export type Item =
   | { kind: "review"; text: string }
   | { kind: "notice"; text: string }
   | { kind: "error"; text: string };
-
-export type RollbackInfo = {
-  count: number;
-  prompt: string;
-  files: number;
-  messageOnly: boolean;
-};

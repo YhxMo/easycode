@@ -54,13 +54,7 @@ def _event_payload(ev: AgentEvent) -> dict:
 
 
 def event_to_sse(ev: AgentEvent | dict[str, Any]) -> str:
-    """Serialize an agent event — or an already-built payload dict — into one SSE
-    ``data:`` line.
-
-    B3: this is the single serialization authority. ``stream_chat``,
-    ``stream_chat_with_approval`` and the web chat route all build their lines
-    here; no second ``f"data: {json.dumps(...)}"`` copy lives in the route.
-    """
+    """Serialize an agent event or payload dictionary as one SSE data line."""
     payload = _event_payload(ev) if isinstance(ev, AgentEvent) else dict(ev)
     return _sse_line(payload)
 
@@ -79,10 +73,6 @@ def approval_required_sse(approval_id: str, tc: ToolCall, reason: str, scope: st
             "tool_call": _tool_call_dict(tc),
         }
     )
-
-
-def cancelled_sse() -> str:
-    return event_to_sse({"type": "cancelled"})
 
 
 class ApprovalBroker:
@@ -114,42 +104,6 @@ class ApprovalBroker:
         self._pending.clear()
 
 
-async def stream_chat(
-    agent: Agent,
-    message: str,
-    flush_chars: int = TEXT_FLUSH_CHARS,
-    flush_seconds: float = TEXT_FLUSH_SECONDS,
-) -> AsyncIterator[str]:
-    """Yield SSE lines for one user message through the agent loop.
-
-    Token-level ``text`` events are coalesced with a char-count / age
-    throttle; every other event kind is passed through immediately.
-    """
-    buf: list[str] = []
-    last_flush = time.monotonic()
-
-    def give_text() -> str:
-        nonlocal buf, last_flush
-        text = "".join(buf)
-        buf = []
-        last_flush = time.monotonic()
-        return event_to_sse(AgentEvent(kind="text", content=text))
-
-    async for ev in agent.respond(message):
-        if ev.kind == "text" and ev.content:
-            buf.append(ev.content)
-            size = sum(len(part) for part in buf)
-            age = time.monotonic() - last_flush
-            if size >= flush_chars or (buf and age >= flush_seconds):
-                yield give_text()
-        else:
-            if buf:
-                yield give_text()
-            yield event_to_sse(ev)
-    if buf:
-        yield give_text()
-
-
 async def stream_chat_with_approval(
     agent: Agent,
     message: str,
@@ -169,7 +123,7 @@ async def stream_chat_with_approval(
     The agent pauses on the approval future; the caller resolves it via
     ``broker.resolve`` (or a timeout rejects it). When ``cancel_event`` is
     provided and gets set, the in-flight turn task is cancelled (the agent
-    rolls back partial history) and the stream ends with a ``cancelled``
+    retains completed operations) and the stream ends with a ``cancelled``
     event instead of raising.
 
     When ``session`` is given, approvals that match the session's recorded
@@ -265,16 +219,12 @@ async def stream_chat_with_approval(
                 await asyncio.gather(task, return_exceptions=True)
                 if buf:
                     yield give_text()
-                # the agent's rollback may not be able to undo shell side
-                # effects; surface the residual risk even though the in-flight
-                # generator's own yield is lost with the cancelled task.
-                note = getattr(agent, "_last_cancel_note", None)
-                if note:
-                    yield ("event", AgentEvent(kind="error", error=note))
                 yield ("event", AgentEvent(kind="cancelled"))
                 break
             if cancel_event is not None:
-                done, _ = await asyncio.wait({get_task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+                done, _ = await asyncio.wait(
+                    {get_task, watcher}, return_when=asyncio.FIRST_COMPLETED
+                )
                 if watcher in done:
                     continue  # re-check cancellation at loop top
                 kind, payload = get_task.result()
@@ -301,6 +251,8 @@ async def stream_chat_with_approval(
                     if buf:
                         yield give_text()
                     yield ("event", ev)
+        if buf:
+            yield give_text()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -308,8 +260,3 @@ async def stream_chat_with_approval(
             get_task.cancel()
         if watcher is not None and not watcher.done():
             watcher.cancel()
-        if buf:
-            yield give_text()
-        ty = getattr(q, "shutdown", None)
-        if ty is not None:
-            ty()

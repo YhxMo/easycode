@@ -8,7 +8,7 @@ Categories:
 - ``external``: anything else
 
 Everything but ``external`` is exempt from approval prompts (plus any
-``extra_safe_dirs``). The approval layer (P5-2) uses the same context.
+``extra_safe_dirs``). The approval layer uses the same context.
 """
 
 from __future__ import annotations
@@ -30,8 +30,7 @@ SENSITIVE_ROOT_NAMES = {".git", ".easycode"}
 class ToolGrant:
     """Precise, single-call authorization conveyed by an approval.
 
-    Replaces the fuzzy cross-tool boolean ``force_allowed``: an approval now
-    states *what* it grants — network and/or a set of explicit external
+    An approval states *what* it grants — network and/or a set of explicit external
     writable roots — instead of one anonymous flag. The roots are already
     canonical (absolute, resolved) and validated; each is added to the sandbox
     as its own ``-D`` parameter + subpath rule, and only for this one call.
@@ -48,7 +47,7 @@ def resolve_workspace_path(raw: str | Path, base: Path | None = None) -> Path:
     Relative paths are anchored to ``base`` (the config-file directory) when
     given, otherwise to CWD — callers that must not drift (Web/Session) pass an
     explicit absolute ``base`` so a relative path is never silently resolved
-    against the process CWD (P1-1).
+    against the process CWD.
     """
     p = Path(raw).expanduser()
     if not p.is_absolute():
@@ -60,7 +59,7 @@ def resolve_workspace_path(raw: str | Path, base: Path | None = None) -> Path:
 def validate_writable_roots(raw: list[str], base: Path | None) -> tuple[list[Path], str | None]:
     """Strict validation for a shell tool's explicit ``writable_roots``.
 
-    Used to authorize external-write access for ``execute_shell`` (P0-1). An
+    Used to authorize external-write access for ``execute_shell``. An
     entry must be an absolute, canonical, existing, non-sensitive directory
     (never a plain file, missing path, ``.git``/``.easycode``, or something under
     the data home). Relative paths are rejected outright — we never resolve the
@@ -86,8 +85,10 @@ def validate_writable_roots(raw: list[str], base: Path | None) -> tuple[list[Pat
     return out, None
 
 
-def normalise_secondary(secondary: list[str] | None, base: Path | None) -> tuple[list[Path], str | None]:
-    """Resolve + validate + de-duplicate a secondary/extra_safe list (P1-1).
+def normalise_secondary(
+    secondary: list[str] | None, base: Path | None
+) -> tuple[list[Path], str | None]:
+    """Resolve + validate + de-duplicate a secondary/extra_safe list.
 
     Returns ``(paths, error)``; when ``error`` is non-None the caller must
     reject the registration (422). Every entry must be an existing directory
@@ -116,7 +117,7 @@ def root_error(path: Path, *, require_dir: bool = True) -> str | None:
     else ``None``. A legal root must be absolute+canonical, must exist (unless
     ``require_dir`` is False), must be a directory (not a plain file), and must
     never be a sensitive dir (``.git``/``.easycode``/credentials) itself or live
-    under the data home. P1-1/P0-2.
+    under the data home..
     """
     p = path.resolve()
     if p.name in SENSITIVE_ROOT_NAMES:
@@ -164,12 +165,8 @@ class PathContext:
                 out.append(resolved)
         return out
 
-    def safe_dirs(self) -> list[Path]:
-        """Backward-compatible alias for writable roots."""
-        return self.writable_roots()
-
     def protected_paths(self) -> list[Path]:
-        """Write-level protected boundaries (P0-2).
+        """Write-level protected boundaries.
 
         Generated per writable *authorization* root — primary, secondary, and
         ``extra_safe_dirs`` — as ``<root>/.git`` and ``<root>/.easycode``, plus
@@ -201,7 +198,7 @@ class PathContext:
         Unlike ``protected_paths`` (the write sandbox boundaries such as
         ``.git``), these paths are blocked across *every* tool operation —
         read, write, and enumeration — and cannot be bypassed by
-        ``force_allowed`` (approval never grants credential access).
+        an approval grant (approval never grants credential access).
         """
         p = path.resolve()
         cred = data_home() / "credentials.json"
@@ -230,7 +227,7 @@ class PathContext:
         under one of them and must never itself (or an ancestor) be a protected
         child — ``.git``/``.easycode`` of any workspace/extra root, or a
         credential path. The check walks the path against every protected
-        boundary, not just the grant root's own children (P0-2).
+        boundary, not just the grant root's own children.
         """
         p = path.resolve()
         if self.is_protected_path(p):
@@ -287,13 +284,3 @@ class PathContext:
             if p.is_relative_to(r):
                 return str(p.relative_to(r))
         return str(p)
-
-
-def classify_path(path: Path, ctx: PathContext) -> str:
-    """Module-level helper: ``classify_path(p, ctx) -> "workspace"|"temp"|"system"|"external"``."""
-    return ctx.classify(path)
-
-
-def in_allowed(path: Path, ctx: PathContext) -> bool:
-    """Module-level helper: is ``path`` inside any approval-exempt directory."""
-    return ctx.in_allowed(path)

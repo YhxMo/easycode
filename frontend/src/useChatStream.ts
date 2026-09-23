@@ -1,21 +1,10 @@
-// Custom hook that encapsulates the send orchestration for the chat stream
-// (B5). It owns the request-ownership refs (currentRequestRef/reqSeqRef/
-// currentStreamSessionRef/sendAbortRef/openSeqRef) plus the `busy` and `items`
-// state, and exposes a dependency-injected `send`/`stop`. Every external input
-// (current session id, chosen permission, the api surface, etc.) is passed in as
-// a parameter rather than reaching into App's closure, so the hook is decoupled
-// from App's implementation.
-//
-// The item-level SSE transitions are delegated to the pure `applyChatEvent`
-// reducer; this hook only adds the side effects that are NOT about items
-// (session id binding, opening the approval overlay, session-list refresh and
-// the new-session claim in the finally block).
+// Chat stream lifecycle and request ownership.
 import { useCallback, useRef, useState } from "react";
 import type { ChatOptions } from "./api";
-import { cancelSessionChat, fetchSessions, streamChat } from "./api";
+import { cancelSessionChat, streamChat } from "./api";
 import { applyChatEvent, stampTurnMeta } from "./chatStream";
 import { isAbortError } from "./lib/history";
-import type { Item, RollbackInfo } from "./types";
+import type { Item } from "./types";
 
 export interface UseChatStreamParams {
   input: string;
@@ -27,15 +16,10 @@ export interface UseChatStreamParams {
   /** Model name at send time, stamped onto the turn's assistant messages for the reply meta row. */
   currentModelName: string;
   refreshSessions: () => void;
-  setRollbackInfo: (v: RollbackInfo | null) => void;
   setInput: (v: string) => void;
   setCurrentId: (v: string | null) => void;
-  setCurrentPermission: (v: string) => void;
   /** Called when an approval_required event arrives (opens the approval sheet). */
   onApprovalRequired: () => void;
-  streamChat: typeof streamChat;
-  cancelSessionChat: typeof cancelSessionChat;
-  fetchSessions: typeof fetchSessions;
 }
 
 export function useChatStream(params: UseChatStreamParams) {
@@ -67,7 +51,7 @@ export function useChatStream(params: UseChatStreamParams) {
     const text = c.input.trim();
     if (!text || busyRef.current) return;
     c.setInput("");
-    c.setRollbackInfo(null);
+    busyRef.current = true;
     setBusy(true);
     const sessionId = c.currentId;
     // each request owns a unique token. A stale/aborted request has a
@@ -75,12 +59,6 @@ export function useChatStream(params: UseChatStreamParams) {
     const token = ++reqSeqRef.current;
     currentRequestRef.current = token;
     currentStreamSessionRef.current = sessionId;
-    // Capture the open-generation at send time so the finally block can
-    // tell whether the user navigated (openSession / 新会话) while this stream
-    // was still in flight. Only the still-current open generation may claim the
-    // freshly-created session id; otherwise we refresh the list and leave the
-    // foreground session ownership untouched.
-    const openSeqAtSend = openSeqRef.current;
     const turnStartedAt = Date.now();
     const modelAtSend = c.currentModelName;
     const controller = new AbortController();
@@ -98,7 +76,7 @@ export function useChatStream(params: UseChatStreamParams) {
     ];
     setItems((prev) => [...prev, ...patches]);
     try {
-      await c.streamChat(sessionId, text, (ev) => {
+      await streamChat(sessionId, text, (ev) => {
         // Only the current request may touch the view.
         if (currentRequestRef.current !== token) return;
         if (ev.type === "session") {
@@ -118,12 +96,16 @@ export function useChatStream(params: UseChatStreamParams) {
       // A stale/aborted request must not add an error row to a different
       // session's view. A deliberate abort is not an error either.
       if (currentRequestRef.current !== token) return;
-      if (isAbortError(err)) return;
+      if (isAbortError(err)) {
+        setItems((prev) => applyChatEvent(prev, { type: "cancelled" }));
+        return;
+      }
       setItems((prev) => [
         ...prev,
         { kind: "error", text: err instanceof Error ? err.message : String(err) },
       ]);
     } finally {
+      busyRef.current = false;
       setBusy(false);
       if (currentRequestRef.current === token) {
         setItems((prev) =>
@@ -136,19 +118,6 @@ export function useChatStream(params: UseChatStreamParams) {
           ),
         );
         c.refreshSessions();
-        if (sessionId === null && openSeqRef.current === openSeqAtSend) {
-          // Pick up the newly-created session, but only when the user is still on
-          // the same new-session chain that started this request. If
-          // they navigated away while the stream ran (openSession / 新会话), a
-          // later open generation advanced openSeqRef — do not steal the
-          // foreground session ownership; the list is already refreshed above.
-          const list = await c.fetchSessions().catch(() => []);
-          if (list.length) {
-            c.setCurrentId(list[0].id);
-            currentStreamSessionRef.current = list[0].id;
-            c.setCurrentPermission(list[0].permission_mode ?? c.chosenPermission);
-          }
-        }
       }
       sendAbortRef.current = null;
     }
@@ -159,7 +128,7 @@ export function useChatStream(params: UseChatStreamParams) {
     // still runs and resets busy since we keep the request token.
     sendAbortRef.current?.abort();
     if (latest.current.currentId) {
-      latest.current.cancelSessionChat(latest.current.currentId).catch(() => {});
+      cancelSessionChat(latest.current.currentId).catch(() => {});
     }
   }, []);
 
@@ -168,10 +137,8 @@ export function useChatStream(params: UseChatStreamParams) {
     stop,
     busy,
     items,
-    setBusy,
     setItems,
     currentRequestRef,
-    reqSeqRef,
     currentStreamSessionRef,
     sendAbortRef,
     openSeqRef,

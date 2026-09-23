@@ -1,11 +1,4 @@
-"""Web session serialization — concurrent chat/undo/redo/permission gating,
-cancel special-case, and flush tmp-path uniqueness.
-
-Covers same-session concurrent chat (which would interleave history) and
-in-flight undo/redo (which would corrupt history) at the web endpoint level.
-Every test runs against a throw-away HOME and an in-process ASGI app; no real
-~/.easycode is read or written, and no easycode service is started.
-"""
+"""Concurrent chat, permission changes, and session persistence."""
 
 from __future__ import annotations
 
@@ -138,8 +131,8 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_inflight_chat_undo_redo_permission_archive_409(tmp_path) -> None:
-    """While a chat stream is in flight, undo/redo/permission/archive
+def test_inflight_chat_permission_archive_409(tmp_path) -> None:
+    """While a chat stream is in flight, permission/archive
     and a second chat must be rejected with 409; once the turn completes the
     history is a single clean turn with user_times aligned."""
     cfg = _make_cfg(tmp_path)
@@ -161,8 +154,6 @@ def test_inflight_chat_undo_redo_permission_archive_409(tmp_path) -> None:
             await _wait_until(store.get(sid)._lock.locked)
 
             for method, url, body in (
-                ("POST", f"/api/sessions/{sid}/undo", None),
-                ("POST", f"/api/sessions/{sid}/redo", None),
                 ("POST", f"/api/sessions/{sid}/permission", {"mode": "allow-all"}),
                 ("POST", f"/api/sessions/{sid}/archive", {"archived": True}),
                 ("POST", "/api/chat", {"message": "x", "session_id": sid}),
@@ -213,7 +204,7 @@ def test_cancel_during_inflight_not_gated(tmp_path) -> None:
             body = (await chat).text
             assert '"type": "cancelled"' in body
             sess = store.get(sid)
-            assert sess is not None and sess.agent.history.last_user_index() == -1
+            assert sess is not None and sess.agent.history.messages == [{"role": "user", "content": "hi"}]
 
     asyncio.run(scenario())
 

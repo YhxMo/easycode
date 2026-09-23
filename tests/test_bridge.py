@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from easycode.agent.loop import Agent
+from easycode.agent.loop import Agent, AgentEvent
 from easycode.tools import build_registry
-from easycode.web.bridge import stream_chat
+from easycode.web.bridge import ApprovalBroker, event_to_sse, stream_chat_with_approval
 from tests.conftest import FakeProvider
 
 WORD = "found"
@@ -26,7 +26,14 @@ def parse_events(lines: list[str]) -> list[dict]:
 
 
 async def run_chat(agent: Agent, msg: str, **kw) -> list[str]:
-    return [line async for line in stream_chat(agent, msg, **kw)]
+    broker = ApprovalBroker()
+    lines: list[str] = []
+    async for kind, payload in stream_chat_with_approval(agent, msg, broker, **kw):
+        if kind == "text":
+            lines.append(event_to_sse(AgentEvent(kind="text", content=str(payload))))
+        elif kind == "event":
+            lines.append(event_to_sse(payload))
+    return lines
 
 
 async def test_short_text_emitted_as_single_event(tmp_path):

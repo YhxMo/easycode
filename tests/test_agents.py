@@ -180,3 +180,17 @@ async def test_task_tool_unknown_agent_error(tmp_path):
     data = json.loads(results[0])
     assert data["status"] == "error"
     assert "unknown agent" in data["message"]
+
+
+def test_subagent_inherits_model_credentials(tmp_path):
+    from easycode.agent.builtin_tools import make_subagent
+    from easycode.agent.loop import Agent
+    from easycode.models.litellm_provider import LiteLLMProvider
+    from easycode.tools import build_registry
+
+    provider = LiteLLMProvider("demo", api_key="test-key", api_base="http://localhost/v1")
+    parent = Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
+    child = make_subagent(parent)
+    assert child.provider.model == parent.provider.model
+    assert child.provider.kwargs == parent.provider.kwargs
+    assert child.history is not parent.history

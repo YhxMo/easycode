@@ -35,7 +35,7 @@ def permission_rule_action(
 
     ``rules`` accepts either a flat action (``{"mcp__*": "ask"}``) or a
     pattern map (``{"execute_shell": {"*": "ask", "git status*": "allow"}}``).
-    The rule layer is intentionally independent from the three legacy presets:
+    The rule layer is intentionally independent from the three permission presets:
     it can force a prompt or denial, while the existing sandbox still decides
     the actual filesystem and network boundary.
     """

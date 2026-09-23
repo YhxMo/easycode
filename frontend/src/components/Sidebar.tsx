@@ -6,10 +6,9 @@ import type {
 } from "../api";
 import { ModelPicker } from "../ModelPicker";
 import { ProjectMenu, type ProjectAction } from "../ProjectMenu";
-import { ProjectPicker, basename } from "../ProjectPicker";
+import { ProjectPicker } from "../ProjectPicker";
+import { basename, DEFAULT_PROJECT } from "../lib/paths";
 import { SecondaryEditor } from "../SecondaryEditor";
-
-const DEFAULT_PROJECT = "default project";
 
 function FolderIcon() {
   return (

@@ -24,8 +24,6 @@ vi.mock("../api", () => ({
   fetchCommands: vi.fn(),
   setSessionPermission: vi.fn(),
   streamChat: vi.fn(),
-  undoSession: vi.fn(),
-  redoSession: vi.fn(),
   submitApproval: vi.fn(),
   cancelSessionChat: vi.fn(),
   deleteSession: vi.fn(),
@@ -109,8 +107,6 @@ describe("App · 删除会话模态框", () => {
     });
     m.streamChat.mockResolvedValue(undefined);
     m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "s1", permission_mode: mode }));
-    m.undoSession.mockResolvedValue({ ok: true });
-    m.redoSession.mockResolvedValue({ ok: true });
     m.submitApproval.mockResolvedValue(undefined);
   });
 

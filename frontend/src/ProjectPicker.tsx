@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { WorkspacesInfo } from "./api";
 import { chooseWorkspace } from "./api";
+import { basename, DEFAULT_PROJECT } from "./lib/paths";
 import { SecondaryEditor } from "./SecondaryEditor";
-
-const DEFAULT_PROJECT = "default project";
-
-export const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
 
 export function ProjectPicker({
   workspaces,

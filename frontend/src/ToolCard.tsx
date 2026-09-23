@@ -27,7 +27,6 @@ function toolLabel(name: string): string {
   if (name === "execute_shell") return "Shell";
   if (name === "edit_file" || name === "write_file") return "补丁";
   if (name === "read_file") return "读取";
-  if (name === "list_dir") return "浏览";
   return name;
 }
 

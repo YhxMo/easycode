@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -15,19 +14,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
 from easycode.agent.loop import Agent
-from easycode.agentfactory import (
-    apply_api_format as apply_api_format,  # re-export: tests import these from cli
-)
-from easycode.agentfactory import (
-    build_provider as build_provider,
-)
-from easycode.agentfactory import (
-    make_agent,
-    rebind_agent,
-)
-from easycode.agentfactory import (
-    provider_kwargs as provider_kwargs,
-)
+from easycode.agentfactory import make_agent, rebind_agent
 from easycode.approval import approval_key
 from easycode.config import Config
 from easycode.ui.render import (
@@ -41,14 +28,7 @@ from easycode.ui.render import (
 if TYPE_CHECKING:
     from easycode.commands import CommandRegistry
 
-# Backwards-compatible alias: older callers (and any tests) referenced the
-# private name; keep it resolvable on this module.
-_rebind_agent = rebind_agent
-
 app = typer.Typer(help="easycode — a CLI coding agent", no_args_is_help=False)
-
-
-
 
 
 def build_commands(agent: Agent, roots: list[Path]) -> CommandRegistry:
@@ -61,8 +41,6 @@ def build_commands(agent: Agent, roots: list[Path]) -> CommandRegistry:
         ("exit", "quit the REPL"),
         ("model", "list / switch / add model aliases"),
         ("run", "execute a change task and summarize diffs"),
-        ("undo", "undo the last turn (messages + file changes)"),
-        ("redo", "redo the last undone turn"),
         ("skills", "list available skills"),
         ("agents", "list delegatable agents"),
     ):
@@ -104,7 +82,9 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
         key = approval_key(tc)
         if key in always_allow:
             return True
-        console.print(f"[yellow]⚠ 需要批准:[/] {tc.name} {json.dumps(tc.arguments, ensure_ascii=False)}")
+        console.print(
+            f"[yellow]⚠ 需要批准:[/] {tc.name} {json.dumps(tc.arguments, ensure_ascii=False)}"
+        )
         try:
             answer = (await session.prompt_async("允许? [y/N/a(always)] ")).strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -140,7 +120,7 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
             console.print("\n[dim]interrupted[/]")
 
 
-async def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: list[Path] | None) -> None:
+def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: list[Path] | None) -> None:
     ctx = cfg.path_context(root=workdir, secondary=[str(p) for p in (secondary_root or [])])
     agent = make_agent(
         cfg,
@@ -149,9 +129,6 @@ async def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: li
         secondary_roots=ctx.secondary,
         extra_safe_dirs=[Path(d).expanduser() for d in cfg.extra_safe_dirs],
     )
-    from easycode.snapshot import FileSnapshotManager
-
-    agent.snapshot_manager = FileSnapshotManager(f"cli-{os.getpid()}", agent.path_context().roots)
     commands = build_commands(agent, ctx.roots)
     console.print()
     banner(cfg.resolve_model(current))
@@ -160,10 +137,19 @@ async def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: li
 
 @app.command()
 def main(
-    model: Annotated[str | None, typer.Option("--model", "-m", help="model alias to start with")] = None,
-    root: Annotated[Path | None, typer.Option("--root", "-r", help="workspace root (default: cwd)")] = None,
-    secondary_root: Annotated[list[Path] | None, typer.Option("--secondary-root", help="extra workspace root (repeatable)")] = None,
-    permission: Annotated[str | None, typer.Option("--permission", help="permission mode: ask/auto-review/allow-all")] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", "-m", help="model alias to start with")
+    ] = None,
+    root: Annotated[
+        Path | None, typer.Option("--root", "-r", help="workspace root (default: cwd)")
+    ] = None,
+    secondary_root: Annotated[
+        list[Path] | None,
+        typer.Option("--secondary-root", help="extra workspace root (repeatable)"),
+    ] = None,
+    permission: Annotated[
+        str | None, typer.Option("--permission", help="permission mode: ask/auto-review/allow-all")
+    ] = None,
 ) -> None:
     cfg = Config.load(start=root)
     if permission:
@@ -179,7 +165,9 @@ def main(
 def web(
     host: Annotated[str, typer.Option("--host", help="bind host")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", "-p", help="bind port")] = 8000,
-    root: Annotated[Path | None, typer.Option("--root", "-r", help="workspace root (default: cwd)")] = None,
+    root: Annotated[
+        Path | None, typer.Option("--root", "-r", help="workspace root (default: cwd)")
+    ] = None,
 ) -> None:
     """Start the FastAPI web UI (serves frontend/dist if built)."""
     import uvicorn
@@ -199,7 +187,9 @@ def web(
     uvicorn.run(app, host=host, port=port)
 
 
-async def handle_command(raw: str, cfg: Config, agent: Agent, current: str, commands) -> bool | None:
+async def handle_command(
+    raw: str, cfg: Config, agent: Agent, current: str, commands
+) -> bool | None:
     """Dispatch a slash command: templates/skills expand to a prompt; builtins run."""
     resolved = commands.resolve(raw)
     if resolved is None:
@@ -220,10 +210,6 @@ async def handle_command(raw: str, cfg: Config, agent: Agent, current: str, comm
         return await _cmd_run(agent, rest)
     if cmd.name == "model":
         return _cmd_model(cfg, agent, current, rest)
-    if cmd.name == "undo":
-        return _cmd_undo(agent)
-    if cmd.name == "redo":
-        return _cmd_redo(agent)
     if cmd.name == "skills":
         if agent.skills:
             for s in agent.skills.list():
@@ -249,7 +235,9 @@ def _cmd_help(cfg: Config, current: str, commands, agent) -> None:
     lines = ["[bold]Commands[/]"]
     for c in commands.list():
         hint = f" {c.arg_hint}" if c.arg_hint else ""
-        badge = {"builtin": "", "template": " [dim](custom)[/]", "skill": " [dim](skill)[/]"}[c.kind]
+        badge = {"builtin": "", "template": " [dim](custom)[/]", "skill": " [dim](skill)[/]"}[
+            c.kind
+        ]
         lines.append(f"  /{c.name}{hint}{badge}  {c.description}")
     lines += [
         "",
@@ -322,44 +310,12 @@ def _cmd_model(cfg: Config, agent: Agent, current: str, rest: str) -> None:
         if alias in cfg.models:
             cfg.set_default_model(alias)
             cfg.save()
-            _rebind_agent(agent, cfg, alias)
+            rebind_agent(agent, cfg, alias)
             model_switched(cfg.resolve_model(alias))
         else:
             console.print(f"[red]unknown alias: {alias} (use /model <alias>=<name> to add)[/]")
         return
     return
-
-
-def _cmd_undo(agent) -> None:
-    try:
-        summary = agent.undo_turn()
-    except RuntimeError as exc:
-        console.print(f"[yellow]{exc}[/]")
-        return
-    _render_rollback(summary)
-    return
-
-
-def _cmd_redo(agent) -> None:
-    try:
-        summary = agent.redo_turn()
-    except RuntimeError as exc:
-        console.print(f"[yellow]{exc}[/]")
-        return
-    _render_rollback(summary)
-    return
-
-
-def _render_rollback(summary: dict) -> None:
-    restored = summary.get("restored") or []
-    if summary.get("message_only"):
-        console.print("[dim]回滚了消息（非 git 仓库，文件未改动）[/]")
-    elif restored:
-        console.print(f"[bold cyan]已回滚文件（{len(restored)}）[/]")
-        for p in restored:
-            console.print(f"  ↺ {p}")
-    else:
-        console.print("[dim]已回滚（无文件改动）[/]")
 
 
 if __name__ == "__main__":

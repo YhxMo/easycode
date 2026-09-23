@@ -9,8 +9,9 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from easycode.agent.compaction import COMPACTION_DEFAULTS
 from easycode.approval import PERM_ASK, permission_parse
-from easycode.workspace import PathContext
+from easycode.workspace import PathContext, resolve_workspace_path
 
 CONFIG_FILENAME = "easycode.config.json"
 DEFAULT_MAX_TOOL_RESULT_CHARS = 8000
@@ -33,7 +34,10 @@ DEFAULT_MODELS: dict[str, str] = {
     "claude-opus5": "anthropic/claude-opus-5",
 }
 
-DEFAULT_TOOLS = dict.fromkeys(("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks"), True)
+DEFAULT_TOOLS = dict.fromkeys(
+    ("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks"),
+    True,
+)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "default_model": "deepseek-v4flash",
@@ -41,16 +45,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tools": DEFAULT_TOOLS,
     "max_tool_result_chars": DEFAULT_MAX_TOOL_RESULT_CHARS,
     "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
-}
-
-#: Context-compaction knobs (aligned with opencode `compaction` config).
-DEFAULT_COMPACTION: dict[str, Any] = {
-    "auto": True,
-    "buffer": 20_000,  # reserved output buffer subtracted from the model window
-    "preserve_recent_tokens": None,  # None → 25% of usable, clamped 2k..15k
-    "tail_turns": None,  # max recent turns kept verbatim (None → budget-driven)
-    "prune": True,  # clear old completed tool outputs before summarizing
-    "summary_max_chars": 8_000,
 }
 
 
@@ -139,7 +133,9 @@ class Config:
     config_path: Path | None = None
     root: Path = field(default_factory=Path.cwd)
     default_model: str = "deepseek-v4flash"
-    models: dict[str, ModelSpec] = field(default_factory=lambda: {k: ModelSpec(v) for k, v in DEFAULT_MODELS.items()})
+    models: dict[str, ModelSpec] = field(
+        default_factory=lambda: {k: ModelSpec(v) for k, v in DEFAULT_MODELS.items()}
+    )
     tools: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_TOOLS))
     permission_rules: dict[str, Any] = field(default_factory=dict)
     max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS
@@ -148,7 +144,7 @@ class Config:
     permission_mode: str = PERM_ASK
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
-    compaction: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_COMPACTION))
+    compaction: dict[str, Any] = field(default_factory=lambda: dict(COMPACTION_DEFAULTS))
     model_limits_cache: dict[str, dict[str, int] | None] = field(default_factory=dict, repr=False)
     workspace_projects: list[dict[str, Any]] = field(default_factory=list)  # [{root, secondary}]
     skills_enabled: bool = True
@@ -189,7 +185,7 @@ class Config:
             permission_mode=permission_mode,
             mcp_servers=dict(raw.get("mcp_servers") or {}),
             max_context_tokens=int(raw.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
-            compaction={**DEFAULT_COMPACTION, **(raw.get("compaction") or {})},
+            compaction={**COMPACTION_DEFAULTS, **(raw.get("compaction") or {})},
             skills_enabled=_skills_enabled(raw),
         )
 
@@ -249,7 +245,9 @@ class Config:
         self.model_limits_cache[model] = limits
         return limits
 
-    def path_context(self, root: Path | None = None, secondary: list[Path] | None = None) -> PathContext:
+    def path_context(
+        self, root: Path | None = None, secondary: list[Path] | None = None
+    ) -> PathContext:
         """Sandbox context for an agent: config workspace + overrides.
 
         ``root``/``secondary`` override the config values when given (CLI/Web).
@@ -258,18 +256,11 @@ class Config:
         """
         primary = (root or self.root).resolve()
         base = self.config_path.parent if self.config_path else Path.cwd()
-        secondary_resolved: list[Path] = []
-        for raw in secondary if secondary is not None else self.secondary_roots:
-            p = Path(raw).expanduser()
-            if not p.is_absolute():
-                p = base / p
-            secondary_resolved.append(p.resolve())
-        extra: list[Path] = []
-        for raw in self.extra_safe_dirs:
-            p = Path(raw).expanduser()
-            if not p.is_absolute():
-                p = base / p
-            extra.append(p.resolve())
+        secondary_resolved = [
+            resolve_workspace_path(raw, base)
+            for raw in (secondary if secondary is not None else self.secondary_roots)
+        ]
+        extra = [resolve_workspace_path(raw, base) for raw in self.extra_safe_dirs]
         return PathContext(primary=primary, secondary=secondary_resolved, extra_safe_dirs=extra)
 
     def save(self) -> None:
@@ -297,7 +288,7 @@ class Config:
             payload["permission"] = self.permission_mode
         if self.mcp_servers:
             payload["mcp_servers"] = self.mcp_servers
-        if self.compaction != DEFAULT_COMPACTION:
+        if self.compaction != COMPACTION_DEFAULTS:
             payload["compaction"] = self.compaction
         if not self.skills_enabled:
             payload["skills"] = {"enabled": False}

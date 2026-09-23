@@ -76,7 +76,7 @@ def approval_key(tc: ToolCall, *, grant: ToolGrant | None = None) -> str:
     an identical command always yields the same key. When ``grant`` is given
     the digest also binds the conveyed capability (network / explicit writable
     roots, sorted+normalised) so a permission narrowed or widened along those
-    axes is never confused with a plain command-only grant (P0-1).
+    axes is never confused with a plain command-only grant.
     """
     if tc.name in FILE_EDIT_TOOLS:
         return f"{tc.name}:{approval_scope(tc)}"
@@ -178,21 +178,11 @@ def _looks_like_network(command: str) -> bool:
     return bool(NETWORK_HINT_RE.search(command))
 
 
-def looks_like_network(command: str) -> bool:
-    """Compatibility preflight; Seatbelt is the actual network boundary."""
-    return _looks_like_network(command)
-
-
-def needs_review(tc: ToolCall) -> bool:
-    """Auto-review mode: worth surfacing afterwards (file changes)."""
-    return tc.name in FILE_EDIT_TOOLS or tc.name == "execute_shell"
-
-
 def grant_for_toolcall(tc: ToolCall, ctx: PathContext) -> ToolGrant:
     """Minimal, precise grant derived from an *approved* tool call.
 
     This is the single-call authorization an approval actually conveys. It is
-    deliberately narrow (P0-1):
+    deliberately narrow:
 
     - ``execute_shell``: network is granted only when the command looks like a
       network operation (or was marked escalated); no external writable roots
@@ -213,20 +203,20 @@ def grant_for_toolcall(tc: ToolCall, ctx: PathContext) -> ToolGrant:
         # A protected target (credentials, or any workspace/extra root's
         # .git/.easycode, incl. the target's parent being one) must never be
         # granted — the approval can only emit a precise safe grant, else the
-        # file tool's own hard-deny rejects the write (P0-2).
+        # file tool's own hard-deny rejects the write.
         if ctx.is_protected_path(p):
             return ToolGrant()
         return ToolGrant(writable_roots=(p.parent,))
     if tc.name == "execute_shell":
         command = str(tc.arguments.get("command", ""))
-        network = (tc.arguments.get("sandbox_permissions") == "require_escalated") or _looks_like_network(
-            command
-        )
+        network = (
+            tc.arguments.get("sandbox_permissions") == "require_escalated"
+        ) or _looks_like_network(command)
         declared = tc.arguments.get("writable_roots") or []
         # The grant's writable roots come *only* from the model's explicit,
         # validated declaration (never by parsing the command string). If ANY
         # declared root is invalid, the whole list fails closed — a partial
-        # grant is never kept (P0-1).
+        # grant is never kept.
         roots, err = validate_writable_roots(list(declared), None)
         if err is not None:
             roots = []

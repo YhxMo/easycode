@@ -3,20 +3,20 @@
 All tools resolve paths against the sandbox :class:`PathContext` (primary +
 secondary roots). Reads are allowed anywhere; writes/edits outside the safe
 directories are blocked and reported with ``in_allowed: false`` so the
-approval layer (P5-2) can decide.
+approval layer can decide.
 """
 
 from __future__ import annotations
 
 import difflib
 import fnmatch
-import json
 import re
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from easycode.tools.registry import json_out
 from easycode.workspace import PathContext, ToolGrant
 
 SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
@@ -29,34 +29,45 @@ def _scope(root: Path, ctx: PathContext | None) -> PathContext:
     return ctx if ctx is not None else PathContext(primary=root)
 
 
-def _json(status: str, payload: dict) -> str:
-    return json.dumps({"status": status, **payload}, ensure_ascii=False, default=str)
-
-
 class ReadFileArgs(BaseModel):
     path: str = Field(description="path, relative to a workspace root")
-    offset: int = Field(1, description="1-based line number to start reading from (for paging large files)", ge=1, le=10_000_000)
-    limit: int = Field(DEFAULT_READ_LIMIT, description="maximum number of lines to return", ge=1, le=1_000_000)
+    offset: int = Field(
+        1,
+        description="1-based line number to start reading from (for paging large files)",
+        ge=1,
+        le=10_000_000,
+    )
+    limit: int = Field(
+        DEFAULT_READ_LIMIT, description="maximum number of lines to return", ge=1, le=1_000_000
+    )
 
 
-def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
+def read_file(
+    args: ReadFileArgs,
+    *,
+    root: Path,
+    ctx: PathContext | None = None,
+    grant: ToolGrant | None = None,
+) -> str:
     scope = _scope(root, ctx)
     p = scope.resolve(args.path)
     if scope.is_protected(p):
-        return _json(
+        return json_out(
             "error",
             {"message": f"path is protected (credentials): {args.path}", "in_allowed": False},
         )
     if not p.is_file():
-        return _json("error", {"message": f"not a file: {args.path}"})
+        return json_out("error", {"message": f"not a file: {args.path}"})
     text = p.read_text(encoding="utf-8", errors="replace")
     all_lines = text.splitlines()
     total = len(all_lines)
     if total == 0:
         if args.offset > 1:
-            return _json("error", {"message": f"offset {args.offset} out of range (file has 0 lines)"})
+            return json_out(
+                "error", {"message": f"offset {args.offset} out of range (file has 0 lines)"}
+            )
         content = "(empty file)"
-        return _json(
+        return json_out(
             "ok",
             {
                 "path": scope.display(p),
@@ -72,7 +83,9 @@ def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None,
         )
     start = args.offset - 1
     if start >= total:
-        return _json("error", {"message": f"offset {args.offset} out of range (file has {total} lines)"})
+        return json_out(
+            "error", {"message": f"offset {args.offset} out of range (file has {total} lines)"}
+        )
 
     selected: list[str] = []
     bytes_used = 0
@@ -97,7 +110,7 @@ def read_file(args: ReadFileArgs, *, root: Path, ctx: PathContext | None = None,
         content += f"\n\n(Showing lines {args.offset}-{args.offset + len(selected) - 1} of {total}. Use offset={args.offset + len(selected)} to continue.)"
     else:
         content += f"\n\n(End of file - total {total} lines)"
-    return _json(
+    return json_out(
         "ok",
         {
             "path": scope.display(p),
@@ -118,11 +131,17 @@ class WriteFileArgs(BaseModel):
     content: str = Field(description="full new file content")
 
 
-def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
+def write_file(
+    args: WriteFileArgs,
+    *,
+    root: Path,
+    ctx: PathContext | None = None,
+    grant: ToolGrant | None = None,
+) -> str:
     scope = _scope(root, ctx)
     p = scope.resolve(args.path)
     if scope.is_protected(p):
-        return _json(
+        return json_out(
             "error",
             {
                 "message": f"path is protected (credentials): {args.path}",
@@ -133,7 +152,7 @@ def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = Non
     granted = bool(grant and scope.grant_granted(p, grant))
     allowed = scope.in_allowed(p)
     if not (allowed or granted):
-        return _json(
+        return json_out(
             "error",
             {
                 "message": f"path outside allowed directories (needs approval): {args.path}",
@@ -141,14 +160,14 @@ def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = Non
                 "class": scope.classify(p),
             },
         )
-    # P0-1: an *external* write authorized only by a grant must target a parent
+    # an *external* write authorized only by a grant must target a parent
     # that already exists (relative / missing / file-as-directory requests are
     # rejected structurally rather than auto-creating anything outside the safe
     # roots).
     if granted and not allowed:
         parent = p.parent
         if not parent.exists():
-            return _json(
+            return json_out(
                 "error",
                 {
                     "message": f"external write target parent does not exist: {parent}",
@@ -157,7 +176,7 @@ def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = Non
                 },
             )
         if not parent.is_dir():
-            return _json(
+            return json_out(
                 "error",
                 {
                     "message": f"external write target parent is not a directory: {parent}",
@@ -166,7 +185,7 @@ def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = Non
                 },
             )
         if p.is_dir():
-            return _json(
+            return json_out(
                 "error",
                 {
                     "message": f"cannot overwrite a directory: {args.path}",
@@ -182,7 +201,7 @@ def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = Non
             before = ""
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(args.content, encoding="utf-8")
-    return _json(
+    return json_out(
         "ok",
         {
             "path": scope.display(p),
@@ -195,16 +214,26 @@ def write_file(args: WriteFileArgs, *, root: Path, ctx: PathContext | None = Non
 
 class EditFileArgs(BaseModel):
     path: str = Field(description="path of the file to edit, relative to a workspace root")
-    old_string: str = Field(description="exact text to replace; must appear exactly once in the file")
+    old_string: str = Field(
+        description="exact text to replace; must appear exactly once in the file"
+    )
     new_string: str = Field(description="replacement text")
-    dry_run: bool = Field(False, description="if true, return the unified diff without modifying the file")
+    dry_run: bool = Field(
+        False, description="if true, return the unified diff without modifying the file"
+    )
 
 
-def edit_file(args: EditFileArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
+def edit_file(
+    args: EditFileArgs,
+    *,
+    root: Path,
+    ctx: PathContext | None = None,
+    grant: ToolGrant | None = None,
+) -> str:
     scope = _scope(root, ctx)
     p = scope.resolve(args.path)
     if scope.is_protected(p):
-        return _json(
+        return json_out(
             "error",
             {
                 "message": f"path is protected (credentials): {args.path}",
@@ -213,11 +242,11 @@ def edit_file(args: EditFileArgs, *, root: Path, ctx: PathContext | None = None,
             },
         )
     if not p.is_file():
-        return _json("error", {"message": f"not a file: {args.path}"})
+        return json_out("error", {"message": f"not a file: {args.path}"})
     granted = bool(grant and scope.grant_granted(p, grant))
     allowed = scope.in_allowed(p)
     if not (allowed or granted):
-        return _json(
+        return json_out(
             "error",
             {
                 "message": f"path outside allowed directories (needs approval): {args.path}",
@@ -228,13 +257,13 @@ def edit_file(args: EditFileArgs, *, root: Path, ctx: PathContext | None = None,
     try:
         text = p.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        return _json("error", {"message": f"cannot read {args.path}: {exc}"})
+        return json_out("error", {"message": f"cannot read {args.path}: {exc}"})
 
     count = text.count(args.old_string)
     if count == 0:
-        return _json("error", {"message": f"old_string not found in {args.path}"})
+        return json_out("error", {"message": f"old_string not found in {args.path}"})
     if count > 1:
-        return _json(
+        return json_out(
             "error",
             {
                 "message": f"old_string found {count} times in {args.path}; include more context to make it unique",
@@ -246,7 +275,7 @@ def edit_file(args: EditFileArgs, *, root: Path, ctx: PathContext | None = None,
     display = scope.display(p)
     diff = make_diff(display, text, new_text)
     if args.dry_run:
-        return _json(
+        return json_out(
             "ok",
             {
                 "path": display,
@@ -256,7 +285,7 @@ def edit_file(args: EditFileArgs, *, root: Path, ctx: PathContext | None = None,
             },
         )
     p.write_text(new_text, encoding="utf-8")
-    return _json(
+    return json_out(
         "ok",
         {
             "path": display,
@@ -284,11 +313,13 @@ class GrepArgs(BaseModel):
     max_matches: int = Field(200, description="max matching lines to return", ge=1, le=5000)
 
 
-def grep(args: GrepArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
+def grep(
+    args: GrepArgs, *, root: Path, ctx: PathContext | None = None, grant: ToolGrant | None = None
+) -> str:
     try:
         rx = re.compile(args.pattern)
     except re.error as exc:
-        return _json("error", {"message": f"invalid regex: {exc}"})
+        return json_out("error", {"message": f"invalid regex: {exc}"})
     scope = _scope(root, ctx)
     matches: list[dict] = []
     for r in scope.roots:
@@ -306,8 +337,8 @@ def grep(args: GrepArgs, *, root: Path, ctx: PathContext | None = None, force_al
                         match["root"] = str(r)
                     matches.append(match)
                     if len(matches) >= args.max_matches:
-                        return _json("ok", {"matches": matches, "truncated": True})
-    return _json("ok", {"matches": matches, "truncated": False})
+                        return json_out("ok", {"matches": matches, "truncated": True})
+    return json_out("ok", {"matches": matches, "truncated": False})
 
 
 class GlobArgs(BaseModel):
@@ -315,7 +346,9 @@ class GlobArgs(BaseModel):
     max_results: int = Field(500, description="max file paths to return", ge=1, le=5000)
 
 
-def glob(args: GlobArgs, *, root: Path, ctx: PathContext | None = None, force_allowed: bool = False, grant: ToolGrant | None = None) -> str:
+def glob(
+    args: GlobArgs, *, root: Path, ctx: PathContext | None = None, grant: ToolGrant | None = None
+) -> str:
     scope = _scope(root, ctx)
     results: set[tuple[str, str | None]] = set()
 
@@ -329,13 +362,20 @@ def glob(args: GlobArgs, *, root: Path, ctx: PathContext | None = None, force_al
     for r in scope.roots:
         for pat in (args.pattern, f"**/{args.pattern}"):
             for p in r.glob(pat):
-                if p.is_file() and not _is_skipped(p, r) and not _is_meta(p) and not scope.is_protected(p):
+                if (
+                    p.is_file()
+                    and not _is_skipped(p, r)
+                    and not _is_meta(p)
+                    and not scope.is_protected(p)
+                ):
                     record(p, r)
     ordered = sorted(results, key=lambda x: x[0])[: args.max_results]
     out: list[Any] = []
     for rel, tag in ordered:
         out.append(rel if tag is None else {"path": rel, "root": tag})
-    return _json("ok", {"matches": out, "count": len(out), "truncated": len(results) > args.max_results})
+    return json_out(
+        "ok", {"matches": out, "count": len(out), "truncated": len(results) > args.max_results}
+    )
 
 
 def _iter_files(root: Path, include: str | None = None) -> list[Path]:
@@ -343,7 +383,11 @@ def _iter_files(root: Path, include: str | None = None) -> list[Path]:
     for p in sorted(root.rglob("*")):
         if not p.is_file() or _is_skipped(p, root):
             continue
-        if include and not fnmatch.fnmatch(p.name, include) and not fnmatch.fnmatch(p.relative_to(root).as_posix(), include):
+        if (
+            include
+            and not fnmatch.fnmatch(p.name, include)
+            and not fnmatch.fnmatch(p.relative_to(root).as_posix(), include)
+        ):
             continue
         try:
             if p.stat().st_size > 2 * 1024 * 1024:

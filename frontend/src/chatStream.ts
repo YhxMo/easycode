@@ -1,11 +1,4 @@
-// Pure SSE → items state-transition reducer (B5).
-//
-// `applyChatEvent(prev, ev)` is a side-effect-free reducer: it takes the current
-// items array and one SSE `ChatEvent`, and returns a *new* array describing the
-// next state. It never mutates `prev` and never touches React state, so it can
-// be unit-tested in isolation. Side effects that are NOT about items (setting the
-// foreground session id, opening the approval overlay, refreshing the session
-// list) stay in the caller (useChatStream / App) rather than leaking here.
+// Pure SSE events to chat items reducer.
 import type { ChatEvent } from "./api";
 import type { ApprovalState, Item } from "./types";
 
@@ -13,6 +6,17 @@ import type { ApprovalState, Item } from "./types";
 function expirePending(items: Item[]): Item[] {
   return items.map((it) =>
     it.kind === "approval" && it.state === "pending" ? { ...it, state: "expired" } : it,
+  );
+}
+
+function interruptPending(items: Item[]): Item[] {
+  return expirePending(items).map((item) =>
+    item.kind === "tool" && !item.done
+      ? { ...item, done: true, result: JSON.stringify({
+          status: "error",
+          message: "执行已中断，未收到最终结果；已开始的操作可能继续完成。",
+        }) }
+      : item,
   );
 }
 
@@ -101,7 +105,7 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
     case "text":
       return appendOrExtendAssistant(prev, ev.content ?? "");
     case "cancelled":
-      return [...expirePending(prev), { kind: "notice", text: "⏹ 已中断" }];
+      return [...interruptPending(prev), { kind: "notice", text: "已停止本轮，已执行的操作保留。" }];
     case "tool_start":
       return [
         ...prev,
@@ -118,7 +122,7 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
     case "done":
       return finishDone(prev);
     case "error":
-      return [...expirePending(prev), { kind: "error", text: ev.error ?? "error" }];
+      return [...interruptPending(prev), { kind: "error", text: ev.error ?? "error" }];
     case "approval_required":
       return [
         ...prev,

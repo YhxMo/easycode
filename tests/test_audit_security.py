@@ -2,7 +2,7 @@
 
 - Credential paths are unconditionally protected and
   reading / writing / enumerating them is rejected by every file tool.
-- An approved shell (``force_allowed=True``) relaxes only the
+- An approved shell (``grant=ToolGrant(network_allowed=True)``) relaxes only the
   network dimension — file-write and process limits are retained; only
   ``danger-full-access`` disables the sandbox.
 - Model detail redacts ``api_key``; cross-origin state-change
@@ -30,9 +30,10 @@ from easycode.credentials import Credential, data_home, new_credential_id, save_
 from easycode.mcp import StdioTransport
 from easycode.sandbox import child_env
 from easycode.tools import build_registry
-from easycode.web.main import _origin_is_local, create_app
+from easycode.web.main import create_app
+from easycode.web.middleware import _origin_is_local
 from easycode.web.session import SessionStore
-from easycode.workspace import PathContext
+from easycode.workspace import PathContext, ToolGrant
 from tests.conftest import FakeProvider
 
 
@@ -78,14 +79,14 @@ def test_write_file_rejected_creating_credential(tmp_path, monkeypatch):
     assert not cred.exists()
 
 
-def test_write_file_cannot_bypass_credentials_with_force_allowed(tmp_path, monkeypatch):
+def test_write_file_cannot_bypass_credentials_with_grant(tmp_path, monkeypatch):
     proj, home = make_home_ctx(tmp_path)
     monkeypatch.setenv("HOME", str(home))
     cred = data_home() / "credentials.json"
 
     out = json.loads(
         build_registry(8000).execute(
-            "write_file", {"path": str(cred), "content": "{}"}, proj, force_allowed=True
+            "write_file", {"path": str(cred), "content": "{}"}, proj, grant=ToolGrant(network_allowed=True)
         )
     )
     assert out["status"] == "error"
@@ -123,20 +124,20 @@ def test_in_allowed_false_for_credentials_even_when_missing(tmp_path, monkeypatc
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
-def test_sandbox_command_force_allowed_relaxes_network_not_bare(tmp_path):
+def test_sandbox_command_grant_relaxes_network_not_bare(tmp_path):
     from easycode.sandbox.macos import sandbox_command
 
     cmd = ["/bin/sh", "-c", "curl -I https://example.com"]
     ctx = PathContext(primary=tmp_path)
-    wrapped = sandbox_command(cmd, ctx, force_allowed=True)
+    wrapped = sandbox_command(cmd, ctx, grant=ToolGrant(network_allowed=True))
 
-    assert wrapped != cmd, "force_allowed must not return the bare (unsandboxed) command"
+    assert wrapped != cmd, "a grant must not return the bare (unsandboxed) command"
     assert wrapped[0] == "/usr/bin/sandbox-exec"
     policy = wrapped[2]
     assert "(deny default)" in policy
     assert "(allow network*)" in policy  # only the network dimension is relaxed
 
-    # Without force_allowed, network stays denied.
+    # Without a grant, network stays denied.
     default_wrapped = sandbox_command(cmd, ctx)
     assert "(allow network*)" not in default_wrapped[2]
 
@@ -154,8 +155,8 @@ def test_approved_shell_still_cannot_write_credentials(tmp_path, monkeypatch):
     cred.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = ["/bin/sh", "-c", f"printf '{{}}' > {cred}"]
-    # force_allowed=True simulates an approved shell: file-write protections remain.
-    proc = subprocess.run(sandbox_command(cmd, ctx, force_allowed=True), capture_output=True, text=True, check=False)
+    # grant=ToolGrant(network_allowed=True) simulates an approved shell: file-write protections remain.
+    proc = subprocess.run(sandbox_command(cmd, ctx, grant=ToolGrant(network_allowed=True)), capture_output=True, text=True, check=False)
     assert proc.returncode != 0
     assert not cred.exists()
 
@@ -347,12 +348,12 @@ def test_normal_shell_commands_are_not_in_destructive_denylist(tmp_path):
     assert destructive_command_reason("pytest tests/test_permissions.py -q") is None
 
 
-def test_sandbox_command_force_allowed_fails_closed_non_macos(monkeypatch, tmp_path):
+def test_sandbox_command_grant_fails_closed_non_macos(monkeypatch, tmp_path):
     import easycode.sandbox.macos as macos
 
     monkeypatch.setattr(sys, "platform", "linux")
     with pytest.raises(RuntimeError):
-        macos.sandbox_command(["/bin/sh", "-c", "true"], PathContext(primary=tmp_path), force_allowed=True)
+        macos.sandbox_command(["/bin/sh", "-c", "true"], PathContext(primary=tmp_path), grant=ToolGrant(network_allowed=True))
 
 
 # ----------------------------------------------------------------
@@ -598,7 +599,7 @@ def test_worktreeinclude_copies_valid_entries(tmp_path):
 
 
 def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatch):
-    import easycode.web.main as main_mod
+    import easycode.web.routes_workspaces as main_mod
 
     client = make_app(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup")
@@ -627,7 +628,7 @@ def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatc
 
 
 def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, monkeypatch):
-    import easycode.web.main as main_mod
+    import easycode.web.routes_workspaces as main_mod
 
     client = make_app(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup-nosand")
@@ -660,23 +661,23 @@ def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, m
 
 
 def test_finder_prompt_sanitizer_strips_controls_and_caps():
-    import easycode.web.main as main_mod
+    import easycode.web.platform as platform_mod
 
     raw = "a\nb\tc\x00d" + "x" * 1000
-    out = main_mod._sanitize_finder_prompt(raw)
+    out = platform_mod._sanitize_finder_prompt(raw)
     assert "\n" not in out
     assert "\t" not in out
     assert "\x00" not in out
     # length-capped for the script literal
-    assert len(out) == main_mod.FINDER_PROMPT_MAX_LEN
+    assert len(out) == platform_mod.FINDER_PROMPT_MAX_LEN
     # leading/trailing whitespace is trimmed
-    assert main_mod._sanitize_finder_prompt("   hi  ") == "hi"
+    assert platform_mod._sanitize_finder_prompt("   hi  ") == "hi"
 
 
 def test_finder_prompt_script_no_newline_and_quotes_escaped(tmp_path, monkeypatch):
     import subprocess as sp
 
-    import easycode.web.main as main_mod
+    import easycode.web.routes_workspaces as main_mod
 
     monkeypatch.setattr(main_mod, "finder_supported", lambda: True)
     captured: dict[str, list[str]] = {}

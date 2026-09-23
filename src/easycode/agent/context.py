@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from easycode.models.base import Message
-
-SummarizerFn = Callable[[list[Message]], str]
 
 SUMMARY_PREFIX = "Previous conversation summary (older messages were condensed):"
 
@@ -81,7 +78,9 @@ class History:
         try:
             import litellm
 
-            return litellm.token_counter(messages=self.payload() or [{"role": "user", "content": ""}])
+            return litellm.token_counter(
+                messages=self.payload() or [{"role": "user", "content": ""}]
+            )
         except Exception:  # noqa: BLE001 - heuristic fallback
             return max(1, self._estimate_tokens_cheap() + self._system_tokens())
 
@@ -142,14 +141,6 @@ class History:
             SUMMARY_PREFIX
         )
 
-    def _drop_oldest(self) -> Message | None:
-        """Pop the oldest non-summary message (summary messages are protected)."""
-        for i, m in enumerate(self.messages):
-            if self.is_summary(m):
-                continue
-            return self.messages.pop(i)
-        return None
-
     def trim(self) -> None:
         """Drop oldest messages beyond the limits (no summarization).
 
@@ -167,16 +158,6 @@ class History:
         while self.estimate_tokens() > self.max_tokens and len(self.messages) > 2:
             if not self._drop_oldest_turn():
                 break
-
-    def condense(self, summary: str, keep_recent: int = 20) -> bool:
-        """Replace everything older than ``keep_recent`` messages with a summary.
-
-        Kept for compatibility; the loop uses :meth:`condense_from` with a
-        token-selected tail index instead.
-        """
-        if len(self.messages) <= keep_recent + 1:
-            return False
-        return self.condense_from(summary, len(self.messages) - keep_recent)
 
     def condense_from(self, summary: str, tail_start: int) -> bool:
         """Replace messages before ``tail_start`` with a summary; keep the tail.
@@ -247,9 +228,7 @@ class History:
             end = turns[1][0]
             del self.messages[start:end]
             return True
-        first_user = next(
-            (i for i, m in enumerate(self.messages) if m.get("role") == "user"), None
-        )
+        first_user = next((i for i, m in enumerate(self.messages) if m.get("role") == "user"), None)
         if first_user is None:
             # No user boundary: drop a single leading orphaned message.
             if self.messages:
@@ -304,22 +283,3 @@ class History:
         if keep is None or keep == 0:
             return None
         return keep
-
-    def last_user_index(self) -> int:
-        """Index of the last ``role=user`` message, or -1."""
-        for i in range(len(self.messages) - 1, -1, -1):
-            if self.messages[i].get("role") == "user":
-                return i
-        return -1
-
-    def pop_user_turn(self) -> list[Message]:
-        """Remove the last user turn (its user message + everything after).
-
-        Returns the removed messages so a redo stack can re-append them.
-        """
-        idx = self.last_user_index()
-        if idx < 0:
-            return []
-        removed = self.messages[idx:]
-        self.messages = self.messages[:idx]
-        return removed

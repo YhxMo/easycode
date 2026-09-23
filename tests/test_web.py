@@ -223,67 +223,6 @@ def test_session_persistence(tmp_path, monkeypatch):
     assert any("persist me" in str(m.get("content")) for m in restored.messages)
 
 
-def test_load_all_migrates_old_system_prompt(tmp_path):
-    """A persisted old base system prompt is re-anchored to the current one on reload.
-
-    The freshly built agent already holds the latest prompt (e.g. the
-    execute_shell writable_roots guidance) in ``history.system``; the old embedded
-    base system message inside ``messages`` is dropped so the ordinary history
-    starts with the user/assistant turns, while skill/custom system messages stay.
-    """
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-            secondary_roots=[Path(p).resolve() for p in (kw.get("secondary_roots") or [])],
-        )
-
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-    store = SessionStore(cfg, tmp_path, factory)
-
-    # Current prompt from a fresh agent (must mention writable_roots).
-    fresh = factory("fake-a")
-    cur = fresh.history.system["content"]
-    assert "writable_roots" in cur
-
-    # Pre-seed an OLD session whose messages[0] is the outdated base prompt.
-    old_hist = [
-        {"role": "system", "content": "You are easycode OLD prompt (no writable_roots)."},
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-        {"role": "system", "content": "[skill: docs] body"},
-    ]
-    sid = "old2222"
-    store.dir.mkdir(parents=True, exist_ok=True)
-    (store.dir / f"{sid}.json").write_text(
-        json.dumps(
-            {
-                "id": sid,
-                "title": "old",
-                "created_at": "2020-01-01T00:00:00+00:00",
-                "model_alias": "fake-a",
-                "messages": old_hist,
-                "permission_mode": "ask",
-            }
-        ),
-        encoding="utf-8",
-    )
-    store.load_all()
-    s = store.get(sid)
-    assert s is not None
-    # history.system keeps the freshly built (current) prompt, including writable_roots.
-    assert s.agent.history.system is not None
-    assert "writable_roots" in s.agent.history.system["content"]
-    m = s.agent.history.messages
-    # messages no longer carry the base system: it starts with the ordinary history.
-    assert m[0] == {"role": "user", "content": "hi"}
-    assert m[1] == {"role": "assistant", "content": "hello"}
-    assert {"role": "system", "content": "[skill: docs] body"} in m  # kept
-    assert s.messages == m  # synced
 
 
 def test_load_all_preserves_condensed_summary(tmp_path):
@@ -475,11 +414,8 @@ def _user_count(messages) -> int:
     return sum(1 for m in messages if m.get("role") == "user")
 
 
-def test_user_times_follow_compress_undo_redo(tmp_path):
-    """user_times stays aligned with the surviving user messages across
-    3 turns, compaction (front drop), undo (back drop) and redo (back restore).
-    Regression: the old ``user_times[:n_user]`` kept the WRONG end under
-    compaction and lost the timestamp that a redo should restore."""
+def test_user_times_follow_compaction(tmp_path):
+    """Keep timestamps aligned with user turns retained by compaction."""
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
     cfg = Config.load(start=tmp_path)
@@ -521,21 +457,6 @@ def test_user_times_follow_compress_undo_redo(tmp_path):
         store.record_exchange(sess)
         assert _user_count(sess.messages) == 1
         assert sess.user_times == [times3[2]]  # surviving = the most recent entry
-
-        # undo removes the last turn -> no user messages, no timestamps.
-        r = client.post(f"/api/sessions/{sid}/undo")
-        assert r.status_code == 200
-        assert r.json()["ok"]
-        assert _user_count(sess.messages) == 0
-        assert sess.user_times == []
-        assert client.get(f"/api/sessions/{sid}").json()["user_times"] == []
-
-        # redo restores the turn AND its timestamp.
-        r = client.post(f"/api/sessions/{sid}/redo")
-        assert r.status_code == 200
-        assert r.json()["ok"]
-        assert _user_count(sess.messages) == 1
-        assert sess.user_times == [times3[2]]
 
         # old-session JSON compatibility: a JSON without user_times must load and
         # keep a consistent (here: empty) user_times that stays aligned.
@@ -612,106 +533,3 @@ def test_config_project_secondary_binds_into_new_session(tmp_path):
     s = store.create(model_alias="fake-a")  # no root/secondary -> default project binding
     assert s.secondary_roots == [str(sec.resolve())]
     assert sorted(str(p) for p in s.agent.secondary_roots) == [str(sec.resolve())]
-
-
-# ------------------------------------------------- redo user_times alignment
-
-
-def _seed_three_turns(client, store):
-    """Chat one/two/three and return (sid, sess, times3)."""
-    sid = None
-    for msg in ("one", "two", "three"):
-        payload: dict = {"message": msg}
-        if sid:
-            payload["session_id"] = sid
-        r = client.post("/api/chat", json=payload)
-        assert r.status_code == 200
-        for line in r.text.splitlines():
-            if line.startswith("data:"):
-                ev = json.loads(line[6:])
-                if ev.get("type") == "session":
-                    sid = ev["session_id"]
-        assert sid
-    sess = store.get(sid)
-    assert sess is not None
-    times3 = list(sess.user_times)
-    assert len(times3) == 3  # one ISO timestamp per user message
-    return sid, sess, times3
-
-
-def test_redo_restores_one_timestamp_per_single_undo(tmp_path):
-    """Each redo_turn() re-applies EXACTLY one user turn, so after N
-    single-turn undos one redo must restore exactly ONE timestamp — the one
-    matching the re-applied turn — not drain the whole stash.
-
-    Repro that motivated the fix: 3 turns → 2 undos → 1 redo left user_times
-    shifted (``[t2,t3]``) instead of aligned with the surviving messages
-    ``['one','two']`` → ``[t1,t2]`` (t3 wrongly merged in, t1 lost).
-    """
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-
-    def factory(alias: str) -> Agent:
-        return Agent(
-            provider=FakeProvider(script=[{"text": "reply"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
-    with client:
-        sid, sess, times3 = _seed_three_turns(client, store)
-
-        # two single-turn undos rewind history to ['one'], stash [t3, t2].
-        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
-        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
-        assert _user_count(sess.messages) == 1
-        assert list(sess.user_times) == [times3[0]]
-        assert sess._undone_user_times == [times3[2], times3[1]]
-
-        # one redo re-applies turn 'two': surviving users ['one','two'] but
-        # exactly ONE timestamp (t2) restored, t3 stays stashed (still redoable).
-        assert client.post(f"/api/sessions/{sid}/redo").json()["ok"]
-        assert _user_count(sess.messages) == 2
-        assert [m["content"] for m in sess.messages if m.get("role") == "user"] == ["one", "two"]
-        assert list(sess.user_times) == [times3[0], times3[1]]
-        assert sess._undone_user_times == [times3[2]]  # t3 still undone/redoable
-
-        # and the persisted JSON agrees (load-path uses the same session object).
-        fetched = client.get(f"/api/sessions/{sid}").json()
-        assert fetched["user_times"] == [times3[0], times3[1]]
-
-
-def test_redo_restores_full_after_single_undo(tmp_path):
-    """Control: with only ONE undo in the stack, a single redo must
-    restore the FULL [t1,t2,t3] (the stash had exactly one entry)."""
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-
-    def factory(alias: str) -> Agent:
-        return Agent(
-            provider=FakeProvider(script=[{"text": "reply"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
-    with client:
-        sid, sess, times3 = _seed_three_turns(client, store)
-
-        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
-        assert _user_count(sess.messages) == 2
-        assert list(sess.user_times) == [times3[0], times3[1]]
-        assert sess._undone_user_times == [times3[2]]
-
-        assert client.post(f"/api/sessions/{sid}/redo").json()["ok"]
-        assert _user_count(sess.messages) == 3
-        assert list(sess.user_times) == [times3[0], times3[1], times3[2]]
-        assert sess._undone_user_times == []  # everything restored
-        assert client.get(f"/api/sessions/{sid}").json()["user_times"] == times3

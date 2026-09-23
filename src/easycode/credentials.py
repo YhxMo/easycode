@@ -16,19 +16,10 @@ from uuid import uuid4
 
 CREDENTIALS_DIR = ".easycode"
 CREDENTIALS_FILENAME = "credentials.json"
-LEGACY_DATA_DIR = ".myagent"
 
 
 def data_home() -> Path:
-    """Data directory (``~/.easycode``), migrating any pre-rename ``~/.myagent`` once."""
-    new_dir = Path.home() / CREDENTIALS_DIR
-    legacy_dir = Path.home() / LEGACY_DATA_DIR
-    if not new_dir.exists() and legacy_dir.exists():
-        try:
-            legacy_dir.rename(new_dir)
-        except OSError:
-            pass
-    return new_dir
+    return Path.home() / CREDENTIALS_DIR
 
 
 @dataclass
@@ -79,11 +70,8 @@ def load_credentials(path: Path | None = None) -> dict[str, Credential]:
         return {}
     out: dict[str, Credential] = {}
     for key_id, entry in (raw or {}).items():
-        if (
-            not isinstance(entry, dict)
-            or (not entry.get("api_key")
-            and not entry.get("provider")
-            and not entry.get("base_url"))
+        if not isinstance(entry, dict) or (
+            not entry.get("api_key") and not entry.get("provider") and not entry.get("base_url")
         ):
             continue
         out[str(key_id)] = Credential(

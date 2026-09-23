@@ -1,11 +1,4 @@
-"""Neutral agent factory shared by the CLI and the web control plane.
-
-This module owns the provider-building chain (``provider_kwargs`` /
-``build_provider`` / ``build_summarizer``) and the agent assembly
-(``make_agent`` / ``rebind_agent``). Both ``easycode.cli`` and ``easycode.web``
-consume it as peers; ``easycode.cli`` re-exports these names for backwards
-compatibility, so this module deliberately depends on no CLI or web module.
-"""
+"""Build and configure agents for CLI and Web entry points."""
 
 from __future__ import annotations
 
@@ -76,8 +69,7 @@ def provider_kwargs(cfg: Config, alias: str) -> tuple[str, dict]:
         raise ValueError(f"invalid api_format '{spec.api_format}' for model '{alias}'")
     if not spec.key_id:
         raise ValueError(
-            f"model '{alias}' has no credential configured"
-            "（请在该模型的编辑对话框中填写 API Key）"
+            f"model '{alias}' has no credential configured（请在该模型的编辑对话框中填写 API Key）"
         )
     cred = load_credentials().get(spec.key_id)
     if cred is None:
@@ -157,11 +149,7 @@ def make_agent(
 
 
 def rebind_agent(agent: Agent, cfg: Config, alias: str) -> None:
-    """Swap the provider on the existing agent, keeping history.
-
-    Public name; ``easycode.cli`` re-exports it as ``_rebind_agent`` for
-    backwards compatibility with any callers that referenced the old name.
-    """
+    """Switch the model while preserving conversation history."""
     agent.provider = build_provider(cfg, alias)
     from easycode.reviewer import AutoReviewer
 
@@ -170,4 +158,6 @@ def rebind_agent(agent: Agent, cfg: Config, alias: str) -> None:
         cfg, alias, max_chars=int(cfg.compaction.get("summary_max_chars", 8_000))
     )
     agent.model_limits = cfg.get_model_limits(alias)
-    agent.history.max_tokens = agent._usable_tokens()
+    agent.history.max_tokens = agent.compactor.usable_tokens(
+        agent.max_context_tokens, agent.model_limits
+    )

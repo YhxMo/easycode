@@ -185,8 +185,9 @@ def test_grep_truncation_keeps_head_matches(tmp_path, reg):
 
 
 def test_unknown_tool(reg, tmp_path):
-    with pytest.raises(KeyError):
-        reg.execute("nope", {}, tmp_path)
+    result = json.loads(reg.execute("nope", {}, tmp_path))
+    assert result["status"] == "error"
+    assert "unknown tool" in result["message"]
 
 
 def test_edit_file_success(reg, tmp_path):
@@ -228,3 +229,7 @@ def test_edit_file_dry_run_no_change(reg, tmp_path):
 def test_edit_file_escape_blocked(reg, tmp_path):
     out = _run(reg, "edit_file", {"path": "../x.py", "old_string": "a", "new_string": "b"}, tmp_path)
     assert out["status"] == "error"
+
+def test_empty_tool_selection_exposes_no_tools(reg):
+    assert reg.schemas(set()) == []
+    assert reg.schemas(None)

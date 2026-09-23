@@ -1,116 +1,112 @@
 # EasyCode
 
-EasyCode 是一个基于 Python 的编程 Agent，提供命令行入口和 Web 界面。它将大模型对话与文件操作、命令执行、上下文管理和任务委派结合，用于理解代码、辅助修改和处理多步骤编程任务。
+一个轻量的本地 Coding Agent，使用 Python 实现模型与工具之间的执行循环，通过 CLI 或 React Web 界面完成代码阅读、检索、修改和验证。
 
-后端使用 FastAPI，通过 SSE 向 React 界面推送模型输出、工具执行状态和审批请求；模型接入基于 LiteLLM。
+**核心流程：用户提出任务 → 模型决定下一步 → 执行工具 → 将结果交回模型 → 输出答案。**
 
-## 核心能力
+## 能力
 
-- **工具调用**：读取、检索和编辑文件，执行 Shell 命令，展示修改差异与执行结果。
-- **任务委派**：支持并行子任务和自定义 Agent，子任务使用独立上下文，结果返回主会话。
-- **上下文管理**：结合历史摘要、近期消息保留和工具输出裁剪，控制长会话的上下文规模。
-- **会话管理**：按项目组织会话，支持历史持久化、流式响应、任务中断和撤销 / 重做。
-- **权限控制**：提供操作审批、路径规则和 macOS 沙箱支持，可配置主工作目录与附加目录。
-- **扩展机制**：支持项目规则、自定义 Skill、斜杠命令，以及通过 MCP 接入外部工具。
-- **模型配置**：支持模型切换，为不同模型独立配置 API Key、接口地址和接口格式。
+- **代码工具**：读取文件、Glob / 正则检索、精确替换、写入文件和执行 Shell；界面展示工具进度与修改 diff。
+- **流式交互**：LiteLLM 对接模型，FastAPI 通过 SSE 推送文本、工具结果和审批请求。
+- **上下文管理**：计入系统提示词和工具 Schema 的预算，裁剪旧工具输出，用滚动摘要保留任务状态。
+- **任务委派**：命名 Agent 与并行子任务使用独立对话上下文，共享工作区和权限边界。
+- **项目与会话**：多项目、附加工作目录、会话持久化、模型切换和停止任务。
+- **扩展**：`AGENTS.md` 项目规则、按需加载 Skill、提示词模板和 MCP 工具。
+- **执行权限**：操作审批、精确路径授权、macOS 工作区沙箱；模型凭据单独保存在用户目录。
 
 ## 快速开始
 
-需要 Python 3.11 及以上版本和 uv；构建 Web 界面还需要 Node.js 与 npm。仓库 CI 使用 Python 3.14 和 Node.js 22。
-
-在项目根目录安装依赖并构建界面：
+需要 Python 3.11+、uv，以及用于构建界面的 Node.js / npm。工作区 Shell 沙箱依赖 macOS；其他平台可使用文件工具，Shell 需要明确选择全访问模式。
 
 ```bash
 uv sync --frozen
 npm --prefix frontend ci
 npm --prefix frontend run build
-```
-
-启动 Web 服务：
-
-```bash
 uv run easycode web
 ```
 
-打开 <http://127.0.0.1:8000>，添加模型并填写 API Key、接口地址及模型名称，再选择项目目录开始会话。也可通过 `--port` 指定端口：
+打开 <http://127.0.0.1:8000>，添加模型、填写 API Key 和接口地址，选择项目目录后开始会话。示例任务：
+
+> 阅读这个项目的入口，找到配置加载流程，为它补充一个配置校验，并运行相关测试。
+
+Web 默认只监听本机，也可以指定端口：
 
 ```bash
 uv run easycode web --port 9000
 ```
 
-命令行入口及参数可通过以下命令查看：
+在 Web 配好模型后，可以使用同一个配置运行 CLI：
 
 ```bash
-uv run easycode --help
+uv run easycode main --root /path/to/project
 uv run easycode main --help
 ```
 
-## 使用说明
+项目配置位于 `easycode.config.json`，凭据位于 `~/.easycode/credentials.json`，会话位于 `~/.easycode/sessions/`。这些本地数据均不进入版本控制。
 
-### 模型与配置
+## 架构
 
-通过 Web 界面管理模型。项目设置保存在 `easycode.config.json`，模型凭据单独存放于用户目录下的 `~/.easycode/credentials.json`。这两类本地文件均不纳入版本控制。
+```mermaid
+flowchart TD
+    CLI[CLI] --> Agent[Agent 执行循环]
+    UI[React 界面] --> API[FastAPI 路由]
+    API --> Agent
+    Agent --> Context[上下文预算与压缩]
+    Context --> Model[LiteLLM 流式模型]
+    Model --> Decision{是否调用工具}
+    Decision -->|是| Permission[权限检查与审批]
+    Permission --> Tools[文件 / Shell / 子任务 / Skill / MCP]
+    Tools --> History[记录工具结果]
+    History --> Context
+    Decision -->|否| Answer[最终回答]
+    Agent -.事件.-> SSE[SSE 桥接]
+    SSE -.-> UI
+```
 
-新建会话时选择主工作目录，可按需添加其他工作目录。项目根目录中的 `AGENTS.md` 可用于提供代码规范和项目说明。
+CLI 与 Web 共用同一个 Agent。模型适配、上下文压缩和文件工具不依赖界面；Web 路由只负责请求校验、会话管理与事件传输。
 
-### 常用命令
+建议按以下顺序阅读代码：
 
-| 命令 | 用途 |
+| 入口 | 职责 |
 | --- | --- |
-| `/model` | 查看模型列表 |
-| `/model <别名>` | 切换模型 |
-| `/run <任务>` | 执行编程任务并汇总修改差异 |
-| `/undo` | 撤销上一回合 |
-| `/redo` | 重做已撤销的回合 |
-| `/skills` | 查看可用技能 |
-| `/agents` | 查看可委派的 Agent |
-| `/help` | 查看命令帮助 |
+| [`agent/loop.py`](src/easycode/agent/loop.py) | `respond → _turn → _execute_tool`：任务从输入到完成的完整路径 |
+| [`agent/compaction.py`](src/easycode/agent/compaction.py) | 压缩前检查预算、裁剪输出、生成滚动摘要 |
+| [`tools/`](src/easycode/tools/) | Pydantic 参数校验、工具注册、文件与 Shell 执行 |
+| [`agent/builtin_tools.py`](src/easycode/agent/builtin_tools.py) | 子任务委派、并行执行和 Skill 加载 |
+| [`agentfactory.py`](src/easycode/agentfactory.py) | 根据配置装配 Agent，统一模型与凭据接入 |
+| [`web/main.py`](src/easycode/web/main.py) | 应用装配；路由分为 chat、models、sessions、workspaces |
+| [`web/bridge.py`](src/easycode/web/bridge.py) | Agent 事件转为 SSE，处理审批等待和停止信号 |
+| [`frontend/src/useChatStream.ts`](frontend/src/useChatStream.ts) | 流式请求生命周期；`chatStream.ts` 负责消息状态转换 |
 
-Web 界面还提供停止、回滚到指定消息和重做操作。
+### 设计取舍
 
-### 扩展方式
+- **围绕正向执行组织状态**：保留已完成的工具操作和历史记录，不提供撤销、重做或自动文件回滚；需要恢复代码时使用 Git。
+- **停止后仍可继续对话**：保留已生成文本，为未完成的工具调用记录中断结果，使下一轮的工具消息保持配对。已启动的同步工具或 Shell 可能继续完成，停止不撤销其副作用。
+- **上下文有明确边界**：摘要与近期消息一起交给模型；压缩后仍超出预算时报告错误，避免继续发送无法容纳的请求。
+- **工具失败可反馈给模型**：参数错误和执行失败作为工具结果返回，模型可据此调整下一步；模型连接失败向界面报告。
+- **实现保持直接**：当前会话格式直接读写，不保留旧接口转发、旧数据目录迁移或隐藏的文件恢复流程。
 
-扩展文件可以放在项目的 `.easycode/` 目录，或用户目录下的 `~/.easycode/` 中。
+## 扩展
 
-| 类型 | 路径 | 作用 |
+在项目 `.easycode/` 或用户目录 `~/.easycode/` 中放置扩展文件：
+
+| 类型 | 路径 | 示例 |
 | --- | --- | --- |
-| Agent | `agents/<name>.md` | 定义角色、可用工具和任务说明 |
-| Skill | `skills/<name>/SKILL.md` | 按需加载特定任务的操作说明 |
-| 命令 | `commands/<name>.md` | 定义可复用的提示词模板 |
+| Agent | `agents/<name>.md` | [代码规划 Agent](examples/agents/plan.md) |
+| Skill | `skills/<name>/SKILL.md` | [Skill 编写说明](examples/skills/skill-creator/SKILL.md) |
+| 命令 | `commands/<name>.md` | [提示词模板](examples/commands/btw.md) |
 
-可参考 [Agent 示例](examples/agents/plan.md)、[Skill 示例](examples/skills/skill-creator/SKILL.md)和[命令示例](examples/commands/btw.md)。外部工具通过配置文件中的 `mcp_servers` 接入，支持 stdio 和 HTTP 传输。
+项目根目录的 `AGENTS.md` 提供代码规范。外部工具通过配置中的 `mcp_servers` 接入，支持 stdio 和 HTTP 传输。
 
-### 使用范围
-
-Web 服务默认监听本机地址，适合本地项目使用。文件和命令操作受所选权限模式约束；macOS 沙箱能力依赖系统支持。
-
-撤销 / 重做覆盖文件编辑工具记录的修改，Shell 命令产生的文件变更不在其追踪范围内。撤销栈保存在内存中，服务重启后不会恢复。
-
-## 核心设计
-
-一次任务从用户消息开始：模型生成回答或工具调用，Agent 执行工具并将结果加入上下文，再继续请求模型，直到任务结束。CLI 和 Web 界面共用 Agent 核心，Web 层负责会话管理和事件推送。
-
-| 模块 | 职责 |
-| --- | --- |
-| `src/easycode/agent/` | 异步工具调用循环、上下文管理、摘要与任务委派 |
-| `src/easycode/models/` | 模型接口抽象与流式响应处理 |
-| `src/easycode/tools/` | 工具注册、文件操作与命令执行 |
-| `src/easycode/web/` | HTTP 接口、SSE 事件和会话存储 |
-| `src/easycode/approval.py`、`sandbox/` | 操作审批与执行边界 |
-| `src/easycode/snapshot.py` | 文件快照与撤销 / 重做 |
-| `frontend/` | React + TypeScript 交互界面 |
-| `tests/` | 后端单元测试与接口测试 |
+Web 的 `/` 菜单只列出可执行的模板与 Skill。CLI 另提供 `/help`、`/model`、`/run`、`/skills`、`/agents` 和 `/exit`。
 
 ## 验证
 
-测试使用模拟模型响应和隔离数据，无需真实模型凭据。
+测试使用模拟模型响应和临时目录，无需真实模型凭据。覆盖工具调用循环、上下文压缩、权限边界、MCP、会话持久化、停止后继续对话和前端流式状态。
 
 ```bash
-# 后端检查与测试
 uv run --frozen ruff check src tests
 uv run --frozen pytest
-
-# 前端检查、构建与测试
 npm --prefix frontend run lint
 npm --prefix frontend run build
 npm --prefix frontend run test:run

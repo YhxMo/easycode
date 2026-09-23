@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from easycode.agent.builtin_tools import make_subagent
 from easycode.agent.loop import Agent
 from easycode.models.base import ToolCall
 from easycode.policy import ExecutionPolicy, cap_permission, permission_rule_action
@@ -78,7 +79,7 @@ def test_subagent_inherits_parent_permission_rules(tmp_path):
         subagent_factory=lambda _model: Agent(FakeProvider(script=[]), build_registry(8_000), tmp_path),
     )
 
-    child = agent._make_subagent()
+    child = make_subagent(agent)
 
     assert child.permission_rules == rules
 

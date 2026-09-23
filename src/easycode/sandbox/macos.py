@@ -89,20 +89,9 @@ def sandbox_command(
     command: list[str],
     ctx: PathContext,
     *,
-    force_allowed: bool = False,
     grant: ToolGrant | None = None,
 ) -> list[str]:
-    """Wrap a command in Seatbelt; non-macOS callers fail closed upstream.
-
-    ``force_allowed`` is a legacy alias: it is folded into ``grant`` as a
-    network-only relaxation so existing callers keep working. The precise grant
-    (P0-1) separates the two dimensions — ``grant.network_allowed`` enables
-    network, while ``grant.writable_roots`` adds *specific* external writable
-    directories (each its own ``-D`` + subpath rule). File-write and process-exec
-    limits are always retained; only ``danger-full-access`` disables the sandbox
-    almost entirely — and even then the application data dir (``~/.easycode``)
-    stays off-limits so credentials cannot be read or written by a child.
-    """
+    """Apply workspace isolation, with explicit network and write grants."""
     if ctx.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
         # allow-all: full access, but retain the secret firewall.
         if sys.platform != "darwin" or not SEATBELT_EXECUTABLE.is_file():
@@ -112,9 +101,6 @@ def sandbox_command(
         return [*args, "--", *command]
     if sys.platform != "darwin" or not SEATBELT_EXECUTABLE.is_file():
         raise RuntimeError("workspace sandbox is currently supported only on macOS")
-
-    if grant is None and force_allowed:
-        grant = ToolGrant(network_allowed=True)
 
     writable = [] if ctx.sandbox_mode == SANDBOX_READ_ONLY else list(ctx.writable_roots())
     if grant:
@@ -134,8 +120,7 @@ def sandbox_command(
                 if not any(sub == q or sub.is_relative_to(q) for q in protected):
                     protected.append(sub)
     protected_rules = [
-        f'(deny file-write* (subpath (param "PROTECTED_ROOT_{i}")))'
-        for i in range(len(protected))
+        f'(deny file-write* (subpath (param "PROTECTED_ROOT_{i}")))' for i in range(len(protected))
     ]
     network_policy = "(allow network*)" if (grant and grant.network_allowed) else ""
     # A workspace root that lives inside the data dir (a git worktree created
@@ -143,8 +128,7 @@ def sandbox_command(
     # so the blanket data-home read denial is narrowed to just the credentials.
     data_home_resolved = data_home().resolve()
     any_root_in_data_home = any(
-        r.resolve().is_relative_to(data_home_resolved)
-        for r in [*ctx.roots, *ctx.extra_safe_dirs]
+        r.resolve().is_relative_to(data_home_resolved) for r in [*ctx.roots, *ctx.extra_safe_dirs]
     )
     policy = BASE_POLICY.format(
         write_policy="\n".join(write_rules),

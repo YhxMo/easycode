@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CommandInfo,
   ModelsInfo,
@@ -9,7 +9,6 @@ import type {
 } from "./api";
 import {
   archiveProjectChats,
-  cancelSessionChat,
   createWorktree,
   deleteSession,
   fetchArchivedSessions,
@@ -19,57 +18,28 @@ import {
   fetchSessions,
   fetchWorkspaces,
   pinProject,
-  redoSession,
   removeProject,
   revealInFinder,
   saveProject,
   setSessionArchived,
   setSessionPermission,
-  streamChat,
   submitApproval,
-  undoSession,
 } from "./api";
 import { useChatStream } from "./useChatStream";
-import { currentTimeLabel, formatClock, formatDuration, historyToItems } from "./lib/history";
-import type { ApprovalState, Item, RollbackInfo } from "./types";
+import { historyToItems } from "./lib/history";
+import type { ApprovalState, Item } from "./types";
 import { ApprovalSheet } from "./ApprovalSheet";
-import { CommandMenu, filterCommands, clampCommandIndex, moveCommandCursor } from "./CommandMenu";
+import { CommandMenu } from "./CommandMenu";
+import { filterCommands, clampCommandIndex, moveCommandCursor } from "./lib/commands";
 import { Modal } from "./components/Modal";
-import { Markdown } from "./components/Markdown";
+import { ChatMessages } from "./components/ChatMessages";
 import { Sidebar } from "./components/Sidebar";
 import { PermissionPicker } from "./PermissionPicker";
 import type { ProjectAction } from "./ProjectMenu";
-import { basename } from "./ProjectPicker";
+import { basename, DEFAULT_PROJECT } from "./lib/paths";
 import { SecondaryEditor } from "./SecondaryEditor";
-import { ToolCard } from "./ToolCard";
 
 const EMPTY_MODELS: ModelsInfo = { default: "deepseek-v4flash", models: {} };
-const DEFAULT_PROJECT = "default project";
-
-function UndoIcon() {
-  return (
-    <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M9 7 4 12l5 5" />
-      <path d="M4 12h10a6 6 0 0 1 6 6" />
-    </svg>
-  );
-}
-
-function CopyIcon({ copied = false }: { copied?: boolean }) {
-  if (copied) {
-    return (
-      <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="m5 12 4 4L19 6" />
-      </svg>
-    );
-  }
-  return (
-    <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="8" y="8" width="11" height="11" rx="1.5" />
-      <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" />
-    </svg>
-  );
-}
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -86,8 +56,6 @@ export default function App() {
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdIndex, setCmdIndex] = useState(0);
-  const [rollbackInfo, setRollbackInfo] = useState<RollbackInfo | null>(null);
-  const [copiedMessage, setCopiedMessage] = useState<number | null>(null);
   // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -120,17 +88,11 @@ export default function App() {
     models.models[models.default]?.model ??
     models.default;
 
-  // The chat stream orchestration (send/stop + the request-ownership refs
-  // currentRequestRef/reqSeqRef/currentStreamSessionRef/sendAbortRef/openSeqRef
-  // that encode the stream-ownership concurrency contract) lives in the
-  // useChatStream hook. App supplies the api surface plus the state families the
-  // stream must coordinate with (dependency injection — no App closure leaks in).
   const {
     send,
     stop,
     busy,
     items,
-    setBusy,
     setItems,
     currentRequestRef,
     currentStreamSessionRef,
@@ -145,15 +107,10 @@ export default function App() {
     currentPermission,
     currentModelName,
     refreshSessions,
-    setRollbackInfo,
     setInput,
     setCurrentId,
-    setCurrentPermission,
     onApprovalRequired: () => setOverlayOpen(true),
-    streamChat,
-    cancelSessionChat,
-    fetchSessions,
-  });
+      });
 
   const decideApproval = useCallback(
     async (item: Extract<Item, { kind: "approval" }>, approve: boolean, always: boolean) => {
@@ -170,7 +127,7 @@ export default function App() {
         mark("expired");
       }
     },
-    [],
+    [setItems],
   );
 
   const [archived, setArchived] = useState<SessionSummary[]>([]);
@@ -236,14 +193,13 @@ export default function App() {
       // Switching to a *different* session aborts the previous chat stream so
       // its events cannot leak into the new view. Re-opening the same
       // session is a refresh and does not cancel the in-flight request.
-      if (id !== currentStreamSessionRef.current) {
+      if (id === null || id !== currentStreamSessionRef.current) {
         sendAbortRef.current?.abort();
         sendAbortRef.current = null;
         currentRequestRef.current = null;
       }
       setCurrentId(id);
       setItems([]);
-      setRollbackInfo(null);
       setOverlayOpen(true);
       setSidebarOpen(false);
       if (id) {
@@ -265,7 +221,7 @@ export default function App() {
         setCurrentPermission("ask");
       }
     },
-    [showToast],
+    [showToast, currentRequestRef, currentStreamSessionRef, openSeqRef, sendAbortRef, setItems],
   );
 
   const projectMeta = useMemo(() => {
@@ -300,7 +256,7 @@ export default function App() {
     setDeleteTarget(null);
     refreshSessions();
     refreshArchived();
-  }, [deleteTarget, currentId, refreshSessions, refreshArchived]);
+  }, [deleteTarget, currentId, refreshSessions, refreshArchived, setItems]);
 
   const restoreArchived = useCallback(
     async (session: SessionSummary) => {
@@ -376,7 +332,7 @@ export default function App() {
     } finally {
       setRemoveTarget(null);
     }
-  }, [removeTarget, refreshSessions, chosenRoot, showToast]);
+  }, [removeTarget, refreshSessions, chosenRoot, currentId, showToast]);
 
   // sessions grouped by project root (null = default project); pinned projects first
   const groups = useMemo(() => {
@@ -405,8 +361,8 @@ export default function App() {
     let searches = 0;
     for (const item of items) {
       if (item.kind !== "tool") continue;
-      if (/read|list_dir|glob|find/i.test(item.name)) reads += 1;
-      if (/search|grep/i.test(item.name)) searches += 1;
+      if (/^(read_file|glob)$/.test(item.name)) reads += 1;
+      if (item.name === "grep") searches += 1;
     }
     return { reads, searches };
   }, [items]);
@@ -446,62 +402,6 @@ export default function App() {
     },
     [currentId, refreshSessions],
   );
-
-  // A synchronous re-entrancy guard for rollback. ``busy`` is async state
-  // and only binds ``disabled`` on the next render, so two back-to-back clicks in
-  // the same tick could double-fire undoSession before the button re-renders. This
-  // ref is set synchronously at entry and cleared in finally, so the second click
-  // is dropped instead of issuing a duplicate undo/redo request.
-  const rollbackBusyRef = useRef(false);
-
-  const rollback = useCallback(
-    async (dir: "undo" | "redo", untilUser?: number) => {
-      if (currentId === null) return;
-      if (rollbackBusyRef.current) return;
-      rollbackBusyRef.current = true;
-      const userItems = items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
-      const rollbackCount = untilUser ? Math.max(1, userItems.length - untilUser + 1) : 1;
-      const rollbackPrompt = untilUser
-        ? userItems[Math.max(0, untilUser - 1)]?.text ?? "上一回合"
-        : userItems[userItems.length - 1]?.text ?? "上一回合";
-      setBusy(true);
-      try {
-        const r =
-          dir === "undo" ? await undoSession(currentId, untilUser) : await redoSession(currentId);
-        if (r.ok) {
-          const restored = r.restored ?? [];
-          if (dir === "undo") {
-            setRollbackInfo({
-              count: rollbackCount,
-              prompt: rollbackPrompt,
-              files: restored.length,
-              messageOnly: Boolean(r.message_only),
-            });
-          } else {
-            setRollbackInfo(null);
-          }
-          const detail = await fetchSession(currentId).catch(() => null);
-          if (detail) setItems(historyToItems(detail.messages));
-        }
-      } catch (e) {
-        showToast("err", `回滚失败: ${e instanceof Error ? e.message : String(e)}`);
-      } finally {
-        setBusy(false);
-        rollbackBusyRef.current = false;
-        refreshSessions();
-      }
-    },
-    [currentId, items, refreshSessions, showToast],
-  );
-
-  const copyMessage = useCallback((text: string, index: number) => {
-    const write = navigator.clipboard?.writeText(text);
-    if (!write) return;
-    void write.then(() => {
-      setCopiedMessage(index);
-      window.setTimeout(() => setCopiedMessage((current) => (current === index ? null : current)), 2000);
-    });
-  }, []);
 
   return (
     <div className={`app${sidebarOpen ? " sidebar-open" : ""}`}>
@@ -562,14 +462,6 @@ export default function App() {
             </span>
           </div>
           <div className="header-actions">
-            <button
-              className="header-action"
-              title="撤销上一回合"
-              disabled={busy || currentId === null || items.every((item) => item.kind !== "user")}
-              onClick={() => rollback("undo")}
-            >
-              ↶ <span>撤销</span>
-            </button>
             <span
               className={`connection-state ${busy ? "working" : ""} ${pendingApproval ? "clickable" : ""}`}
               role={pendingApproval ? "button" : undefined}
@@ -589,113 +481,7 @@ export default function App() {
               <p>描述你想完成的工作，Easy code 会在当前工作区中协助你。</p>
             </div>
           )}
-          {items.map((it, i) => {
-            if (it.kind === "user") {
-              // 该消息在会话历史中的序号（第 n 条用户消息，1-based）
-              const nth = items.filter((x, j) => j <= i && x.kind === "user").length;
-              return (
-                <div key={i} className="msg-row user">
-                  <div className="msg user">{it.text}</div>
-                  <div className="msg-meta">
-                    <span>{currentModelName}</span>
-                    <span className="msg-meta-separator">·</span>
-                    <time>{it.time ? formatClock(it.time) : currentTimeLabel()}</time>
-                    <button
-                      className="msg-action"
-                      title="回滚到这条 prompt 之前"
-                      aria-label="回滚到这条消息之前"
-                      disabled={busy || currentId === null}
-                      onClick={() => rollback("undo", nth)}
-                    >
-                      <UndoIcon />
-                    </button>
-                    <button
-                      className="msg-action"
-                      title="复制消息"
-                      aria-label="复制消息"
-                      onClick={() => copyMessage(it.text, i)}
-                    >
-                      <CopyIcon copied={copiedMessage === i} />
-                    </button>
-                  </div>
-                </div>
-              );
-            }
-            if (it.kind === "assistant") {
-              if (!it.text) return null;
-              const metaParts: string[] = [];
-              if (it.model) metaParts.push(it.model);
-              if (typeof it.durationMs === "number") metaParts.push(formatDuration(it.durationMs));
-              return (
-                <div key={i} className="msg-row assistant">
-                  <div className="msg assistant">
-                    <Markdown text={it.text} />
-                    {busy && i === items.length - 1 && <span className="cursor" />}
-                  </div>
-                  <div className="msg-meta">
-                    <button
-                      className="msg-action"
-                      title="复制回复"
-                      aria-label="复制回复"
-                      onClick={() => copyMessage(it.text, i)}
-                    >
-                      <CopyIcon copied={copiedMessage === i} />
-                    </button>
-                    {metaParts.map((part, pi) => (
-                      <Fragment key={pi}>
-                        <span className="msg-meta-separator">·</span>
-                        <span>{part}</span>
-                      </Fragment>
-                    ))}
-                  </div>
-                </div>
-              );
-            }
-            if (it.kind === "tool") {
-              return (
-              <ToolCard key={i} tool={{ id: it.id || String(i), name: it.name, arguments: it.args }} result={it.result} done={it.done} />
-              );
-            }
-            if (it.kind === "approval") {
-              const label =
-                it.state === "approved"
-                  ? "已允许"
-                  : it.state === "denied"
-                    ? "已拒绝"
-                    : it.state === "expired"
-                      ? "已过期"
-                      : "等待批准";
-              return (
-                <div key={i} className={`approval-line ${it.state}`}>
-                  <span className="approval-line-dot" aria-hidden="true">!</span>
-                  <span className="approval-line-text">
-                    {label} · {it.name}
-                    {it.scope ? <code>{it.scope}</code> : null}
-                  </span>
-                </div>
-              );
-            }
-            if (it.kind === "review") {
-              return (
-                <details key={i} className="review-card">
-                  <summary>自动审查与变更记录</summary>
-                  <pre>{it.text}</pre>
-                </details>
-              );
-            }
-            if (it.kind === "notice") {
-              return (
-                <div key={i} className="msg notice">
-                  {it.text}
-                </div>
-              );
-            }
-            return (
-              <div key={i} className="msg error">
-                {it.text}
-              </div>
-            );
-          })}
+          <ChatMessages items={items} busy={busy} currentModelName={currentModelName} />
           {busy && !activeTool && !pendingApproval && (
             <div className="agent-status running" role="status" aria-live="polite">
               <strong>{exploration.reads || exploration.searches ? "正在探索" : "思考中"}</strong>
@@ -710,30 +496,6 @@ export default function App() {
           <div ref={endRef} />
         </div>
         <div className="composer-area">
-          {rollbackInfo && (
-            <div className="rollback-banner" role="status">
-              <span className="rollback-icon" aria-hidden="true">↶</span>
-              <div className="rollback-copy">
-                <strong>{rollbackInfo.count} 条已回滚消息</strong>
-                <span title={rollbackInfo.prompt}>{rollbackInfo.prompt}</span>
-                <small>
-                  {rollbackInfo.messageOnly
-                    ? "非 Git 工作区，仅恢复了对话"
-                    : rollbackInfo.files > 0
-                      ? `同时恢复了 ${rollbackInfo.files} 个文件`
-                      : "对话与工作区已回到此处"}
-                </small>
-              </div>
-              <button
-                type="button"
-                className="rollback-restore"
-                disabled={busy}
-                onClick={() => rollback("redo")}
-              >
-                恢复
-              </button>
-            </div>
-          )}
           <div className="chat-input">
             <div className="cmd-wrap">
               <CommandMenu

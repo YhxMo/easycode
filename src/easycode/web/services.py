@@ -1,13 +1,4 @@
-"""Model-management business services for the web control plane.
-
-This module owns the "credential access + config mutation + persist + session
-rebind" orchestration shared by the model endpoint group in ``main.py``. The
-routers keep parameter validation, HTTPException mapping and response-model
-conversion; the business functions here do the durable work.
-
-This module intentionally does **not** import ``easycode.cli``: the CLI and the
-web control plane are peers that both consume the neutral ``easycode.agentfactory``.
-"""
+"""Model configuration, credential storage, and live-session model switching."""
 
 from __future__ import annotations
 
@@ -38,17 +29,6 @@ def infer_provider(model: str, api_format: str) -> str:
     return FORMAT_PROVIDERS.get(api_format, "custom")
 
 
-def _derive_api_format(model: str) -> str:
-    """API format for a model when the credential stores none.
-
-    Recognises OpenAI Responses (``responses/`` route), and the native
-    Anthropic / Bedrock / Gemini formats from the wire provider (``provider``
-    or the model-string prefix); everything else defaults to OpenAI-compatible
-    chat completions.
-    """
-    return infer_api_format(model)
-
-
 def models_response(cfg: Config) -> dict:
     """Snapshot of model records (no API keys leaked)."""
     providers: dict[str, str] = {}
@@ -76,7 +56,7 @@ def get_model_detail(cfg: Config, alias: str) -> dict:
     if spec is None:
         raise LookupError(alias)
     cred = load_credentials().get(spec.key_id) if spec.key_id else None
-    api_format = spec.api_format or _derive_api_format(spec.model)
+    api_format = spec.api_format or infer_api_format(spec.model)
     provider = spec.provider or (
         cred.provider if cred and cred.provider else infer_provider(spec.model, api_format)
     )
@@ -94,8 +74,16 @@ def get_model_detail(cfg: Config, alias: str) -> dict:
     }
 
 
-def add_model(cfg: Config, *, alias: str, model: str, provider: str | None,
-              base_url: str | None, api_key: str | None, api_format: str) -> dict:
+def add_model(
+    cfg: Config,
+    *,
+    alias: str,
+    model: str,
+    provider: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    api_format: str,
+) -> dict:
     """Create a model alias (with optional credential) and persist."""
     api_key = (api_key or "").strip()
     base_url = (base_url or "").strip() or None
@@ -149,8 +137,8 @@ def update_model(
         next_api_key = (
             api_key if api_key is not None else (current_cred.api_key if current_cred else "")
         ).strip()
-        next_base_url = base_url if base_url is not None else (
-            current_cred.base_url if current_cred else None
+        next_base_url = (
+            base_url if base_url is not None else (current_cred.base_url if current_cred else None)
         )
         if spec.key_id or next_api_key or next_base_url:
             key_id = spec.key_id or new_credential_id()
@@ -158,9 +146,9 @@ def update_model(
                 Credential(
                     key_id=key_id,
                     api_key=next_api_key,
-                    provider=provider if provider is not None else (
-                        current_cred.provider if current_cred else None
-                    ),
+                    provider=provider
+                    if provider is not None
+                    else (current_cred.provider if current_cred else None),
                     base_url=next_base_url,
                 )
             )
