@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 from easycode.agent.loop import Agent, AgentEvent
 from easycode.models.base import ToolCall
-from easycode.workspace import ToolGrant
 
 if TYPE_CHECKING:
     from easycode.web.session import Session
@@ -145,7 +144,7 @@ async def stream_chat_with_approval(
     async def run_turn() -> None:
         prev = agent.approval_handler
 
-        async def approval_handler(tc: ToolCall) -> bool | ToolGrant | None:
+        async def approval_handler(tc: ToolCall) -> bool:
             from easycode.approval import (
                 approval_key,
                 approval_reason,
@@ -158,8 +157,9 @@ async def stream_chat_with_approval(
             key = approval_key(tc, grant=grant)
             if session and key in session.always_allow:
                 # 'always allow' keeps its directory/command scope in the stored
-                # key, but at execution we regenerate the precise target grant.
-                return grant if grant else True
+                # key; the loop regenerates the precise target grant against the
+                # executing agent's own context.
+                return True
             approval_id = uuid.uuid4().hex[:12]
             fut = broker.add(approval_id)
             reason = (
@@ -191,7 +191,7 @@ async def stream_chat_with_approval(
                             "always": bool(always and decision == "approved"),
                         }
                     )
-            return grant if decision == "approved" else False
+            return decision == "approved"
 
         agent.approval_handler = approval_handler
         try:

@@ -120,12 +120,12 @@ async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(agent, "tool_schemas", lambda: [big])
 
-    assert agent._tool_schema_tokens() > 0
+    assert agent._tool_schema_tokens(agent.tool_schemas()) > 0
 
     called: list[str] = []
     agent.summarizer = fake_summarizer_that_marks(called)
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert called, "a large tool schema must count toward the budget and trip compaction"
 
@@ -148,7 +148,7 @@ async def test_compaction_auto_false_skips_condense(tmp_path, monkeypatch):
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
     before = list(agent.history.messages)
 
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert called == []  # no summarize, no trim
     assert agent.history.messages == before  # history untouched
@@ -173,7 +173,7 @@ async def test_compaction_auto_true_still_condenses(tmp_path, monkeypatch):
     called: list[str] = []
     agent.summarizer = fake_summarizer_that_marks(called)
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert called, "expected compaction to fire when auto=True and over budget"
 
@@ -200,7 +200,7 @@ async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_pat
         return  # simulate provider failure surfaced as None
 
     agent.summarizer = failing_summarize
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert "summarize" in log  # compaction attempted
     # no fabricated "(summary unavailable...)" note, and no injected summary

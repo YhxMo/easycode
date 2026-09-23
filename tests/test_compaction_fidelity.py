@@ -166,7 +166,7 @@ async def test_compaction_recovers_all_five_categories(tmp_path, monkeypatch):
 
     agent.summarizer = faithful_summarize
 
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     # prune ran BEFORE summarize: the summarizer saw the big old edit result
     # already cleared to the protected marker.
@@ -214,7 +214,7 @@ async def test_summarizer_none_falls_back_to_trim_without_fabrication(tmp_path, 
     agent.summarizer = returning_none
     before = len(agent.history.messages)
 
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert agent.history.summary is None  # never fabricated a summary
     for m in agent.history.messages:
@@ -236,7 +236,7 @@ async def test_summarizer_exception_propagates_without_fabrication(tmp_path, mon
     agent.summarizer = exploding
 
     with pytest.raises(RuntimeError, match="summarizer blew up"):
-        await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+        await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert agent.history.summary is None
     for m in agent.history.messages:
@@ -258,11 +258,11 @@ async def test_oversized_summary_trips_budget_gate(tmp_path, monkeypatch):
 
     agent.summarizer = bloat
 
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
     assert agent.history.summary == garbage  # injected as-is, not fabricated
 
     with pytest.raises(BudgetExceededError):
-        agent.compactor.check_budget(agent.history, agent._tool_schema_tokens())
+        agent.compactor.check_budget(agent.history, agent._tool_schema_tokens(agent.tool_schemas()))
 
 
 async def test_field_missing_summary_injected_verbatim_without_fabrication(tmp_path, monkeypatch):
@@ -280,7 +280,7 @@ async def test_field_missing_summary_injected_verbatim_without_fabrication(tmp_p
 
     agent.summarizer = partial_summarize
 
-    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens())
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert agent.history.summary == partial
     summary, _tail = _summary_and_tail(agent.history)

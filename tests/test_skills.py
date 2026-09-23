@@ -112,7 +112,18 @@ Special instructions to follow
 
 @pytest.mark.asyncio
 async def test_use_skill_unknown_error(tmp_path):
-    reg = SkillRegistry()
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "known").mkdir()
+    (skills_dir / "known" / "SKILL.md").write_text(
+        """---
+description: Known skill
+---
+Known body
+""",
+        encoding="utf-8",
+    )
+    reg = SkillRegistry.discover([], user_dir=skills_dir)
     script = [
         {
             "tool_calls": [

@@ -74,7 +74,7 @@ class Agent:
     extra_safe_dirs: list[Path] = field(default_factory=list)
     permission_mode: str = PERM_ASK
     permission_rules: dict[str, Any] = field(default_factory=dict)
-    approval_handler: Callable[[ToolCall], Awaitable[bool | ToolGrant | None]] | None = None
+    approval_handler: Callable[[ToolCall], Awaitable[bool]] | None = None
     review_handler: (
         Callable[[ToolCall, str, list[dict]], Awaitable[ReviewDecision | bool]] | None
     ) = None
@@ -83,7 +83,6 @@ class Agent:
     _consecutive_review_denials: int = 0
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     mcp_manager: MCPSessionManager | None = None
-    include_mcp_tools: bool = True
     max_context_tokens: int = 32_000
     compaction: dict[str, Any] = field(default_factory=dict)
     model_limits: dict[str, int] | None = None
@@ -161,18 +160,24 @@ class Agent:
             schemas = [*schemas, TASK_SCHEMA]
         if self.skills is not None and self.skills.names():
             schemas = [*schemas, USE_SKILL_SCHEMA]
-        if self.mcp_manager and self.include_mcp_tools:
-            schemas = [*schemas, *self.mcp_manager.tool_schemas()]
+        if self.mcp_manager:
+            schemas = [*schemas, *self._mcp_schemas()]
         return schemas
 
-    def _tool_schema_tokens(self) -> int:
+    def _mcp_schemas(self) -> list[dict]:
+        """MCP tool schemas, narrowed by ``enabled_tools`` when it is set."""
+        schemas = self.mcp_manager.tool_schemas()
+        if self.enabled_tools is None:
+            return schemas
+        return [s for s in schemas if s["function"]["name"] in self.enabled_tools]
+
+    def _tool_schema_tokens(self, schemas: list[dict]) -> int:
         """Estimated token cost of the tool schemas sent on every completion.
 
         The budget accounts for these so a large tool set (many MCP tools, a
         bloated schema) trips compaction instead of silently exceeding the
         provider window.
         """
-        schemas = self.tool_schemas()
         if not schemas:
             return 0
         return self.history.estimate_text_tokens(json.dumps(schemas, ensure_ascii=False))
@@ -196,14 +201,16 @@ class Agent:
 
     async def _turn(self, max_iterations: int) -> AsyncIterator[AgentEvent]:
         for _ in range(max_iterations):
-            await self.compactor.prepare(self.history, self.summarizer, self._tool_schema_tokens())
+            schemas = self.tool_schemas()
+            allowed = {schema["function"]["name"] for schema in schemas}
+            await self.compactor.prepare(
+                self.history, self.summarizer, self._tool_schema_tokens(schemas)
+            )
             text: list[str] = []
             tool_calls: list[ToolCall] = []
             error: str | None = None
             try:
-                async for event in self.provider.stream(
-                    self.history.payload(), self.tool_schemas()
-                ):
+                async for event in self.provider.stream(self.history.payload(), schemas):
                     if event.kind == "text" and event.content:
                         text.append(event.content)
                         yield AgentEvent(kind="text", content=event.content)
@@ -234,7 +241,7 @@ class Agent:
             pending = list(tool_calls)
             try:
                 for tc in tool_calls:
-                    async for event in self._execute_tool(tc):
+                    async for event in self._execute_tool(tc, allowed):
                         if event.kind == "tool_result":
                             pending.remove(tc)
                         yield event
@@ -256,12 +263,24 @@ class Agent:
         yield AgentEvent(kind="error", error=f"hit max tool iterations ({max_iterations})")
         yield AgentEvent(kind="done")
 
-    async def _execute_tool(self, tc: ToolCall) -> AsyncIterator[AgentEvent]:
-        """Authorize, execute, and record one tool call."""
+    async def _execute_tool(
+        self, tc: ToolCall, allowed: set[str]
+    ) -> AsyncIterator[AgentEvent]:
+        """Authorize, execute, and record one tool call.
+
+        ``allowed`` is the exact tool-name set advertised to the model for this
+        turn; a call outside it is rejected before any approval or execution
+        path, so the whitelist cannot be bypassed by a hallucinated name.
+        """
         ctx = self.path_context()
         policy = self.execution_policy
         grant: ToolGrant | None = None
-        deny_reason = definitive_deny_reason(tc, ctx)
+        not_enabled = tc.name not in allowed
+        deny_reason = (
+            f"tool not enabled: {tc.name}"
+            if not_enabled
+            else definitive_deny_reason(tc, ctx)
+        )
         rule_action = self._permission_rule(tc)
         requires_approval = False
         if deny_reason is None and rule_action == "deny":
@@ -308,9 +327,7 @@ class Agent:
                 )
             else:
                 yield AgentEvent(kind="approval", tool_call=tc, content=reason)
-                decision = await self.approval_handler(tc) if self.approval_handler else False
-                approved = bool(decision)
-                grant = decision if isinstance(decision, ToolGrant) else None
+                approved = bool(await self.approval_handler(tc)) if self.approval_handler else False
         yield AgentEvent(kind="tool_start", tool_call=tc)
         if not approved:
             result = json.dumps(
@@ -319,7 +336,7 @@ class Agent:
                     "message": f"tool call rejected: {tc.name}: {denial_reason}",
                     "rejected": True,
                     "category": "policy"
-                    if rule_action == "deny"
+                    if (not_enabled or rule_action == "deny")
                     else ("destructive" if deny_reason is not None else "approval"),
                     "reason": denial_reason,
                 },

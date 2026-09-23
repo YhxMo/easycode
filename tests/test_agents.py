@@ -157,7 +157,9 @@ You write code.
 
 @pytest.mark.asyncio
 async def test_task_tool_unknown_agent_error(tmp_path):
-    reg = AgentRegistry()
+    from easycode.agents import AgentSpec
+
+    reg = AgentRegistry({"known": AgentSpec(name="known", description="exists")})
     script = [
         {
             "tool_calls": [
@@ -180,6 +182,60 @@ async def test_task_tool_unknown_agent_error(tmp_path):
     data = json.loads(results[0])
     assert data["status"] == "error"
     assert "unknown agent" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_whitelist_enforced(tmp_path):
+    """A spec's `tools` allow-list is enforced at execution, not just in schemas."""
+    user_dir = tmp_path / "agents"
+    user_dir.mkdir()
+    (user_dir / "reader.md").write_text(
+        """---
+description: Read-only helper
+tools: read_file
+---
+You only read files.
+""",
+        encoding="utf-8",
+    )
+    reg = AgentRegistry.discover([], user_dir=user_dir)
+
+    target = tmp_path / "blocked.txt"
+    sub_script = [
+        {"tool_calls": [("s1", "write_file", {"path": str(target), "content": "nope"})]},
+        {"text": "done"},
+    ]
+    subs: list[Agent] = []
+
+    def fake_factory(_model: str) -> Agent:
+        sub = Agent(
+            provider=FakeProvider(script=sub_script),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+        subs.append(sub)
+        return sub
+
+    script = [
+        {"tool_calls": [("t1", "task", {"agent": "reader", "prompt": "write it"})]},
+        {"text": "finished"},
+    ]
+    agent = Agent(
+        provider=FakeProvider(script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        agents=reg,
+        subagent_factory=fake_factory,
+    )
+
+    events = [ev async for ev in agent.respond("delegate")]
+    result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
+
+    assert result["status"] == "ok"
+    assert result["result"] == "done"
+    assert not target.exists()
+    sub_tools = [m for m in subs[0].history.payload() if m["role"] == "tool"]
+    assert any('"rejected": true' in str(m.get("content")) for m in sub_tools)
 
 
 def test_subagent_inherits_model_credentials(tmp_path):

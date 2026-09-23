@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,41 @@ async def test_agent_routes_mcp_tool(tmp_path):
     # schemas now include MCP tool after init_mcp
     schemas_after = {s["function"]["name"] for s in agent.tool_schemas()}
     assert fname in schemas_after
+
+    await agent.mcp_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_disabled_mcp_tool_call_is_rejected(tmp_path):
+    """An MCP tool excluded by `enabled_tools` is not advertised and not run."""
+    from easycode.agent.loop import Agent
+    from easycode.mcp import mcp_tool_name
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    fname = mcp_tool_name("demo", "add")
+    script = [
+        {"tool_calls": [("c1", fname, {"a": 1, "b": 2})], "text": ""},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        provider=FakeProvider(model="fake", script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        mcp_servers=mcp_server_config(),
+        enabled_tools={"read_file"},
+        permission_mode="allow-all",
+    )
+
+    results = []
+    async for ev in agent.respond("add it"):
+        if ev.kind == "tool_result":
+            results.append(json.loads(ev.tool_result))
+
+    assert len(results) == 1
+    assert results[0]["rejected"] is True
+    assert results[0]["category"] == "policy"
+    assert "tool not enabled" in results[0]["message"]
 
     await agent.mcp_manager.close()
 

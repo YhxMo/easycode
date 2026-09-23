@@ -20,6 +20,7 @@ from easycode.reviewer import ReviewDecision
 from easycode.tools import build_registry
 from easycode.workspace import PathContext, ToolGrant
 from tests.conftest import FakeProvider
+from tests.helpers_history import assert_valid_tool_protocol
 
 
 def _shell(root: Path, ctx: PathContext, command: str, **extra) -> dict:
@@ -132,6 +133,89 @@ async def test_permission_rule_deny_still_applies_under_allow_all(tmp_path):
 
     assert payload["rejected"] is True
     assert payload["category"] == "policy"
+
+
+@pytest.mark.asyncio
+async def test_disabled_tool_call_is_rejected_at_execution(tmp_path):
+    """A tool outside the advertised schema set is rejected, never executed."""
+    target = tmp_path / "blocked.txt"
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "nope"})]},
+        {"text": "ok"},
+    ]
+    agent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        tmp_path,
+        enabled_tools={"read_file"},
+    )
+
+    events = [event async for event in agent.respond("write it")]
+
+    result = next(event.tool_result for event in events if event.kind == "tool_result")
+    payload = json.loads(result)
+    assert payload["rejected"] is True
+    assert payload["category"] == "policy"
+    assert "tool not enabled" in payload["message"]
+    assert not target.exists()
+    assert "".join(e.content for e in events if e.kind == "text") == "ok"
+    assert events[-1].kind == "done"
+    assert_valid_tool_protocol(agent.history.payload())
+
+
+@pytest.mark.asyncio
+async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
+    """Approval must grant against the *executing* agent's context.
+
+    The handler mirrors the pre-fix web bridge: it derives the grant from the
+    parent's (allow-all) context and returns it. The loop must ignore the
+    returned grant and regenerate the precise grant for the capped subagent.
+    """
+    from easycode.agents import AgentRegistry, AgentSpec
+    from easycode.approval import grant_for_toolcall
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    target = tmp_path / "outside.txt"
+    registry = AgentRegistry({"writer": AgentSpec(name="writer", description="writes", permission="ask")})
+
+    sub_script = [
+        {"tool_calls": [("s1", "write_file", {"path": str(target), "content": "approved"})]},
+        {"text": "done"},
+    ]
+    subs: list[Agent] = []
+
+    def factory(_model: str) -> Agent:
+        sub = Agent(FakeProvider(script=sub_script), build_registry(8_000), root)
+        subs.append(sub)
+        return sub
+
+    script = [
+        {"tool_calls": [("t1", "task", {"agent": "writer", "prompt": "write it"})]},
+        {"text": "finished"},
+    ]
+    parent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        root,
+        permission_mode="allow-all",
+        agents=registry,
+        subagent_factory=factory,
+    )
+    asked: list[str] = []
+
+    async def approval(tc):
+        grant = grant_for_toolcall(tc, parent.path_context())
+        asked.append(tc.name)
+        return grant if grant else True
+
+    parent.approval_handler = approval
+    async for _ in parent.respond("delegate"):
+        pass
+
+    assert asked == ["write_file"]
+    assert target.read_text() == "approved"
+    assert len(subs) == 1
 
 
 @pytest.mark.asyncio
