@@ -361,6 +361,19 @@ describe("App", () => {
     await screen.findByText("2/2 个问题");
   });
 
+  it("打开会话后按会话范围刷新命令（DEC-C8）", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
+
+    render(<App />);
+    await screen.findByText("会话A");
+
+    await user.click(screen.getByText("会话A"));
+
+    await waitFor(() => expect(m.fetchCommands).toHaveBeenLastCalledWith("s1"));
+  });
+
   it("Escape 关闭权限菜单（useDismiss 统一行为）", async () => {
     const user = userEvent.setup();
 
