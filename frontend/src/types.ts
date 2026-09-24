@@ -1,6 +1,12 @@
 // Shared chat UI types.
 export type ApprovalState = "pending" | "approved" | "denied" | "expired";
 
+/** One line of the session's task list (mirrors the update_todos tool). */
+export interface TodoItem {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
 export type Item =
   | { kind: "user"; text: string; time?: string }
   | {
@@ -29,6 +35,7 @@ export type Item =
       scope?: string;
       state: ApprovalState;
     }
+  | { kind: "todo"; todos: TodoItem[] }
   | { kind: "review"; text: string }
   | { kind: "notice"; text: string }
   | { kind: "error"; text: string };

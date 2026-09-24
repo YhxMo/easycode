@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { deferred, detail, primeApiMock, session } from "./helpers";
+import { activeTitle, deferred, detail, primeApiMock, session, sidebarRow } from "./helpers";
 
 // The App is exercised purely against a mocked ./api. No real backend, no
 // network, no ~/.easycode data (easycode-audit rule 3). SSE is driven by
@@ -37,7 +37,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi"); // currentSession loaded, permission_mode -> ask
 
     // Flip permission to allow-all through the real picker UI.
@@ -67,8 +67,8 @@ describe("App", () => {
     await screen.findByText("会话A");
     await screen.findByText("会话B");
 
-    await user.click(screen.getByText("会话A")); // open #1 (token 1)
-    await user.click(screen.getByText("会话B")); // open #2 (token 2, newest)
+    await user.click(sidebarRow("会话A")); // open #1 (token 1)
+    await user.click(sidebarRow("会话B")); // open #2 (token 2, newest)
 
     // Resolve the newest request first, then the stale one.
     await act(async () => {
@@ -101,14 +101,14 @@ describe("App", () => {
     await screen.findByText("会话A");
 
     // Open s1 and start a stream that stays in-flight.
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("A-初始");
     await user.type(screen.getByRole("textbox"), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
     // Switch to s2; the stale stream's callback must be ignored afterwards.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await screen.findByText("B-视图");
 
     await act(async () => {
@@ -129,7 +129,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
     await user.type(screen.getByRole("textbox"), "do it");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
@@ -143,18 +143,18 @@ describe("App", () => {
         reason: "r1",
       });
     });
-    await screen.findByText("1/1 个问题");
+    await screen.findByText("需要批准");
     expect(m.fetchSession).toHaveBeenCalledTimes(1);
 
     // Re-open the current session while its turn is streaming.
     await user.click(document.querySelector(".session-item") as HTMLElement);
 
     // The stale disk snapshot must not replace this turn's items.
-    await waitFor(() => expect(screen.getByText("1/1 个问题")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("需要批准")).toBeTruthy());
     expect(m.fetchSession).toHaveBeenCalledTimes(1);
   });
 
-  it("历史审批不参与本轮序号：新审批显示 1/1", async () => {
+  it("历史审批不参与本轮序号", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue({
@@ -180,7 +180,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await user.type(screen.getByRole("textbox"), "new task");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
@@ -193,7 +193,89 @@ describe("App", () => {
         reason: "r",
       });
     });
-    await screen.findByText("1/1 个问题");
+    await act(async () => {
+      stream.get()?.({
+        type: "approval_required",
+        approval_id: "ap2",
+        tool_call: { id: "t2", name: "read_file", arguments: {} },
+        reason: "r2",
+      });
+    });
+
+    // Only this turn's two requests are counted, not the restored history one.
+    await screen.findByText("1/2");
+    expect(screen.getByText("2/2")).toBeTruthy();
+    expect(screen.queryByText("3/3")).toBeNull();
+  });
+
+  it("任务清单事件在消息流显示摘要，可在面板查看详情", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
+    const stream = captureStream();
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await user.type(screen.getByRole("textbox"), "go");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => {
+      stream.get()?.({
+        type: "todo",
+        todos: [
+          { text: "读代码", status: "completed" },
+          { text: "改代码", status: "in_progress" },
+        ],
+      });
+    });
+
+    // the stream carries a compact pointer, and the pane opens on the list
+    const summary = await screen.findByRole("button", { name: /任务清单/ });
+    expect(summary.textContent).toContain("1/2");
+    const pane = await screen.findByRole("complementary", { name: "任务面板" });
+    expect(pane.textContent).toContain("读代码");
+    expect(pane.textContent).toContain("改代码");
+    // the summary is the way back to the list when the pane is closed
+    await user.click(screen.getByRole("button", { name: "收起面板" }));
+    expect(document.querySelector(".right-pane")).toBeNull();
+    await user.click(summary);
+    expect(document.querySelector(".right-pane")).toBeTruthy();
+  });
+
+  it("重开会话时恢复已保存的任务清单", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue({
+      ...detail("s1", "会话A", [{ role: "user", content: "hi" }]),
+      todos: [{ text: "遗留步骤", status: "pending" }],
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+
+    expect(await screen.findByText("任务清单")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /任务清单/ }));
+    expect(await screen.findByText("遗留步骤")).toBeTruthy();
+  });
+
+  it("置顶会话后出现在置顶分区", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.pinSession.mockResolvedValue({ ok: true });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    expect(screen.queryByText("置顶")).toBeNull();
+
+    // the server is the source of truth: the list comes back pinned
+    m.fetchSessions.mockResolvedValue([{ ...session("s1", "会话A"), pinned: true, pinned_at: "2026-02-01T00:00:00Z" }]);
+    await user.click(screen.getByRole("button", { name: "置顶会话" }));
+
+    await waitFor(() => expect(m.pinSession).toHaveBeenCalledWith("s1", true));
+    expect(await screen.findByText("置顶")).toBeTruthy();
   });
 
   it("命令菜单高亮与回车选中一致（按 kind 稳定排序）", async () => {
@@ -224,7 +306,7 @@ describe("App", () => {
 
       render(<App />);
       await screen.findByText("会话A");
-      await user.click(screen.getByText("会话A"));
+      await user.click(sidebarRow("会话A"));
       await user.type(screen.getByRole("textbox"), "hi");
       await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
@@ -258,13 +340,16 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await user.type(screen.getByRole("textbox"), "run");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
     await screen.findByText("net");
-    expect(document.querySelector(".tool-card.running")).toBeNull();
-    expect(document.querySelector(".tool-card")?.textContent).not.toContain("执行中");
+    // The interrupted tool must not leave the trace spinning.
+    expect(document.querySelector(".trace.running")).toBeNull();
+    await user.click(screen.getByRole("button", { name: /展开工具调用/ }));
+    expect(document.querySelector(".trace-step.running")).toBeNull();
+    expect(document.querySelector(".trace-step.error")).toBeTruthy();
   });
 
   it("后端 error 后连接中断不重复追加错误行", async () => {
@@ -279,7 +364,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await user.type(screen.getByRole("textbox"), "run");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
@@ -287,7 +372,7 @@ describe("App", () => {
     // The backend error is the single terminal report; the later connection
     // failure must not append a second error row.
     expect(document.querySelectorAll(".msg.error").length).toBe(1);
-    expect(document.querySelector(".tool-card.running")).toBeNull();
+    expect(document.querySelector(".trace.running")).toBeNull();
   });
 
   it("多审批显示动态 position/total", async () => {
@@ -298,7 +383,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await user.type(screen.getByRole("textbox"), "do it");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
@@ -308,27 +393,28 @@ describe("App", () => {
         stream.get()?.(e);
       });
 
-    // First pending approval => 1/1
     await emit({
       type: "approval_required",
       approval_id: "ap1",
       tool_call: { id: "t1", name: "execute_shell", arguments: {} },
       reason: "r1",
     });
-    await screen.findByText("1/1 个问题");
-
-    // Second approval queued behind the first => still 1/2 (first pending)
     await emit({
       type: "approval_required",
       approval_id: "ap2",
       tool_call: { id: "t2", name: "read_file", arguments: {} },
       reason: "r2",
     });
-    await screen.findByText("1/2 个问题");
 
-    // Resolve the first (deny) => position advances to 2/2
-    await user.click(screen.getByRole("button", { name: "拒绝" }));
-    await screen.findByText("2/2 个问题");
+    // Each request carries its own position in the turn's queue.
+    await screen.findByText("1/2");
+    expect(screen.getByText("2/2")).toBeTruthy();
+
+    // Answering the first collapses it to a verdict; the second stays pending.
+    await user.click(screen.getAllByRole("button", { name: "拒绝" })[0]);
+    await screen.findByText("已拒绝");
+    expect(screen.getByText("2/2")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "允许一次" })).toHaveLength(1);
   });
 
   it("打开会话后按会话范围刷新命令（DEC-C8）", async () => {
@@ -339,7 +425,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("会话A");
 
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
 
     await waitFor(() => expect(m.fetchCommands).toHaveBeenLastCalledWith("s1", undefined));
   });
@@ -364,8 +450,8 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("会话A");
     await screen.findByText("会话B");
-    await user.click(screen.getByText("会话A"));
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话A"));
+    await user.click(sidebarRow("会话B"));
 
     const callFor = (id: string) => pending.filter((p) => p.sessionId === id).at(-1)!;
     await waitFor(() => expect(callFor("s2")).toBeTruthy());
@@ -453,7 +539,7 @@ describe("App", () => {
     // Reopen, then clicking a session closes the drawer and loads the session.
     await user.click(screen.getByRole("button", { name: "打开侧栏" }));
     expect(app().classList.contains("sidebar-open")).toBe(true);
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
     expect(app().classList.contains("sidebar-open")).toBe(false);
 
@@ -479,7 +565,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("A-内容");
 
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
@@ -487,7 +573,7 @@ describe("App", () => {
     await waitFor(() => expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all"));
 
     // Switch to B while A's permission request is still pending.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await screen.findByText("B-内容");
 
     await act(async () => {
@@ -517,7 +603,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
 
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
@@ -556,7 +642,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
 
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
@@ -578,14 +664,14 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await act(async () => {
       d1.resolve({ ...detail("s1", "会话A", []), permission_mode: "allow-all" });
     });
     await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
 
     // Open B; its detail has not arrived yet.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await screen.findByText("正在加载会话…");
 
     await user.type(screen.getByRole("textbox"), "hello");
@@ -619,7 +705,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
 
     await screen.findByText(/会话加载失败/);
     await user.type(screen.getByRole("textbox"), "hello");
@@ -652,7 +738,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await waitFor(() =>
       expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
     );
@@ -661,7 +747,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "移除次目录 s1a" }));
 
     // Switch to B while A's save is in flight.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await waitFor(() =>
       expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
     );
@@ -689,7 +775,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await waitFor(() =>
       expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
     );
@@ -697,7 +783,7 @@ describe("App", () => {
 
     // Switch to B while its detail is still in flight: the editor shows A's
     // stale list but must not allow a save against the unconfirmed view.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await screen.findByText("正在加载会话…");
 
     const remove = screen.getByRole("button", { name: "移除次目录 s1a" }) as HTMLButtonElement;
@@ -724,7 +810,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await waitFor(() =>
       expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
     );
@@ -735,11 +821,11 @@ describe("App", () => {
     // A -> B -> A while A's save is still in flight: the view version changed
     // twice, so the old response must be dropped even though the session id
     // matches the current view again.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await waitFor(() =>
       expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
     );
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await waitFor(() =>
       expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
     );
@@ -764,7 +850,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
 
     fireEvent.click(document.querySelector(".group-more-btn") as HTMLElement);
@@ -775,7 +861,7 @@ describe("App", () => {
     // The open session was deleted with the project; the view returns to a
     // blank new session instead of showing a session that no longer exists.
     await waitFor(() =>
-      expect(document.querySelector(".chat-context strong")?.textContent).toBe("新会话"),
+      expect(activeTitle()).toBe("新会话"),
     );
     expect(document.querySelector(".session-item.active")).toBeNull();
   });
@@ -795,7 +881,7 @@ describe("App", () => {
     expect(screen.getByLabelText("已置顶")).toBeTruthy();
 
     // 默认展开，会话可见
-    expect(screen.getByText("会话A")).toBeTruthy();
+    expect(sidebarRow("会话A")).toBeTruthy();
 
     // 点击折叠按钮
     const collapseToggle = screen.getByRole("button", { name: "折叠项目" });
@@ -809,7 +895,7 @@ describe("App", () => {
     await user.click(expandToggle);
 
     // 会话重新显示
-    expect(screen.getByText("会话A")).toBeTruthy();
+    expect(sidebarRow("会话A")).toBeTruthy();
   });
 });
 
@@ -857,7 +943,7 @@ it("移除项目期间切换会话后保留新视图", async () => {
   await user.click(screen.getByRole("menuitem", { name: /移除项目/ }));
   await user.click(screen.getByRole("button", { name: "确认移除" }));
   await user.click(screen.getByRole("button", { name: "取消" }));
-  await user.click(screen.getByText("会话B"));
+  await user.click(sidebarRow("会话B"));
   await screen.findByText("B content");
   await act(async () => deleted.resolve({ deleted_sessions: 1, projects: [] }));
   expect(screen.getByText("B content")).toBeTruthy();

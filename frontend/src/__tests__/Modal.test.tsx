@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { session } from "./helpers";
+import { activeTitle, session, sidebarRow } from "./helpers";
 import { Modal } from "../components/Modal";
 
 // The three inline project/session modals previously used a
@@ -132,7 +132,7 @@ describe("App · 删除会话模态框", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
     await user.type(screen.getByRole("textbox"), "long task");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
@@ -175,7 +175,7 @@ describe("App · 删除会话模态框", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("A-内容");
 
     fireEvent.click(document.querySelector(".session-del") as HTMLElement);
@@ -183,7 +183,7 @@ describe("App · 删除会话模态框", () => {
     await user.click(screen.getByRole("button", { name: "确认删除" }));
 
     // Switch to B while A's DELETE is still in flight.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await screen.findByText("B-内容");
 
     await act(async () => {
@@ -192,7 +192,7 @@ describe("App · 删除会话模态框", () => {
 
     // B stays the foreground view: the stale delete must not blank it.
     await waitFor(() =>
-      expect(document.querySelector(".chat-context strong")?.textContent).toBe("会话B"),
+      expect(activeTitle()).toBe("会话B"),
     );
     expect(screen.getByText("B-内容")).toBeTruthy();
   });
@@ -204,7 +204,7 @@ describe("App · 删除会话模态框", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
 
     fireEvent.click(document.querySelector(".session-del") as HTMLElement);

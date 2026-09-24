@@ -130,6 +130,20 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
       ];
     case "review":
       return [...prev, { kind: "review", text: ev.content ?? "" }];
+    case "todo": {
+      // The task list is session state that the model rewrites wholesale, so it
+      // replaces the previous list in place instead of stacking up in history.
+      const todos = ev.todos ?? [];
+      let at = -1;
+      for (let i = prev.length - 1; i >= 0; i -= 1) {
+        if (prev[i].kind === "todo") {
+          at = i;
+          break;
+        }
+      }
+      if (at === -1) return [...prev, { kind: "todo", todos }];
+      return prev.map((it, i) => (i === at ? { kind: "todo" as const, todos } : it));
+    }
     default:
       return prev;
   }

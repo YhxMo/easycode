@@ -8,6 +8,7 @@ export const apiMock = {
   fetchSessions: vi.fn(),
   fetchArchivedSessions: vi.fn(),
   fetchSession: vi.fn(),
+  fetchFiles: vi.fn(),
   fetchWorkspaces: vi.fn(),
   fetchModels: vi.fn(),
   fetchCommands: vi.fn(),
@@ -19,6 +20,7 @@ export const apiMock = {
   archiveProjectChats: vi.fn(),
   createWorktree: vi.fn(),
   pinProject: vi.fn(),
+  pinSession: vi.fn(),
   removeProject: vi.fn(),
   revealInFinder: vi.fn(),
   saveProject: vi.fn(),
@@ -39,6 +41,7 @@ export function primeApiMock(m: typeof apiMock) {
   m.fetchArchivedSessions.mockResolvedValue([]);
   m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   m.fetchCommands.mockResolvedValue({ commands: [] });
+  m.fetchFiles.mockResolvedValue({ files: [], total: 0 });
   m.streamChat.mockResolvedValue(undefined);
   m.setSessionPermission.mockImplementation(async (id: string, mode: string) => ({
     id,
@@ -71,4 +74,18 @@ export function deferred<T>() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+/** The sidebar row for a conversation — the tab strip shows the same title. */
+export function sidebarRow(title: string): HTMLElement {
+  const row = [...document.querySelectorAll<HTMLElement>(".session-item")].find(
+    (el) => el.querySelector(".session-title")?.textContent === title,
+  );
+  if (!row) throw new Error(`没有找到侧栏会话行: ${title}`);
+  return row;
+}
+
+/** The conversation currently on screen, as named by its active tab. */
+export function activeTitle(): string {
+  return document.querySelector(".tab.active .tab-title")?.textContent ?? "";
 }

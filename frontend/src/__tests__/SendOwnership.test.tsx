@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { primeApiMock, session } from "./helpers";
+import { activeTitle, primeApiMock, session, sidebarRow } from "./helpers";
 
 // New streams are identified by their SSE session event. Navigation abandons old events.
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
@@ -34,11 +34,6 @@ function controllableStream() {
   };
 }
 
-/** The foreground conversation title rendered in the chat header. */
-function headerTitle(): string {
-  return document.querySelector(".chat-context strong")?.textContent ?? "";
-}
-
 beforeEach(() => {
   primeApiMock(m);
   m.fetchSessions.mockResolvedValue([session("A", "会话A")]);
@@ -55,7 +50,7 @@ describe("App · 会话归属", () => {
     // Sidebar shows the existing session; foreground is still the blank
     // new session (currentId === null -> header "新会话").
     await screen.findByText("会话A");
-    expect(headerTitle()).toBe("新会话");
+    expect(activeTitle()).toBe("新会话");
 
     // Send from the new session (sessionId = null); stream stays in flight and
     // crucially has NOT emitted a "session" event yet.
@@ -65,14 +60,14 @@ describe("App · 会话归属", () => {
 
     // Navigation invalidates the old stream even before its session event arrives.
     await user.click(screen.getByRole("button", { name: /新会话/ }));
-    expect(headerTitle()).toBe("新会话");
+    expect(activeTitle()).toBe("新会话");
 
     await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
     await stream.finish();
 
     // The completed (old) stream must refresh the list but must NOT take over
     // the view: the user's blank session stays the foreground owner.
-    await waitFor(() => expect(headerTitle()).toBe("新会话"));
+    await waitFor(() => expect(activeTitle()).toBe("新会话"));
     expect(document.querySelector(".session-item.active")).toBeNull();
   });
 
@@ -142,7 +137,7 @@ describe("App · 会话归属", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    expect(headerTitle()).toBe("新会话");
+    expect(activeTitle()).toBe("新会话");
 
     await user.type(screen.getByRole("textbox"), "bye");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
@@ -152,7 +147,7 @@ describe("App · 会话归属", () => {
     await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
     await stream.finish();
 
-    await waitFor(() => expect(headerTitle()).toBe("会话A"));
+    await waitFor(() => expect(activeTitle()).toBe("会话A"));
     expect(document.querySelector(".session-item.active")?.textContent).toContain("会话A");
   });
 
@@ -174,13 +169,13 @@ describe("App · 会话归属", () => {
 
     render(<App />);
     await screen.findByText("会话A");
-    await user.click(screen.getByText("会话A"));
+    await user.click(sidebarRow("会话A"));
     await user.type(screen.getByRole("textbox"), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(pending.length).toBe(1));
 
     // Switch to B and start a second stream before the first settles.
-    await user.click(screen.getByText("会话B"));
+    await user.click(sidebarRow("会话B"));
     await user.type(screen.getByRole("textbox"), "second");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(pending.length).toBe(2));

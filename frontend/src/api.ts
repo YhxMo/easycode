@@ -1,5 +1,5 @@
 import type { HistoryMessage } from "./lib/history";
-import type { ApprovalState } from "./types";
+import type { ApprovalState, TodoItem } from "./types";
 
 export interface ToolCall {
   id: string;
@@ -16,7 +16,8 @@ export type ChatEvent =
   | { type: "done" }
   | { type: "cancelled" }
   | { type: "approval_required"; approval_id: string; tool_call: ToolCall; reason?: string; scope?: string }
-  | { type: "review"; content?: string };
+  | { type: "review"; content?: string }
+  | { type: "todo"; todos?: TodoItem[] };
 
 export interface SessionSummary {
   id: string;
@@ -26,6 +27,8 @@ export interface SessionSummary {
   permission_mode?: string;
   root?: string | null;
   secondary_roots?: string[];
+  pinned?: boolean;
+  pinned_at?: string | null;
 }
 
 export type ApprovalDecision = Exclude<ApprovalState, "pending">;
@@ -43,6 +46,7 @@ export interface SessionDetail extends SessionSummary {
   messages: HistoryMessage[];
   approvals?: ApprovalRecord[];
   user_times?: string[];
+  todos?: TodoItem[];
 }
 
 export type ModelEntry = { model: string; key_id?: string };
@@ -156,6 +160,26 @@ async function request<T>(url: string, init: { method?: string; body?: unknown }
   return (await resp.json()) as T;
 }
 
+export interface FileContent {
+  path: string;
+  text: string;
+  start_line: number;
+  total_lines: number;
+  truncated: boolean;
+}
+
+/** One file's text, for the pane's preview. */
+export function fetchFileContent(
+  sessionId: string,
+  path: string,
+  offset = 1,
+  limit = 0,
+): Promise<FileContent> {
+  const query = new URLSearchParams({ session_id: sessionId, path, offset: String(offset) });
+  if (limit > 0) query.set("limit", String(limit));
+  return request(`/api/files/content?${query}`);
+}
+
 export function fetchSessions(): Promise<SessionSummary[]> {
   return request("/api/sessions");
 }
@@ -168,12 +192,41 @@ export function fetchSession(id: string): Promise<SessionDetail> {
   return request(`/api/sessions/${id}`);
 }
 
+/** Pin or unpin a session; pinned sessions get their own sidebar section. */
+export function pinSession(id: string, pinned: boolean): Promise<{ ok: boolean }> {
+  return request(`/api/sessions/${id}/pin`, { method: "POST", body: { pinned } });
+}
+
 export function deleteSession(id: string): Promise<void> {
   return request(`/api/sessions/${id}`, { method: "DELETE" });
 }
 
 export function fetchWorkspaces(): Promise<WorkspacesInfo> {
   return request("/api/workspaces");
+}
+
+export interface FileEntry {
+  /** Path relative to the workspace root it came from. */
+  path: string;
+  name: string;
+  dir: string;
+  root: string;
+}
+
+/** Workspace files offered by the composer's @-mention menu. */
+export function fetchFiles(
+  sessionId: string | null,
+  draft: { root: string | null; secondary: string[] } | undefined,
+  q: string,
+  limit = 200,
+): Promise<{ files: FileEntry[]; total: number }> {
+  const body: Record<string, unknown> = { q, limit };
+  if (sessionId) body.session_id = sessionId;
+  else if (draft) {
+    body.root = draft.root;
+    body.secondary_roots = draft.secondary;
+  }
+  return request("/api/files", { method: "POST", body });
 }
 
 export function saveProject(

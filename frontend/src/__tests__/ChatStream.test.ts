@@ -52,6 +52,33 @@ describe("done 收尾", () => {
     expect(out).toEqual(items);
   });
 
+  it("todo 事件原位替换任务清单，而不是堆叠", () => {
+    const first = applyChatEvent([], {
+      type: "todo",
+      todos: [{ text: "读代码", status: "pending" }],
+    });
+    const second = applyChatEvent(first, {
+      type: "todo",
+      todos: [
+        { text: "读代码", status: "completed" },
+        { text: "改代码", status: "in_progress" },
+      ],
+    });
+    expect(second.filter((it) => it.kind === "todo")).toHaveLength(1);
+    expect(second[0]).toEqual({
+      kind: "todo",
+      todos: [
+        { text: "读代码", status: "completed" },
+        { text: "改代码", status: "in_progress" },
+      ],
+    });
+  });
+
+  it("todo 事件缺少列表时按空清单处理", () => {
+    const items = applyChatEvent([], { type: "todo" });
+    expect(items).toEqual([{ kind: "todo", todos: [] }]);
+  });
+
   it("error 之后的 done 不再追加矛盾的完成提示", () => {
     const items: Item[] = [
       { kind: "user", text: "go" },
