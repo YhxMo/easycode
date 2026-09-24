@@ -45,6 +45,9 @@ def _event_payload(ev: AgentEvent) -> dict:
         payload["error"] = ev.error
     elif ev.kind == "review" and ev.content:
         payload["content"] = ev.content
+    elif ev.kind == "todo" and ev.content:
+        # the live task list, so the pane can update without refetching
+        payload["todos"] = json.loads(ev.content)
     elif ev.kind == "cancelled":
         payload["content"] = "cancelled"
     return payload
@@ -216,6 +219,10 @@ async def stream_chat_with_approval(
                 yield ("approval", payload)
             elif kind == "agent":
                 ev: AgentEvent = payload
+                if ev.kind == "todo" and ev.content and session is not None:
+                    # The task list is session state: keep the persisted copy in
+                    # step with what the client is being shown.
+                    session.todos = json.loads(ev.content)
                 if ev.kind == "text" and ev.content:
                     buf.append(ev.content)
                     size = sum(len(part) for part in buf)

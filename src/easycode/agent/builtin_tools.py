@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
@@ -45,6 +45,22 @@ class UseSkillArgs(BaseModel):
     """Arguments of the ``use_skill`` tool."""
 
     name: NonEmptyStr = Field(description="skill name to load")
+
+
+class TodoItem(BaseModel):
+    """One line of the session's task list."""
+
+    text: NonEmptyStr = Field(description="what the step is")
+    status: Literal["pending", "in_progress", "completed"] = Field(description="step state")
+
+
+class UpdateTodosArgs(BaseModel):
+    """Arguments of the ``update_todos`` tool."""
+
+    todos: list[TodoItem] = Field(
+        max_length=50,
+        description="the complete list, replacing whatever was there before",
+    )
 
 
 def _parameters_schema(model: type[BaseModel]) -> dict:
@@ -113,9 +129,23 @@ USE_SKILL_SCHEMA = {
     },
 }
 
+UPDATE_TODOS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "update_todos",
+        "description": (
+            "Replace the session's task list. Use it for multi-step work: send the "
+            "whole list on every call, moving each step between pending, "
+            "in_progress and completed as you go."
+        ),
+        "parameters": _parameters_schema(UpdateTodosArgs),
+    },
+}
+
 ARG_MODELS: dict[str, type[BaseModel]] = {
     "parallel_tasks": ParallelTasksArgs,
     "task": TaskArgs,
+    "update_todos": UpdateTodosArgs,
     "use_skill": UseSkillArgs,
 }
 BUILTIN_TOOLS = frozenset(ARG_MODELS)
@@ -203,6 +233,21 @@ async def run_parallel(agent: Agent, tasks: list[TaskSpec], max_parallel: int) -
     )
 
 
+async def run_update_todos(agent: Agent, todos: list[TodoItem]) -> str:
+    """Runner for the ``update_todos`` tool: publish the session's task list.
+
+    The list is session state, not a file: it is queued as an event the loop
+    emits once the batch of tool results is complete, and the web bridge stores
+    it on the session. Nothing touches the workspace, so it needs no approval.
+    """
+    payload = [{"text": item.text, "status": item.status} for item in todos]
+    agent._pending_events.append(("todo", json.dumps(payload, ensure_ascii=False)))
+    completed = sum(1 for item in payload if item["status"] == "completed")
+    return json.dumps(
+        {"status": "ok", "count": len(payload), "completed": completed}, ensure_ascii=False
+    )
+
+
 async def run_builtin(agent: Agent, tc: ToolCall) -> str:
     """Dispatch one builtin tool call to its runner.
 
@@ -226,6 +271,8 @@ async def run_builtin(agent: Agent, tc: ToolCall) -> str:
         return await run_parallel(agent, args.tasks, args.max_parallel)
     if tc.name == "task":
         return await run_task(agent, args.agent, args.prompt)
+    if tc.name == "update_todos":
+        return await run_update_todos(agent, args.todos)
     return await run_use_skill(agent, args.name)
 
 

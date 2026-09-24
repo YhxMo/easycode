@@ -17,6 +17,10 @@ class ArchiveRequest(BaseModel):
     archived: bool = True
 
 
+class PinRequest(BaseModel):
+    pinned: bool = True
+
+
 class ApprovalRequest(BaseModel):
     approve: bool = True
     always: bool = False
@@ -40,6 +44,7 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
             "messages": sess.messages,
             "approvals": list(sess.approval_log),
             "user_times": list(sess.user_times),
+            "todos": list(sess.todos),
         }
 
     @app.delete("/api/sessions/{session_id}")
@@ -64,6 +69,17 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
             if sess is None:
                 raise HTTPException(404, "session not found")
             return {"ok": True, "archived": sess.archived}
+
+    @app.post("/api/sessions/{session_id}/pin")
+    async def pin_session(session_id: str, req: PinRequest) -> dict:
+        sess = store.get(session_id)
+        if sess is None:
+            raise HTTPException(404, "session not found")
+        async with idle_sessions([sess]):
+            pinned = store.set_pinned(session_id, req.pinned)
+            if pinned is None:
+                raise HTTPException(404, "session not found")
+            return {"ok": True, **pinned.summary}
 
     @app.post("/api/sessions/{session_id}/permission")
     async def set_session_permission(session_id: str, req: PermissionRequest) -> dict:

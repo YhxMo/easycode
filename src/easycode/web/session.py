@@ -88,6 +88,9 @@ class Session:
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
+    todos: list[dict] = field(default_factory=list)  # task list the model maintains
+    pinned: bool = False  # kept at the top of the sidebar
+    pinned_at: str | None = None  # when it was pinned, for ordering
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     @property
@@ -122,6 +125,9 @@ class Session:
             out["secondary_roots"] = list(self.secondary_roots)
         if self.archived:
             out["archived"] = True
+        if self.pinned:
+            out["pinned"] = True
+            out["pinned_at"] = self.pinned_at
         return out
 
 
@@ -252,6 +258,16 @@ class SessionStore:
         self._flush(sess)
         return sess
 
+    def set_pinned(self, session_id: str, pinned: bool) -> Session | None:
+        """Pin or unpin a session; pinning records when, for stable ordering."""
+        sess = self._sessions.get(session_id)
+        if sess is None:
+            return None
+        sess.pinned = pinned
+        sess.pinned_at = _now() if pinned else None
+        self._flush(sess)
+        return sess
+
     async def archive_root(self, root: str | None) -> int:
         sessions = [s for s in self.list() if s.root == root]
         async with idle_sessions(sessions):
@@ -323,6 +339,9 @@ class SessionStore:
                     approval_log=list(data.get("approval_log") or []),
                     user_times=list(data.get("user_times") or []),
                     archived=bool(data.get("archived")),
+                    todos=list(data.get("todos") or []),
+                    pinned=bool(data.get("pinned")),
+                    pinned_at=data.get("pinned_at"),
                 )
                 self._sessions[sess.id] = sess
             except (OSError, KeyError, ValueError, json.JSONDecodeError):
@@ -353,7 +372,11 @@ class SessionStore:
             "approval_log": list(session.approval_log),
             "user_times": list(session.user_times),
             "archived": session.archived,
+            "todos": list(session.todos),
         }
+        if session.pinned:
+            payload["pinned"] = True
+            payload["pinned_at"] = session.pinned_at
         if session.root:
             payload["root"] = session.root
         if session.secondary_roots:

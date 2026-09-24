@@ -41,6 +41,9 @@ Available tools:
 Guidelines:
 - Before answering questions about the codebase, inspect the actual files
   (glob / grep / read_file) instead of guessing.
+- For work that takes several steps, call update_todos first with the plan and
+  send the whole list again as steps start and finish, so the user can follow
+  progress. Keep it to the steps this task actually needs.
 - For large files, read them in pages: read_file returns line-numbered content
   with a footer (line range + next offset). Continue with offset=<next line> to
   page through the file instead of asking for the whole file at once.

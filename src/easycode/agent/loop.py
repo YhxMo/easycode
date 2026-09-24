@@ -15,6 +15,7 @@ from easycode.agent.builtin_tools import (
     BUILTIN_TOOLS,
     PARALLEL_TASKS_SCHEMA,
     TASK_SCHEMA,
+    UPDATE_TODOS_SCHEMA,
     USE_SKILL_SCHEMA,
 )
 from easycode.agent.compaction import COMPACTION_DEFAULTS, Compactor
@@ -111,6 +112,10 @@ class Agent:
     _review_decisions: list[bool] = field(default_factory=list)
     _consecutive_review_denials: int = 0
     _pending_system: list[str] = field(default_factory=list)
+    # (kind, content) pairs a tool wants to report once its batch has finished,
+    # e.g. the task list update_todos committed to. Drained into AgentEvents so
+    # the UI sees them at a point where every tool call already has its result.
+    _pending_events: list[tuple[str, str]] = field(default_factory=list)
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     mcp_manager: MCPSessionManager | None = None
     #: True when this agent created its MCP manager (and must close it);
@@ -236,6 +241,7 @@ class Agent:
         """
         names = self.registry.names()
         names.add("parallel_tasks")
+        names.add("update_todos")
         if self.agents is not None and self.agents.names():
             names.add("task")
         if self.skills is not None and self.skills.names():
@@ -253,6 +259,7 @@ class Agent:
             *self.registry.schemas(None),
             PARALLEL_TASKS_SCHEMA,
             TASK_SCHEMA,
+            UPDATE_TODOS_SCHEMA,
             USE_SKILL_SCHEMA,
         ]
         if self.mcp_manager:
@@ -352,6 +359,10 @@ class Agent:
                 for content in self._pending_system:
                     self.history.add({"role": "system", "content": content})
                 self._pending_system.clear()
+                deferred = list(self._pending_events)
+                self._pending_events.clear()
+            for kind, content in deferred:
+                yield AgentEvent(kind=kind, content=content)
         yield AgentEvent(kind="error", error=f"hit max tool iterations ({MAX_TOOL_ITERATIONS})")
         yield AgentEvent(kind="done")
 
