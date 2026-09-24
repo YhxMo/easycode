@@ -6,13 +6,23 @@
 
 ## 能力
 
-- **代码工具**：读取文件、Glob / 正则检索、精确替换、写入文件和执行 Shell；界面展示工具进度与修改 diff。
+- **代码工具**：读取文件、Glob / 正则检索、精确替换、写入文件和执行 Shell；界面把工具调用折叠为可展开的轨迹，并单独展示修改 diff。
 - **流式交互**：LiteLLM 对接模型，FastAPI 通过 SSE 推送文本、工具结果和审批请求。
 - **上下文管理**：计入系统提示词和工具 Schema 的预算，裁剪旧工具输出，用滚动摘要保留任务状态。
 - **任务委派**：命名 Agent 与并行子任务使用独立对话上下文，共享工作区和权限边界；子 Agent 的工具能力不超过父 Agent，且不再递归委派。
-- **项目与会话**：多项目、附加工作目录、会话持久化、模型切换和停止任务。
+- **项目与会话**：多项目、附加工作目录、会话持久化与置顶、模型切换和停止任务；多个会话的回合可以同时进行。
 - **扩展**：`AGENTS.md` 项目规则、按需加载 Skill、提示词模板和 MCP 工具。
 - **执行权限**：操作审批、精确路径授权、macOS 工作区沙箱；模型凭据单独保存在用户目录。
+- **任务清单**：模型通过 `update_todos` 维护多步任务的进度，界面在右侧面板和消息流中同步展示，并随会话持久化。
+
+### Web 界面
+
+侧栏自上而下是目录、置顶、项目与最近三区；主面板顶部是会话标签栏，底部悬浮输入框（空状态时居中为一张起始卡片）；右侧是可折叠的任务面板。
+
+- 输入 `@` 引用工作区文件，输入 `/` 运行命令或 Skill；输入框右侧可切换模型、语音输入。
+- 右侧面板按「任务 / 上下文 / 变更 / 文件」分区：任务来自 `update_todos`，上下文与变更来自本回合的读取和修改，文件分区可预览被引用的文件。
+- 任务执行中出现产物时面板自动展开；手动关闭后本轮不再自动展开，下一轮恢复。
+- 切换标签或侧栏会话只切换视图：后台会话的回合继续运行，标签与会话行显示运行中与待审批标记。
 
 ## 快速开始
 
@@ -74,9 +84,12 @@ CLI 与 Web 共用同一个 Agent。模型适配、上下文压缩和文件工�
 | [`tools/`](src/easycode/tools/) | Pydantic 参数校验、工具注册、文件与 Shell 执行 |
 | [`agent/builtin_tools.py`](src/easycode/agent/builtin_tools.py) | 子任务委派、并行执行和 Skill 加载 |
 | [`agentfactory.py`](src/easycode/agentfactory.py) | 根据配置装配 Agent，统一模型与凭据接入 |
-| [`web/main.py`](src/easycode/web/main.py) | 应用装配；路由分为 chat、models、sessions、workspaces |
+| [`web/main.py`](src/easycode/web/main.py) | 应用装配；路由分为 chat、models、sessions、workspaces、files |
 | [`web/bridge.py`](src/easycode/web/bridge.py) | Agent 事件转为 SSE，处理审批等待和停止信号 |
-| [`frontend/src/useChatStream.ts`](frontend/src/useChatStream.ts) | 流式请求生命周期；`chatStream.ts` 负责消息状态转换 |
+| [`frontend/src/useChatStream.ts`](frontend/src/useChatStream.ts) | 按会话的流注册表：每个会话的回合独立进行；`chatStream.ts` 负责消息状态转换 |
+| [`frontend/src/components/layout/`](frontend/src/components/layout/) | 标签栏、右侧面板容器、输入框 |
+| [`frontend/src/components/primitives/`](frontend/src/components/primitives/) | 加载态、工具轨迹、代码块、diff、审批卡、任务清单、空状态 |
+| [`frontend/src/lib/`](frontend/src/lib/) | 侧栏分组、任务轨迹、面板数据、`@` 解析等纯函数 |
 
 ### 设计取舍
 
@@ -88,6 +101,9 @@ CLI 与 Web 共用同一个 Agent。模型适配、上下文压缩和文件工�
 - **上下文有明确边界**：摘要与近期消息一起交给模型；压缩后仍超出预算时报告错误，避免继续发送无法容纳的请求。
 - **工具失败可反馈给模型**：参数错误和执行失败作为工具结果返回，模型可据此调整下一步；模型连接失败向界面报告。
 - **实现保持直接**：当前会话格式直接读写，不保留旧接口转发、旧数据目录迁移或隐藏的文件恢复流程。
+- **每个会话一条独立的流**：切换标签或会话不中断后台回合，一个会话同一时刻只有一个回合（服务端以会话锁拒绝重复请求）；界面按会话保存各自的条目，标签与会话行显示运行中与待审批状态。
+- **面板与预览只读**：右侧面板的文件列表与内容预览复用会话自己的路径上下文，越界与硬保护路径（凭据、`.git`、`.easycode`、项目配置）一律拒绝；列出文件沿用工具的忽略规则与大小上限。
+- **`@` 文件查询用 POST**：与 `/api/commands` 同理，请求需要区分「未提供次目录」与「显式不使用次目录」，查询字符串表达不了这个三态。
 
 ## 扩展
 
