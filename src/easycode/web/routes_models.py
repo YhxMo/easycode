@@ -36,10 +36,7 @@ class UpdateModelRequest(BaseModel):
 def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
     @app.get("/api/models")
     def get_models() -> dict:
-        """Return model records without exposing API keys."""
-        reloaded = Config.load(start=cfg.root)
-        cfg.models = reloaded.models
-        cfg.default_model = reloaded.default_model
+        """Return model records without exposing API keys (in-memory config)."""
         return services.models_response(cfg)
 
     @app.post("/api/models/add")

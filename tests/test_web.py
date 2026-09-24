@@ -533,3 +533,47 @@ def test_config_project_secondary_binds_into_new_session(tmp_path):
     s = store.create(model_alias="fake-a")  # no root/secondary -> default project binding
     assert s.secondary_roots == [str(sec.resolve())]
     assert sorted(str(p) for p in s.agent.secondary_roots) == [str(sec.resolve())]
+
+
+def test_session_without_credential_restores_and_reports_422(tmp_path):
+    """DEC-W1: a session whose model lost its credential stays visible.
+
+    Restoring must not build the provider, so the session is listed; the first
+    message resolves it lazily and fails with a clear 422.
+    """
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(
+        json.dumps(
+            {
+                "default_model": "gone",
+                "models": {"gone": {"model": "x/gone", "api_format": "openai_compatible"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sessions_dir = tmp_path / ".easycode" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "abc123.json").write_text(
+        json.dumps(
+            {
+                "id": "abc123",
+                "title": "旧会话",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "model_alias": "gone",
+                "permission_mode": "ask",
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    client = TestClient(create_app(cfg=cfg, static_dir=tmp_path / "no-dist"))
+
+    with client:
+        sessions = client.get("/api/sessions").json()
+        assert [s["id"] for s in sessions] == ["abc123"]
+
+        r = client.post("/api/chat", json={"message": "again", "session_id": "abc123"})
+        assert r.status_code == 422
+        assert "credential" in r.json()["detail"]

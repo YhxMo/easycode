@@ -40,7 +40,8 @@ def test_merges_file_over_defaults(tmp_path, monkeypatch):
     cfg = Config.load()
     assert cfg.default_model == "my-gpt"
     assert cfg.resolve_model("my-gpt") == "openai/x"
-    assert cfg.resolve_model("gpt5.6-terra") == "openai/gpt-5.6-terra"  # default preserved
+    # DEC-C3: an explicit `models` key replaces the built-in defaults
+    assert "gpt5.6-terra" not in cfg.models
     assert cfg.max_tool_result_chars == 100
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from easycode.agent.loop import Agent
 from easycode.config import API_FORMATS, Config
 from easycode.credentials import load_credentials
+from easycode.models.base import DeferredProvider, Provider
 from easycode.models.litellm_provider import LiteLLMProvider
 from easycode.tools import build_registry
 
@@ -123,11 +124,19 @@ def _bind_model(agent: Agent, cfg: Config, alias: str) -> None:
 rebind_agent = _bind_model
 
 
+def _bind_now(agent: Agent, cfg: Config, alias: str) -> Provider:
+    """Bind the model now; used by a deferred restore's first resolve."""
+    rebind_agent(agent, cfg, alias)
+    return agent.provider
+
+
 def make_agent(
     cfg: Config,
     model_alias: str,
     root: Path,
     secondary_roots: list[Path] | None = None,
+    *,
+    defer_credential: bool = False,
 ) -> Agent:
     registry = build_registry(cfg.max_tool_result_chars)
     enabled = {name for name, on in cfg.tools.items() if on}
@@ -152,6 +161,13 @@ def make_agent(
         agents=agents,
         skills=skills,
     )
-    rebind_agent(agent, cfg, model_alias)
+    try:
+        rebind_agent(agent, cfg, model_alias)
+    except ValueError:
+        if not defer_credential:
+            raise
+        # Restoring a session must not fail because the model currently has no
+        # credential; the binding is retried on the first turn (routes 422).
+        agent.provider = DeferredProvider(lambda: _bind_now(agent, cfg, model_alias))
     agent.subagent_factory = lambda alias: make_agent(cfg, alias, root, secondary_roots)
     return agent

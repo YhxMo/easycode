@@ -169,6 +169,10 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             req.message = _expand_command(req.message, roots, skills)
         try:
             sess = _get_session(req.session_id, **kwargs)
+            # A session restored without a usable credential resolves its
+            # provider on first use; failure is a clear 422, not a hidden
+            # mid-stream error.
+            store.ensure_provider(sess)
         except ValueError as exc:
             # Session creation can fail while building the agent (e.g. the
             # default model has no credential configured) or while validating

@@ -332,10 +332,10 @@ def test_update_model_without_credential_persists_api_format(tmp_path):
         provider_kwargs(cfg, "plain")
 
 
-def test_provider_kwargs_prefers_config_format_over_credential(tmp_path, monkeypatch):
+def test_provider_kwargs_uses_config_api_format(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     save_credential(
-        Credential(key_id="k1", api_key="sk-cred", provider="custom"),
+        Credential(key_id="k1", api_key="sk-cred"),
         path=tmp_path / ".easycode" / "credentials.json",
     )
     cfg = Config()
@@ -358,8 +358,8 @@ def test_update_model_updates_api_format_keeps_key(tmp_path):
     key_id = model_key_id(client, "gpt-local")
     cred = load_credentials(tmp_path / ".easycode" / "credentials.json")[key_id]
     assert cred.api_key == "sk-lives-here"
-    assert cred.provider == "openai"
     detail = client.get("/api/models/gpt-local").json()
+    assert detail["provider"] == "openai"  # supplier lives on the model spec
     assert detail["api_format"] == "anthropic"
 
     # model-only update keeps the stored format
@@ -392,7 +392,7 @@ def test_update_model_renames_alias_migrates_key_and_sessions(tmp_path):
     creds = load_credentials(tmp_path / ".easycode" / "credentials.json")
     renamed_key = data["models"]["renamed"]["key_id"]
     assert creds[renamed_key].api_key == "sk-replaced"
-    assert creds[renamed_key].provider == "custom"
+    assert data["models"]["renamed"]["provider"] == "custom"
     assert creds[renamed_key].base_url == "http://new.example/v1"
 
 
@@ -407,8 +407,8 @@ def test_update_model_keeps_key_and_updates_meta(tmp_path):
     key_id = model_key_id(client, "gpt-local")
     creds = load_credentials(tmp_path / ".easycode" / "credentials.json")
     assert creds[key_id].api_key == "sk-lives-here"
-    assert creds[key_id].provider == "openrouter"
     assert creds[key_id].base_url == "http://router/v1"
+    assert client.get("/api/models/gpt-local").json()["provider"] == "openrouter"
 
 
 def test_update_model_model_only_keeps_credential_meta(tmp_path):
@@ -420,8 +420,8 @@ def test_update_model_model_only_keeps_credential_meta(tmp_path):
         model_key_id(client, "gpt-local")
     ]
     assert cred.api_key == "sk-lives-here"
-    assert cred.provider == "openai"
     assert cred.base_url == "http://127.0.0.1:9000/v1"
+    assert client.get("/api/models/gpt-local").json()["provider"] == "openai"
 
 
 def test_update_model_clears_owned_key(tmp_path):
@@ -932,7 +932,7 @@ async def test_web_approval_timeout_rejects(tmp_path):
 def test_build_provider_forwards_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     save_credential(
-        Credential(key_id="k1", api_key="sk-cred", provider="openai", base_url="http://x/v1"),
+        Credential(key_id="k1", api_key="sk-cred", base_url="http://x/v1"),
         path=tmp_path / ".easycode" / "credentials.json",
     )
     cfg = Config()
@@ -998,12 +998,7 @@ def test_apply_api_format_overrides_model_prefix():
 def test_build_provider_forwards_api_format(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     save_credential(
-        Credential(
-            key_id="k1",
-            api_key="sk-cred",
-            provider="openai",
-            base_url="http://x/v1",
-        ),
+        Credential(key_id="k1", api_key="sk-cred", base_url="http://x/v1"),
         path=tmp_path / ".easycode" / "credentials.json",
     )
     cfg = Config()
@@ -1029,7 +1024,7 @@ def test_build_provider_forwards_api_format(tmp_path, monkeypatch):
 
     # api_format wins over the credential provider for unprefixed models
     save_credential(
-        Credential(key_id="k2", api_key="sk-cred", provider="custom"),
+        Credential(key_id="k2", api_key="sk-cred"),
         path=tmp_path / ".easycode" / "credentials.json",
     )
     cfg.set_model_alias(
@@ -1044,12 +1039,7 @@ def test_build_provider_format_overrides_prefixed_model(tmp_path, monkeypatch):
     """deepseek-prefixed model + anthropic format must speak Anthropic, not DeepSeek."""
     monkeypatch.setenv("HOME", str(tmp_path))
     save_credential(
-        Credential(
-            key_id="k1",
-            api_key="sk-ds",
-            provider="deepseek",
-            base_url="https://api.deepseek.com",
-        ),
+        Credential(key_id="k1", api_key="sk-ds", base_url="https://api.deepseek.com"),
         path=tmp_path / ".easycode" / "credentials.json",
     )
     cfg = Config()
@@ -1063,3 +1053,26 @@ def test_build_provider_format_overrides_prefixed_model(tmp_path, monkeypatch):
     assert prov.model == "deepseek-v4-flash"
     assert prov.kwargs["custom_llm_provider"] == "anthropic"
     assert prov.kwargs["api_base"] == "https://api.deepseek.com"
+
+
+def test_delete_builtin_alias_stays_deleted(tmp_path):
+    """DEC-C3: built-in aliases seed a fresh config; deletions must persist."""
+    client = make_app(tmp_path, {"default_model": "deepseek-v4flash"})
+    assert "claude-opus5" in client.get("/api/models").json()["models"]
+
+    assert client.delete("/api/models/claude-opus5").status_code == 200
+
+    assert "claude-opus5" not in client.get("/api/models").json()["models"]
+
+
+def test_get_models_uses_in_memory_config(tmp_path):
+    """DEC-C4: the models endpoint never re-reads the config file mid-run."""
+    client = make_app(tmp_path)
+    (tmp_path / "easycode.config.json").write_text(
+        json.dumps({"models": {"external": "x/y"}}), encoding="utf-8"
+    )
+
+    body = client.get("/api/models").json()
+
+    assert "external" not in body["models"]
+    assert "fake-a" in body["models"]

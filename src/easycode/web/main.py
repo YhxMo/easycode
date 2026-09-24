@@ -41,14 +41,26 @@ def create_app(
     cfg = cfg or Config.load()
     broker = approval_broker or ApprovalBroker()
 
-    def factory(alias: str, **agent_kwargs: object) -> object:
+    def _factory(alias: str, *, defer_credential: bool, **agent_kwargs: object) -> object:
         root_kw = agent_kwargs.get("root")
         session_root = Path(root_kw).resolve() if isinstance(root_kw, str) and root_kw else cfg.root
         roots = agent_kwargs.get("secondary_roots") if agent_kwargs.get("secondary_roots") else None
         secondary = [Path(r).resolve() for r in (roots or [])] or None
-        return make_agent(cfg, alias, session_root, secondary_roots=secondary)
+        return make_agent(
+            cfg,
+            alias,
+            session_root,
+            secondary_roots=secondary,
+            defer_credential=defer_credential,
+        )
 
-    store = session_store or SessionStore(cfg, cfg.root, factory)
+    def factory(alias: str, **agent_kwargs: object) -> object:
+        return _factory(alias, defer_credential=False, **agent_kwargs)
+
+    def restore_factory(alias: str, **agent_kwargs: object) -> object:
+        return _factory(alias, defer_credential=True, **agent_kwargs)
+
+    store = session_store or SessionStore(cfg, cfg.root, factory, restore_factory=restore_factory)
     store.load_all()
 
     app = FastAPI(title="Easy code", version="0.1.0")

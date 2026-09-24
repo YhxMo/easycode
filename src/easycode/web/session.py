@@ -14,6 +14,7 @@ from typing import Any
 
 from easycode.agent.loop import Agent
 from easycode.credentials import data_home
+from easycode.models.base import DeferredProvider
 from easycode.workspace import normalise_secondary, root_error
 
 #: Creates an agent for an alias; implementations may accept extra kwargs
@@ -85,10 +86,19 @@ class Session:
 class SessionStore:
     """In-memory sessions backed by JSON files under ``~/.easycode/sessions``."""
 
-    def __init__(self, cfg, root: Path, agent_factory: AgentFactory) -> None:
+    def __init__(
+        self,
+        cfg,
+        root: Path,
+        agent_factory: AgentFactory,
+        restore_factory: AgentFactory | None = None,
+    ) -> None:
         self.cfg = cfg
         self.root = root
         self.agent_factory = agent_factory
+        # Restoring a persisted session may defer credential resolution so a
+        # missing/removed key cannot hide the session from the list.
+        self.restore_factory = restore_factory or agent_factory
         self.dir = data_home() / "sessions"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, Session] = {}
@@ -162,6 +172,16 @@ class SessionStore:
             raise ValueError(err)
         return paths
 
+    def ensure_provider(self, session: Session) -> None:
+        """Resolve a lazily restored session's provider.
+
+        Raises ``ValueError`` when the model still has no usable credential;
+        the caller surfaces that as a 422 before any stream starts.
+        """
+        provider = session.agent.provider
+        if isinstance(provider, DeferredProvider):
+            provider.resolve()
+
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 
@@ -218,12 +238,15 @@ class SessionStore:
                     agent_kwargs["root"] = root
                 if secondary:
                     agent_kwargs["secondary_roots"] = secondary
-                agent = self.agent_factory(
+                agent = self.restore_factory(
                     data.get("model_alias") or self.cfg.default_model, **agent_kwargs
                 )
                 agent.permission_mode = data.get("permission_mode") or self.cfg.permission_mode
+                # The snapshot and the live history must not share one list:
+                # record_exchange replaces the snapshot each turn while the
+                # agent keeps mutating its own history.
                 messages = list(data.get("messages") or [])
-                agent.history.messages = messages
+                agent.history.messages = list(messages)
                 sess = Session(
                     id=data["id"],
                     title=data.get("title", "新会话"),

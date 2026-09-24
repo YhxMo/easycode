@@ -152,8 +152,10 @@ class Config:
         # one it anchors at CWD itself (never CWD's parent — that would widen
         # the sandbox and write easycode.config.json outside the project).
         root = cfg_path.parent.resolve() if cfg_path else Path.cwd().resolve()
-        merged_models = {**DEFAULT_MODELS, **(raw.get("models") or {})}
-        models = {alias: ModelSpec.parse(value) for alias, value in merged_models.items()}
+        # Built-in aliases seed a fresh config only; once the file carries a
+        # `models` key (cfg.save always writes it) deletions must stick.
+        raw_models = raw.get("models", DEFAULT_MODELS)
+        models = {alias: ModelSpec.parse(value) for alias, value in (raw_models or {}).items()}
         tools = {**DEFAULT_TOOLS, **(raw.get("tools") or {})}
         workspace = raw.get("workspace") or {}
         # Only the documented key is read, and an invalid value is an error

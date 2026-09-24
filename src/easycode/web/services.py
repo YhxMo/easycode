@@ -29,23 +29,17 @@ def infer_provider(model: str, api_format: str) -> str:
     return FORMAT_PROVIDERS.get(api_format, "custom")
 
 
-def _display_provider(spec: ModelSpec, credential: Credential | None) -> str:
-    """Supplier label for display: spec → credential → model/format inference."""
-    return (
-        spec.provider
-        or (credential.provider if credential else None)
-        or infer_provider(spec.model, spec.api_format)
-    )
+def _display_provider(spec: ModelSpec) -> str:
+    """Supplier label for display: explicit spec provider, else inference."""
+    return spec.provider or infer_provider(spec.model, spec.api_format)
 
 
 def models_response(cfg: Config) -> dict:
     """Snapshot of model records (no API keys leaked)."""
     providers: dict[str, str] = {}
     limits: dict[str, dict[str, int] | None] = {}
-    credentials = load_credentials()
     for alias, spec in cfg.models.items():
-        credential = credentials.get(spec.key_id) if spec.key_id else None
-        providers[alias] = _display_provider(spec, credential)
+        providers[alias] = _display_provider(spec)
         limits[alias] = cfg.get_model_limits(alias)
     return {
         "default": cfg.default_model,
@@ -62,7 +56,7 @@ def get_model_detail(cfg: Config, alias: str) -> dict:
         raise LookupError(alias)
     cred = load_credentials().get(spec.key_id) if spec.key_id else None
     api_format = spec.api_format
-    provider = _display_provider(spec, cred)
+    provider = _display_provider(spec)
     api_key = cred.api_key if cred else ""
     base_url = cred.base_url if cred else None
     return {
@@ -93,14 +87,7 @@ def add_model(
     key_id = None
     if api_key or base_url:
         key_id = new_credential_id()
-        save_credential(
-            Credential(
-                key_id=key_id,
-                api_key=api_key,
-                provider=provider,
-                base_url=base_url,
-            )
-        )
+        save_credential(Credential(key_id=key_id, api_key=api_key, base_url=base_url))
     entry: dict[str, str] = {"model": model, "api_format": api_format}
     if provider and provider.strip():
         entry["provider"] = provider.strip()
@@ -146,14 +133,7 @@ def update_model(
         if spec.key_id or next_api_key or next_base_url:
             key_id = spec.key_id or new_credential_id()
             save_credential(
-                Credential(
-                    key_id=key_id,
-                    api_key=next_api_key,
-                    provider=provider
-                    if provider is not None
-                    else (current_cred.provider if current_cred else None),
-                    base_url=next_base_url,
-                )
+                Credential(key_id=key_id, api_key=next_api_key, base_url=next_base_url)
             )
         else:
             key_id = None
