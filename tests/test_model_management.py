@@ -727,7 +727,6 @@ async def test_agent_approval_rejected_skips_tool(tmp_path):
     async for ev in agent.respond("write it"):
         events.append(ev)
     kinds = [e.kind for e in events]
-    assert "approval" in kinds
     assert "tool_result" in kinds
     rej = next(e for e in events if e.kind == "tool_result")
     assert "rejected" in rej.tool_result

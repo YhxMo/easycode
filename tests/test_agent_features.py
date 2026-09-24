@@ -48,7 +48,7 @@ async def test_no_agents_md_no_rules_section(tmp_path):
 
 
 def test_history_condense_replaces_old_messages():
-    h = History(max_chars=1_000_000, max_messages=100)
+    h = History(max_chars=1_000_000)
     for i in range(30):
         h.add_user(f"user {i}")
         h.add_assistant(f"answer {i}")
@@ -97,13 +97,11 @@ async def test_parallel_tasks_runs_subagents(tmp_path):
         provider=FakeProvider(script=[{"text": "result-one"}]),
         registry=build_registry(8000),
         root=tmp_path,
-        include_parallel_tool=False,
     )
     sub_2 = Agent(
         provider=FakeProvider(script=[{"text": "result-two"}]),
         registry=build_registry(8000),
         root=tmp_path,
-        include_parallel_tool=False,
     )
     made = iter([sub_1, sub_2])
 
@@ -156,8 +154,8 @@ async def test_parallel_tasks_in_main_schema(tmp_path):
     assert "parallel_tasks" in names
 
 
-async def test_parallel_tasks_disabled_optionally(tmp_path):
-    agent = make_agent(tmp_path, [{"text": "x"}], include_parallel_tool=False)
+async def test_parallel_tasks_disabled_by_enabled_tools(tmp_path):
+    agent = make_agent(tmp_path, [{"text": "x"}], enabled_tools={"read_file", "glob"})
     names = [s["function"]["name"] for s in agent.tool_schemas()]
     assert "parallel_tasks" not in names
 
@@ -167,7 +165,6 @@ async def test_parallel_tasks_subagent_error_reported(tmp_path):
         provider=FakeProvider(script=[{"error": "boom"}]),
         registry=build_registry(8000),
         root=tmp_path,
-        include_parallel_tool=False,
     )
     main = make_agent(
         tmp_path,

@@ -116,6 +116,11 @@ async def run_task(agent: Agent, tc: ToolCall) -> str:
             },
             ensure_ascii=False,
         )
+    if not spec.delegatable:
+        return json.dumps(
+            {"status": "error", "message": f"agent is not delegatable: {name}"},
+            ensure_ascii=False,
+        )
     if not prompt:
         return json.dumps({"status": "error", "message": "task prompt is empty"})
     try:
@@ -193,33 +198,29 @@ async def run_builtin(agent: Agent, tc: ToolCall) -> str:
 def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
     """Build a subagent; ``spec`` (task tool) overrides model/system/tools/permission.
 
-    Uses ``agent.subagent_factory`` when provided (dependency inversion); the
-    fallback builds an :class:`~easycode.agent.loop.Agent` directly via a
-    deferred import to avoid a top-level circular reference.
+    Requires ``agent.subagent_factory`` (set by ``make_agent``): the factory
+    resolves the model alias through the same credential path as the parent.
+    Directly constructed agents without a factory cannot delegate.
     """
+    if agent.subagent_factory is None:
+        raise RuntimeError("sub-agent delegation is not configured (no subagent_factory)")
     model = spec.model if spec is not None and spec.model else None
-    if agent.subagent_factory:
-        # the factory resolves aliases; without a spec model, inherit the
-        # parent's alias so credentials and api_format stay correct
-        sub = agent.subagent_factory(model or agent.model_alias or agent.provider.model)
+    # the factory resolves aliases; without a spec model, inherit the parent's
+    # alias so credentials and api_format stay correct
+    sub = agent.subagent_factory(model or agent.model_alias or agent.provider.model)
+    if spec is not None and spec.tools is not None:
+        sub_tools = set(spec.tools)
+    elif sub.enabled_tools is not None:
+        sub_tools = set(sub.enabled_tools)
     else:
-        from easycode.agent.loop import Agent  # deferred: call-time, avoids cycle
-        from easycode.models.litellm_provider import LiteLLMProvider
-
-        provider = LiteLLMProvider(
-            model or agent.provider.model, **getattr(agent.provider, "kwargs", {})
+        sub_tools = (
+            set(agent.enabled_tools)
+            if agent.enabled_tools is not None
+            else agent.all_tool_names()
         )
-        sub = Agent(
-            provider=provider,
-            registry=agent.registry,
-            root=agent.root,
-            enabled_tools=agent.enabled_tools,
-            max_context_tokens=agent.max_context_tokens,
-            compaction=dict(agent.compaction),
-            model_limits=agent.model_limits,
-            agents=agent.agents,
-            skills=agent.skills,
-        )
+    # A subagent never recurses into parallel delegation.
+    sub_tools.discard("parallel_tasks")
+    sub.enabled_tools = sub_tools
     sub.secondary_roots = list(agent.secondary_roots)
     sub.extra_safe_dirs = list(agent.extra_safe_dirs)
     sub.mcp_servers = agent.mcp_servers
@@ -229,8 +230,6 @@ def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
     sub.approval_handler = agent.approval_handler
     sub.review_handler = agent.review_handler
     if spec is not None:
-        if spec.tools is not None:
-            sub.enabled_tools = set(spec.tools)
         if spec.permission:
             sub.permission_mode = cap_permission(agent.permission_mode, spec.permission)
         if spec.system:

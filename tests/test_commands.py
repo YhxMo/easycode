@@ -202,3 +202,41 @@ async def test_handle_command_smoke_help_agents_model_list(tmp_path, monkeypatch
     assert await cli.handle_command("/help", cfg, agent, cfg.default_model, commands) is None
     assert await cli.handle_command("/agents", cfg, agent, cfg.default_model, commands) is None
     assert await cli.handle_command("/model", cfg, agent, cfg.default_model, commands) is None
+
+
+def test_commands_endpoint_scoped_to_session(tmp_path, monkeypatch):
+    """DEC-C8: /api/commands?session_id= matches what chat expansion sees."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    proj_a = tmp_path / "a"
+    proj_b = tmp_path / "b"
+    for proj, name in ((proj_a, "only-a"), (proj_b, "only-b")):
+        cmds = proj / ".easycode" / "commands"
+        cmds.mkdir(parents=True)
+        (cmds / f"{name}.md").write_text(
+            f"---\ndescription: {name}\n---\nTemplate $ARGUMENTS\n", encoding="utf-8"
+        )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str, **kwargs):
+        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj_a)
+
+    store = SessionStore(cfg, tmp_path, factory)
+    sess_a = store.create(root=str(proj_a))
+    store.create(root=str(proj_b))
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+
+    scoped = client.get(f"/api/commands?session_id={sess_a.id}").json()["commands"]
+    names = [c["name"] for c in scoped]
+    assert "only-a" in names
+    assert "only-b" not in names
+
+    # Without a session the endpoint still lists the union (autocomplete for a
+    # not-yet-created session).
+    union = [c["name"] for c in client.get("/api/commands").json()["commands"]]
+    assert "only-b" in union

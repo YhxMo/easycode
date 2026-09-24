@@ -224,8 +224,6 @@ async def stream_chat_with_approval(
                 yield ("approval", payload)
             elif kind == "agent":
                 ev: AgentEvent = payload
-                if ev.kind == "approval":
-                    continue  # broker-driven event already yielded
                 if ev.kind == "text" and ev.content:
                     buf.append(ev.content)
                     size = sum(len(part) for part in buf)

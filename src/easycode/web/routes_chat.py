@@ -108,15 +108,23 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 raise HTTPException(409, "secondary roots do not match session")
 
     @app.get("/api/commands")
-    def list_commands() -> dict:
-        """Executable template and skill commands for autocomplete."""
-        roots = [cfg.root]
-        for s in store.list():
-            for p in [s.root, *s.secondary_roots] if s.root else list(s.secondary_roots):
-                if p:
-                    roots.append(Path(p))
-        roots = list(dict.fromkeys(Path(r).resolve() for r in roots))
-        skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
+    def list_commands(session_id: str | None = None) -> dict:
+        """Executable template and skill commands for autocomplete.
+
+        With ``session_id`` the discovery scope is exactly what chat expansion
+        uses for that session; without it the union of known roots is listed.
+        """
+        sess = store.get(session_id) if session_id else None
+        if sess is not None:
+            roots, skills = _session_roots(sess, cfg), sess.agent.skills
+        else:
+            roots = [cfg.root]
+            for s in store.list():
+                for p in [s.root, *s.secondary_roots] if s.root else list(s.secondary_roots):
+                    if p:
+                        roots.append(Path(p))
+            roots = list(dict.fromkeys(Path(r).resolve() for r in roots))
+            skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
         reg = _build_web_commands(roots, skills)
         return {
             "commands": [

@@ -111,16 +111,16 @@ async def test_agent_routes_mcp_tool(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_disabled_mcp_tool_call_is_rejected(tmp_path):
-    """An MCP tool excluded by `enabled_tools` is not advertised and not run."""
+async def test_unknown_mcp_tool_call_is_rejected(tmp_path):
+    """A hallucinated MCP tool name is not advertised and is rejected."""
     from easycode.agent.loop import Agent
     from easycode.mcp import mcp_tool_name
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
-    fname = mcp_tool_name("demo", "add")
+    fname = mcp_tool_name("demo", "nope")
     script = [
-        {"tool_calls": [("c1", fname, {"a": 1, "b": 2})], "text": ""},
+        {"tool_calls": [("c1", fname, {})], "text": ""},
         {"text": "done"},
     ]
     agent = Agent(
@@ -128,12 +128,11 @@ async def test_disabled_mcp_tool_call_is_rejected(tmp_path):
         registry=build_registry(8000),
         root=tmp_path,
         mcp_servers=mcp_server_config(),
-        enabled_tools={"read_file"},
         permission_mode="allow-all",
     )
 
     results = []
-    async for ev in agent.respond("add it"):
+    async for ev in agent.respond("call it"):
         if ev.kind == "tool_result":
             results.append(json.loads(ev.tool_result))
 
@@ -169,6 +168,9 @@ async def test_subagent_reuses_mcp_manager(tmp_path):
     assert agent.mcp_manager is None
     from easycode.agent.builtin_tools import make_subagent
 
+    agent.subagent_factory = lambda _model: Agent(
+        provider=FakeProvider(), registry=build_registry(8000), root=tmp_path
+    )
     sub = make_subagent(agent)
     assert sub.mcp_servers == agent.mcp_servers
     assert sub.mcp_manager == agent.mcp_manager  # shares (lazily shared after connect)

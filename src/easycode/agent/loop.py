@@ -89,7 +89,6 @@ class Agent:
     model_alias: str | None = None
     summarizer: Summarizer | None = None
     subagent_factory: Callable[[str], Agent] | None = None
-    include_parallel_tool: bool = True
     secondary_roots: list[Path] = field(default_factory=list)
     extra_safe_dirs: list[Path] = field(default_factory=list)
     permission_mode: str = PERM_ASK
@@ -173,24 +172,19 @@ class Agent:
 
     def tool_schemas(self) -> list[dict]:
         schemas = self.registry.schemas(self.enabled_tools)
-        if self.include_parallel_tool and (
-            self.enabled_tools is None or "parallel_tasks" in self.enabled_tools
-        ):
+        if self.enabled_tools is None or "parallel_tasks" in self.enabled_tools:
             schemas = [*schemas, PARALLEL_TASKS_SCHEMA]
         if self.agents is not None and self.agents.names():
             schemas = [*schemas, TASK_SCHEMA]
         if self.skills is not None and self.skills.names():
             schemas = [*schemas, USE_SKILL_SCHEMA]
         if self.mcp_manager:
-            schemas = [*schemas, *self._mcp_schemas()]
+            schemas = [*schemas, *self.mcp_manager.tool_schemas()]
         return schemas
 
-    def _mcp_schemas(self) -> list[dict]:
-        """MCP tool schemas, narrowed by ``enabled_tools`` when it is set."""
-        schemas = self.mcp_manager.tool_schemas()
-        if self.enabled_tools is None:
-            return schemas
-        return [s for s in schemas if s["function"]["name"] in self.enabled_tools]
+    def all_tool_names(self) -> set[str]:
+        """Every registry tool name (MCP tools are governed by mcp_servers)."""
+        return {schema["function"]["name"] for schema in self.registry.schemas(None)}
 
     def _tool_schema_tokens(self, schemas: list[dict]) -> int:
         """Estimated token cost of the tool schemas sent on every completion.
@@ -351,7 +345,6 @@ class Agent:
                     ),
                 )
             else:
-                yield AgentEvent(kind="approval", tool_call=tc, content=reason)
                 approved = (
                     bool(await self.approval_handler(tc, reason)) if self.approval_handler else False
                 )

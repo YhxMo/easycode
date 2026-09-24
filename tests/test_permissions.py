@@ -255,10 +255,10 @@ async def test_permission_rule_allow_grants_exact_external_file_write(tmp_path):
         permission_rules={"write_file": {f"*{outside.name}": "allow"}},
     )
     agent.root.mkdir()
-    events = [event async for event in agent.respond("write approved file")]
+    [event async for event in agent.respond("write approved file")]
 
+    # rule=allow skips approval entirely: no handler is set, yet the write ran
     assert outside.read_text() == "approved"
-    assert not any(event.kind == "approval" for event in events)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")

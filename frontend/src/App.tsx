@@ -135,10 +135,14 @@ export default function App() {
   useEffect(() => {
     refreshSessions();
     fetchModels().then(setModels).catch(() => {});
-    fetchCommands()
+  }, [refreshSessions]);
+
+  // Command discovery follows the session: its own project roots and skills.
+  useEffect(() => {
+    fetchCommands(currentId)
       .then((r) => setCommands(r.commands))
       .catch(() => {});
-  }, [refreshSessions]);
+  }, [currentId]);
 
   useEffect(() => {
     refreshArchived();

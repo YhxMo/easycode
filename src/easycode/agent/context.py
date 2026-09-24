@@ -14,14 +14,14 @@ class History:
     """Bounded message history (OpenAI-format dicts).
 
     Budgets: ``max_tokens`` (usable model budget, primary) and ``max_chars``
-    (backstop for non-token-countable models). ``summary`` tracks the latest
-    rolling compaction summary so repeated compactions merge instead of
-    overwriting (aligned with opencode).
+    (backstop for non-token-countable models). Old turns are dropped only by
+    ``trim``/``condense`` under those budgets, never by a raw message count.
+    ``summary`` derives from the head summary message so repeated compactions
+    merge instead of overwriting (aligned with opencode).
     """
 
     system: Message | None = None
     messages: list[Message] = field(default_factory=list)
-    max_messages: int = 100
     max_chars: int = 400_000
     max_tokens: int = 32_000
 
@@ -36,14 +36,10 @@ class History:
         self.system = {"role": "system", "content": content}
 
     def add(self, message: Message) -> None:
+        # Trimming happens in ``trim``/``condense`` under the token and char
+        # budgets; a message count limit would drop old turns without a
+        # summary.
         self.messages.append(message)
-        # Trim in whole turns so a single pop never lands mid-turn on an
-        # assistant ``tool_calls`` message or a ``tool`` result: a
-        # boundary can only break a tool_call/result pairing, which would
-        # leave an orphan tool in the payload.
-        while len(self.messages) > self.max_messages:
-            if not self._drop_oldest_turn():
-                break
 
     def add_user(self, content: str) -> None:
         self.add({"role": "user", "content": content})
@@ -152,9 +148,6 @@ class History:
         Trims whole user turns so an assistant ``tool_calls`` message and its
         ``tool`` results are never split across the trim boundary.
         """
-        while len(self.messages) > self.max_messages:
-            if not self._drop_oldest_turn():
-                break
         total = self.estimate_chars()
         while total > self.max_chars and len(self.messages) > 2:
             if not self._drop_oldest_turn():

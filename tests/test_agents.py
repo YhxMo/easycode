@@ -237,25 +237,21 @@ You only read files.
     assert any('"rejected": true' in str(m.get("content")) for m in sub_tools)
 
 
-def test_subagent_inherits_model_credentials(tmp_path):
-    """Fallback path (directly constructed parent, no factory): the parent's
-    provider is reused verbatim, with or without a spec."""
+def test_subagent_requires_factory(tmp_path):
+    """DEC-L1: a directly constructed agent cannot delegate without a factory."""
     from easycode.agent.builtin_tools import make_subagent
     from easycode.agent.loop import Agent
-    from easycode.agents import AgentSpec
     from easycode.models.litellm_provider import LiteLLMProvider
     from easycode.tools import build_registry
 
-    provider = LiteLLMProvider("demo", api_key="test-key", api_base="http://localhost/v1")
-    parent = Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
-    child = make_subagent(parent)
-    assert child.provider.model == parent.provider.model
-    assert child.provider.kwargs == parent.provider.kwargs
-    assert child.history is not parent.history
+    parent = Agent(
+        provider=LiteLLMProvider("demo", api_key="test-key"),
+        registry=build_registry(8000),
+        root=tmp_path,
+    )
 
-    inherit = make_subagent(parent, AgentSpec(name="plain", description="no model"))
-    assert inherit.provider.model == parent.provider.model
-    assert inherit.provider.kwargs == parent.provider.kwargs
+    with pytest.raises(RuntimeError, match="subagent_factory"):
+        make_subagent(parent)
 
 
 def test_subagent_model_alias_resolved_with_own_credentials(tmp_path, monkeypatch):
@@ -315,3 +311,27 @@ You inherit.
     inherit = make_subagent(parent, parent.agents.get("plain"))
     assert inherit.provider.model == "parent-model"
     assert inherit.provider.kwargs["api_key"] == "sk-parent"
+
+
+@pytest.mark.asyncio
+async def test_task_tool_rejects_primary_agent(tmp_path):
+    """DEC-C7: `mode: primary` agents cannot be delegated to."""
+    from easycode.agents import AgentSpec
+
+    reg = AgentRegistry({"main": AgentSpec(name="main", description="primary", mode="primary")})
+    script = [
+        {"tool_calls": [("t1", "task", {"agent": "main", "prompt": "do work"})], "text": ""},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        provider=FakeProvider(script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        agents=reg,
+    )
+
+    events = [ev async for ev in agent.respond("run")]
+    result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
+
+    assert result["status"] == "error"
+    assert "not delegatable" in result["message"]

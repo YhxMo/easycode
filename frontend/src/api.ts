@@ -85,8 +85,9 @@ export interface CommandInfo {
   source?: "builtin" | "project" | "user";
 }
 
-export function fetchCommands(): Promise<{ commands: CommandInfo[] }> {
-  return fetch("/api/commands").then((r) => json<{ commands: CommandInfo[] }>(r));
+export function fetchCommands(sessionId?: string | null): Promise<{ commands: CommandInfo[] }> {
+  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+  return request<{ commands: CommandInfo[] }>(`/api/commands${query}`);
 }
 
 export interface AddModelBody {
