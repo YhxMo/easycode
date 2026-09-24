@@ -182,13 +182,13 @@ export function pinProject(root: string | null, pinned: boolean): Promise<{ proj
   return request("/api/workspaces/pin", { method: "POST", body: { root, pinned } });
 }
 
-export function revealInFinder(root: string | null): Promise<{ ok: boolean; supported: boolean; path?: string }> {
+export function revealInFinder(root: string | null): Promise<{ ok: boolean; error?: string }> {
   return request("/api/workspaces/reveal", { method: "POST", body: { root } });
 }
 
 export function createWorktree(
   root: string,
-): Promise<{ name?: string; projects: WorkspaceProject[] }> {
+): Promise<{ name?: string; warnings?: string[]; projects: WorkspaceProject[] }> {
   return request("/api/workspaces/worktree", { method: "POST", body: { root } });
 }
 

@@ -41,7 +41,7 @@ import type { ProjectAction } from "./ProjectMenu";
 import { basename, DEFAULT_PROJECT } from "./lib/paths";
 import { SecondaryEditor } from "./SecondaryEditor";
 
-const EMPTY_MODELS: ModelsInfo = { default: "deepseek-v4flash", models: {}, providers: {}, limits: {} };
+const EMPTY_MODELS: ModelsInfo = { default: "", models: {}, providers: {}, limits: {} };
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -296,8 +296,7 @@ export default function App() {
           showToast("ok", action === "pin" ? "已置顶" : "已取消置顶");
         } else if (action === "reveal") {
           const r = await revealInFinder(root);
-          if (!r.supported) showToast("err", "当前平台不支持在 Finder 中显示");
-          else if (!r.ok) showToast("err", r.path ? `无法打开: ${r.path}` : "无法打开目录");
+          if (!r.ok) showToast("err", r.error ?? "无法打开目录");
         } else if (action === "worktree") {
           if (!root) {
             showToast("err", "默认项目没有目录");
@@ -306,7 +305,11 @@ export default function App() {
           const r = await createWorktree(root);
           setProjects(r.projects);
           refreshSessions();
-          showToast("ok", `已创建永久工作树 ${r.name ?? ""}`);
+          if (r.warnings?.length) {
+            showToast("err", `工作树已创建，但有提示：${r.warnings.join("；")}`);
+          } else {
+            showToast("ok", `已创建永久工作树 ${r.name ?? ""}`);
+          }
         } else if (action === "archive") {
           const r = await archiveProjectChats(root);
           refreshSessions();

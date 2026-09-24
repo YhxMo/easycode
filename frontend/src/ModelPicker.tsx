@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
+import { useDismiss } from "./lib/useDismiss";
 import type { AddModelBody, ModelsInfo, UpdateModelBody } from "./api";
 import { addModel, deleteModel, fetchModel, fetchModels, switchModel, updateModel } from "./api";
 
@@ -187,8 +188,7 @@ export function ModelPicker({
   const [showEdit, setShowEdit] = useState(false);
   const [formatOpen, setFormatOpen] = useState(false);
   const [revealKey, setRevealKey] = useState(false);
-  const [formError, setFormError] = useState("");
-  const [toast, setToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+  const [toast, setToast] = useState<{ kind: "success"; text: string } | null>(null);
   const [hasStoredKey, setHasStoredKey] = useState(false);
   const [hovered, setHovered] = useState<{ alias: string; top: number } | null>(null);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
@@ -208,18 +208,8 @@ export function ModelPicker({
     clear_key: false,
   });
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-      if (formatRef.current && !formatRef.current.contains(e.target as Node)) {
-        setFormatOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  useDismiss(menuRef, () => setOpen(false), open);
+  useDismiss(formatRef, () => setFormatOpen(false), formatOpen);
 
   useEffect(() => {
     const onFocus = () => fetchModels().then(onChange).catch(() => {});
@@ -233,9 +223,9 @@ export function ModelPicker({
     };
   }, []);
 
-  const flash = (kind: "success" | "error", text: string) => {
+  const flash = (text: string) => {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-    setToast({ kind, text });
+    setToast({ kind: "success", text });
     toastTimer.current = window.setTimeout(() => {
       setToast(null);
       toastTimer.current = null;
@@ -250,10 +240,9 @@ export function ModelPicker({
       onChange(await switchModel(alias));
     } catch (error) {
       const message = error instanceof Error ? error.message : "请求失败";
-      // Surface the switch failure globally (App toast) in addition to
-      // the local in-picker flash. `current` is left untouched, so the old
-      // model stays highlighted (onChange is only called on success).
-      flash("error", `切换失败：${message}`);
+      // DEC-F1: one error channel — the App toast. `current` is left
+      // untouched, so the old model stays highlighted (onChange only runs on
+      // success).
       onError?.(`切换失败：${message}`);
       fetchModels().then(onChange).catch(() => {});
     } finally {
@@ -264,7 +253,6 @@ export function ModelPicker({
   const submitAdd = async () => {
     if (!form.alias.trim() || !form.model.trim()) return;
     setBusy(true);
-    setFormError("");
     try {
       const body: AddModelBody = { alias: form.alias.trim(), model: form.model.trim() };
       if (form.provider) body.provider = form.provider;
@@ -273,12 +261,10 @@ export function ModelPicker({
       if (form.api_format) body.api_format = form.api_format;
       onChange(await addModel(body));
       setShowAdd(false);
-      flash("success", "添加成功");
+      flash("添加成功");
       setForm({ alias: "", model: "", provider: "openai", base_url: "", api_key: "", api_format: "openai_compatible", clear_key: false });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "请求失败";
-      setFormError(`添加失败：${message}`);
-      flash("error", "添加失败");
+      onError?.(`添加失败：${error instanceof Error ? error.message : "请求失败"}`);
     } finally {
       setBusy(false);
     }
@@ -300,7 +286,6 @@ export function ModelPicker({
         clear_key: false,
       });
       setHasStoredKey(detail.has_api_key);
-      setFormError("");
       setEditingAlias(alias);
       setRevealKey(false);
       setShowEdit(true);
@@ -330,11 +315,9 @@ export function ModelPicker({
       setShowEdit(false);
       setRevealKey(false);
       setEditingAlias(null);
-      flash("success", "保存成功");
+      flash("保存成功");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "请求失败";
-      setFormError(`保存失败：${message}`);
-      flash("error", "保存失败");
+      onError?.(`保存失败：${error instanceof Error ? error.message : "请求失败"}`);
     } finally {
       setBusy(false);
     }
@@ -387,7 +370,7 @@ export function ModelPicker({
   return (
     <div className="model-picker-row">
       {toast && (
-        <div className={`model-toast ${toast.kind}`} role={toast.kind === "error" ? "alert" : "status"}>
+        <div className={`model-toast ${toast.kind}`} role="status">
           {toast.text}
         </div>
       )}
@@ -466,7 +449,6 @@ export function ModelPicker({
                 type="button"
                 onClick={() => {
                   setOpen(false);
-                  setFormError("");
                   setShowAdd(true);
                 }}
               >
@@ -523,7 +505,6 @@ export function ModelPicker({
                 onChange={(e) => setForm({ ...form, api_key: e.target.value })}
               />
             </label>
-            {formError && <div className="modal-error">{formError}</div>}
             <div className="modal-actions">
               <button type="button" onClick={() => setShowAdd(false)}>
                 取消
@@ -583,7 +564,6 @@ export function ModelPicker({
               </button>
               {form.clear_key && <span>保存后将删除该模型凭据</span>}
             </div>
-            {formError && <div className="modal-error">{formError}</div>}
             <div className="modal-actions">
               <button type="button" onClick={() => setShowEdit(false)}>
                 取消

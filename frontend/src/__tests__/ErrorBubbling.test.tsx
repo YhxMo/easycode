@@ -4,11 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
 
-// SecondaryEditor and ProjectPicker previously swallowed
-// Finder-choose failures into a local `.picker-error` that is easy to miss (and
-// invisible when the sidebar is collapsed or while editing inside a modal).
-// Both now accept an `onError` prop bubbled up to App's `showToast("err", ...)`
-// so a workspace/root-choose failure always surfaces as a global toast.
+// Finder-choose failures used to be reported twice: a local `.picker-error`
+// (easy to miss when the sidebar is collapsed or a modal covers it) plus the
+// App-level toast. DEC-F1 keeps a single error channel: the global toast via
+// the `onError` prop.
 //
 // Test drives App purely against a mocked ./api (easycode-audit rule 3: no
 // network, no real ~/.easycode).
@@ -71,7 +70,7 @@ describe("App · 访达选择失败冒泡", () => {
       const toast = document.querySelector(".app-toast");
       expect(toast?.textContent).toContain("访达引擎不可用");
     });
-    // The local picker error still appears too (backward compat preserved).
-    expect(document.querySelector(".picker-error")?.textContent).toContain("访达引擎不可用");
+    // DEC-F1: no local duplicate — the error lives only in the global toast.
+    expect(document.querySelector(".picker-error")).toBeNull();
   });
 });

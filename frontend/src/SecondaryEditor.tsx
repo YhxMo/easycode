@@ -21,12 +21,10 @@ export function SecondaryEditor({
   onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
 
   const mutate = async (next: string[]) => {
     setBusy(true);
-    setError("");
     try {
       const { secondary: saved, projects } = await saveProject(
         root,
@@ -37,9 +35,7 @@ export function SecondaryEditor({
       onProjects?.(projects);
       return saved;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      onError?.(msg);
+      onError?.(e instanceof Error ? e.message : String(e));
       return null;
     } finally {
       setBusy(false);
@@ -48,22 +44,18 @@ export function SecondaryEditor({
 
   const pickViaFinder = async () => {
     setBusy(true);
-    setError("");
     try {
       const { paths, supported } = await chooseWorkspace(
         true,
         `为 ${root ? basename(root) : DEFAULT_PROJECT} 添加次目录（可多选）`,
       );
       if (!supported) {
-        setError("当前平台不支持访达选择");
         onError?.("当前平台不支持访达选择");
       } else if (paths.length) {
         await mutate([...new Set([...secondary, ...paths])]);
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      onError?.(msg);
+      onError?.(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -126,7 +118,6 @@ export function SecondaryEditor({
           </button>
         </div>
       )}
-      {error && <div className="picker-error">{error}</div>}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useDismiss } from "./lib/useDismiss";
 import type { WorkspaceProject, WorkspacesInfo } from "./api";
 import { chooseWorkspace } from "./api";
 import { basename, DEFAULT_PROJECT } from "./lib/paths";
@@ -24,19 +25,10 @@ export function ProjectPicker({
   onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, []);
+  useDismiss(pickerRef, () => setOpen(false), open);
 
   // switching the main root shows that project's bound secondary roots
   useEffect(() => {
@@ -47,11 +39,9 @@ export function ProjectPicker({
 
   const pickPrimaryViaFinder = async () => {
     setBusy(true);
-    setError("");
     try {
       const { paths, supported } = await chooseWorkspace(false, "选择主目录");
       if (!supported) {
-        setError("当前平台不支持访达选择，请用已有项目或重启后重试");
         onError?.("当前平台不支持访达选择，请用已有项目或重启后重试");
       } else if (paths[0]) {
         const chosen = paths[0];
@@ -62,9 +52,7 @@ export function ProjectPicker({
         }
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      onError?.(msg);
+      onError?.(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -152,7 +140,6 @@ export function ProjectPicker({
           onProjects={onProjects}
           onError={onError}
         />
-        {error && <div className="picker-error">{error}</div>}
       </div>
     </div>
   );

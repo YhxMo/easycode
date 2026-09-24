@@ -361,6 +361,19 @@ describe("App", () => {
     await screen.findByText("2/2 个问题");
   });
 
+  it("Escape 关闭权限菜单（useDismiss 统一行为）", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByRole("button", { name: /请求批准/ });
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    expect(screen.getByRole("menu", { name: "选择权限模式" })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByRole("menu", { name: "选择权限模式" })).toBeNull();
+  });
+
   it("移动端侧栏抽屉——按钮存在、点击显示、遮罩/Escape 关闭、点会话或新会话关闭", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
