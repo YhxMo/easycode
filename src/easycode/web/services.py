@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from easycode.agentfactory import provider_kwargs, rebind_agent
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from easycode.agentfactory import bind_agent, defer_binding, provider_kwargs
 from easycode.config import DEFAULT_MODEL_ALIAS, Config, ModelSpec
 from easycode.credentials import (
     Credential,
@@ -11,6 +14,9 @@ from easycode.credentials import (
     new_credential_id,
     save_credential,
 )
+
+if TYPE_CHECKING:
+    from easycode.web.session import Session, SessionStore
 
 FORMAT_PROVIDERS = {
     "openai_responses": "openai",
@@ -100,9 +106,25 @@ def add_model(
     return models_response(cfg)
 
 
+def _bind_session(cfg: Config, store: SessionStore, sess: Session, alias: str) -> None:
+    """Point one session at ``alias`` and flush it.
+
+    A binding failure (the alias was deleted or has no usable credential) falls
+    back to the deferred provider: the history stays viewable and the next send
+    reports a clear 422 instead of hiding the session.
+    """
+    sess.model_alias = alias
+    try:
+        bind_agent(sess.agent, cfg, alias)
+    except ValueError:
+        defer_binding(sess.agent, cfg, alias)
+    store.record_exchange(sess)
+
+
 def update_model(
     cfg: Config,
-    store,
+    store: SessionStore,
+    sessions: Iterable[Session],
     *,
     alias: str,
     target_alias: str,
@@ -113,7 +135,13 @@ def update_model(
     clear_key: bool,
     api_format: str,
 ) -> dict:
-    """Update a model's config/credential, then rebind sessions on the alias."""
+    """Update a model's config/credential, then rebind ``sessions`` on the alias.
+
+    The caller holds every session's lock (``idle_sessions``) and the config
+    guard, and passes the exact target set: this function never re-enumerates
+    the store, so a session created after the snapshot cannot be rebound
+    without its lock.
+    """
     spec = cfg.models.get(alias)
     if spec is None:
         raise LookupError(alias)
@@ -149,23 +177,22 @@ def update_model(
     cfg.set_model_alias(target_alias, entry)
     cfg.save()
 
-    for sess in store.list():
-        if sess.model_alias != alias:
-            continue
-        # Editing a model may leave it without a usable credential; keep
-        # such sessions on the old binding instead of failing the save.
-        try:
-            rebind_agent(sess.agent, cfg, target_alias)
-        except ValueError:
-            continue
-        sess.model_alias = target_alias
-        store.record_exchange(sess)
+    # The alias must follow the rename even when the edit left the model
+    # without a usable credential; a deferred binding reports 422 on send and
+    # recovers in place once the credential is restored.
+    for sess in sessions:
+        _bind_session(cfg, store, sess, target_alias)
 
     return models_response(cfg)
 
 
-def delete_model(cfg: Config, *, alias: str) -> dict:
-    """Delete a model alias (and its credential), fixing default if needed."""
+def delete_model(cfg: Config, store: SessionStore, sessions: Iterable[Session], *, alias: str) -> dict:
+    """Delete a model alias (and its credential), fixing default if needed.
+
+    Sessions bound to the alias keep their history but lose the live binding:
+    the next send resolves through the deferred path and fails with a clear
+    422 until the user points them at another model.
+    """
     spec = cfg.models[alias]
     del cfg.models[alias]
     if spec.key_id:
@@ -173,20 +200,19 @@ def delete_model(cfg: Config, *, alias: str) -> dict:
     if cfg.default_model == alias:
         cfg.set_default_model(next(iter(cfg.models), DEFAULT_MODEL_ALIAS))
     cfg.save()
+    for sess in sessions:
+        _bind_session(cfg, store, sess, alias)
     return models_response(cfg)
 
 
-def switch_default(cfg: Config, store, *, alias: str) -> dict:
-    """Switch the default model and rebind every live session (atomic)."""
+def switch_default(cfg: Config, store: SessionStore, sessions: Iterable[Session], *, alias: str) -> dict:
+    """Switch the default model and rebind ``sessions`` (atomic)."""
     # Validate the target model BEFORE mutating anything: switching to a model
     # without a usable credential must fail atomically — no default flip on
     # disk, no partially rebound sessions.
     provider_kwargs(cfg, alias)
-    for sess in store.list():
-        rebind_agent(sess.agent, cfg, alias)
-        sess.model_alias = alias
-        # Flush per-session alias so a restart cannot silently revert it.
-        store.record_exchange(sess)
+    for sess in sessions:
+        _bind_session(cfg, store, sess, alias)
     cfg.set_default_model(alias)
     cfg.save()
     return models_response(cfg)

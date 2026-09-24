@@ -3,34 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
+import { primeApiMock, session } from "./helpers";
 
 // New streams are identified by their SSE session event. Navigation abandons old events.
-vi.mock("../api", () => ({
-  fetchSessions: vi.fn(),
-  fetchArchivedSessions: vi.fn(),
-  fetchSession: vi.fn(),
-  fetchWorkspaces: vi.fn(),
-  fetchModels: vi.fn(),
-  fetchCommands: vi.fn(),
-  setSessionPermission: vi.fn(),
-  streamChat: vi.fn(),
-  submitApproval: vi.fn(),
-  cancelSessionChat: vi.fn(),
-  deleteSession: vi.fn(),
-  archiveProjectChats: vi.fn(),
-  createWorktree: vi.fn(),
-  pinProject: vi.fn(),
-  removeProject: vi.fn(),
-  revealInFinder: vi.fn(),
-  saveProject: vi.fn(),
-  setSessionArchived: vi.fn(),
-}));
+vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-function session(id: string, title: string): api.SessionSummary {
-  return { id, title, created_at: "2026-01-01T00:00:00Z", model_alias: "m", permission_mode: "ask" };
-}
 
 /**
  * A streamChat mock that captures `onEvent` and fails the test if a second
@@ -62,17 +40,10 @@ function headerTitle(): string {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  primeApiMock(m);
   m.fetchSessions.mockResolvedValue([session("A", "会话A")]);
-  m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
-  m.fetchCommands.mockResolvedValue({ commands: [] });
   m.fetchSession.mockResolvedValue({ ...session("A", "会话A"), messages: [] });
-  // streamChat/resolve default so a stray call doesn't hit the network.
-  m.streamChat.mockResolvedValue(undefined);
-  m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "A", permission_mode: mode }));
-  m.submitApproval.mockResolvedValue(undefined);
 });
 
 describe("App · 会话归属", () => {
@@ -183,5 +154,43 @@ describe("App · 会话归属", () => {
 
     await waitFor(() => expect(headerTitle()).toBe("会话A"));
     expect(document.querySelector(".session-item.active")?.textContent).toContain("会话A");
+  });
+
+  it("旧流延迟结束不清除新流的忙碌与停止状态", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("A", "会话A"), session("B", "会话B")]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve({ ...session(id, id === "A" ? "会话A" : "会话B"), messages: [] }),
+    );
+    const pending: Array<{ resolve: () => void }> = [];
+    m.streamChat.mockImplementation(() => {
+      let resolve!: () => void;
+      const p = new Promise<void>((r) => {
+        resolve = r;
+      });
+      pending.push({ resolve });
+      return p;
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await user.type(screen.getByRole("textbox"), "first");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(pending.length).toBe(1));
+
+    // Switch to B and start a second stream before the first settles.
+    await user.click(screen.getByText("会话B"));
+    await user.type(screen.getByRole("textbox"), "second");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(pending.length).toBe(2));
+
+    // The stale first stream settles late; it must not clear B's busy state.
+    await act(async () => {
+      pending[0].resolve();
+    });
+
+    expect(screen.getByRole("button", { name: /停止生成/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /发送消息/ })).toBeNull();
   });
 });

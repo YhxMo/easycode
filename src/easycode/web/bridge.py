@@ -94,12 +94,6 @@ class ApprovalBroker:
         fut.set_result((approve, always))
         return True
 
-    def cancel_all(self) -> None:
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.cancel()
-        self._pending.clear()
-
 
 async def stream_chat_with_approval(
     agent: Agent,
@@ -142,15 +136,13 @@ async def stream_chat_with_approval(
     async def run_turn() -> None:
         prev = agent.approval_handler
 
-        async def approval_handler(tc: ToolCall, reason: str) -> bool:
-            from easycode.approval import approval_key, approval_scope, grant_for_toolcall
+        async def approval_handler(tc: ToolCall, reason: str, identity: str) -> bool:
+            from easycode.approval import approval_scope
 
             scope = approval_scope(tc)
-            grant = grant_for_toolcall(tc, agent.path_context())
-            key = approval_key(tc, grant=grant)
-            if session and key in session.always_allow:
-                # 'always allow' keeps its directory/command scope in the stored
-                # key; the loop regenerates the precise target grant against the
+            if session and identity in session.always_allow:
+                # 'always allow' keeps its capability scope in the stored key;
+                # the loop regenerates the precise target grant against the
                 # executing agent's own context.
                 return True
             approval_id = uuid.uuid4().hex[:12]
@@ -161,8 +153,8 @@ async def stream_chat_with_approval(
             try:
                 approve, always = await asyncio.wait_for(fut, timeout=broker.timeout)
                 decision = "approved" if approve else "denied"
-                if approve and session and always and key not in session.always_allow:
-                    session.always_allow.append(key)
+                if approve and session and always and identity not in session.always_allow:
+                    session.always_allow.append(identity)
             except TimeoutError:
                 decision = "expired"
             finally:

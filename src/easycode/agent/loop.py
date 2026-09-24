@@ -22,6 +22,7 @@ from easycode.agent.context import History
 from easycode.agent.summarizer import Summarizer
 from easycode.agent.system import build_system_prompt, find_agents_rules
 from easycode.approval import (
+    approval_key,
     approval_reason,
     definitive_deny_reason,
     grant_for_toolcall,
@@ -85,7 +86,13 @@ class Agent:
     registry: ToolRegistry
     root: Path
     history: History = field(default_factory=History)
+    # Explicit capability ceiling (an agent file's ``tools`` list, or any
+    # caller-supplied allow-list). ``None`` means no ceiling: every capability
+    # enabled by configuration and available extensions may be called.
     enabled_tools: set[str] | None = None
+    # Config switches turned off (``easycode.config.json`` ``tools``);
+    # a name absent from the config stays available.
+    disabled_tools: set[str] = field(default_factory=set)
     model_alias: str | None = None
     summarizer: Summarizer | None = None
     subagent_factory: Callable[[str], Agent] | None = None
@@ -93,7 +100,10 @@ class Agent:
     extra_safe_dirs: list[Path] = field(default_factory=list)
     permission_mode: str = PERM_ASK
     permission_rules: dict[str, Any] = field(default_factory=dict)
-    approval_handler: Callable[[ToolCall, str], Awaitable[bool]] | None = None
+    #: ``(tool_call, reason, identity) -> approve``; the identity is the
+    #: capability-bound "always allow" key computed by the execution layer for
+    #: the executing agent's context. Handlers only decide, never grant.
+    approval_handler: Callable[[ToolCall, str, str], Awaitable[bool]] | None = None
     review_handler: (
         Callable[[ToolCall, str, list[dict]], Awaitable[ReviewDecision | bool]] | None
     ) = None
@@ -103,6 +113,9 @@ class Agent:
     _pending_system: list[str] = field(default_factory=list)
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     mcp_manager: MCPSessionManager | None = None
+    #: True when this agent created its MCP manager (and must close it);
+    #: borrowed managers belong to the parent agent/session.
+    mcp_owned: bool = False
     max_context_tokens: int = 32_000
     compaction: dict[str, Any] = field(default_factory=dict)
     model_limits: dict[str, int] | None = None
@@ -136,9 +149,39 @@ class Agent:
         from easycode.mcp import MCPSessionManager
 
         self.mcp_manager = MCPSessionManager(self.mcp_servers, self.path_context())
+        self.mcp_owned = True
         await self.mcp_manager.start()
         if self.mcp_manager.tool_schemas():
             self.history.set_system(self._build_system())
+
+    async def close_mcp(self) -> None:
+        """Release the MCP manager when this agent owns it; safe to call twice.
+
+        A subagent that borrowed its parent's manager is a no-op here, so the
+        parent's MCP process survives the subtask.
+        """
+        manager = self.mcp_manager
+        if manager is None or not self.mcp_owned:
+            return
+        self.mcp_manager = None
+        self.mcp_owned = False
+        await manager.close()
+
+    async def invalidate_mcp_if_context_changed(self) -> None:
+        """Drop MCP when the sandbox/workspace context changed since it started.
+
+        Every entry that mutates the context (permission mode, secondary roots)
+        calls this once; a stale process would otherwise keep serving tools under
+        its old sandbox. A borrowed parent manager is released without closing
+        it, so the parent's process survives.
+        """
+        manager = self.mcp_manager
+        if manager is None or manager.ctx == self.path_context():
+            return
+        if self.mcp_owned:
+            await self.close_mcp()
+        else:
+            self.mcp_manager = None
 
     def path_context(self) -> PathContext:
         """Sandbox context for this agent: primary + secondary roots + safe dirs."""
@@ -148,6 +191,20 @@ class Agent:
             extra_safe_dirs=[Path(p) for p in self.extra_safe_dirs],
             sandbox_mode=self.execution_policy.sandbox_mode,
         )
+
+    def rediscover_extensions(self, *, with_skills: bool) -> None:
+        """Re-discover agents/skills for the current roots and rebuild the prompt.
+
+        Called after a session's secondary roots change so the command menu,
+        the agent's skills and its system prompt describe one scope.
+        """
+        from easycode.agents import AgentRegistry
+        from easycode.skills import SkillRegistry
+
+        roots = [self.root, *(Path(p) for p in self.secondary_roots)]
+        self.agents = AgentRegistry.discover(roots)
+        self.skills = SkillRegistry.discover(roots) if with_skills else None
+        self.history.set_system(self._build_system())
 
     @property
     def execution_policy(self) -> ExecutionPolicy:
@@ -170,21 +227,37 @@ class Agent:
             lines.append(f"- {fn['name']}: {fn['description']}")
         return "\n".join(lines)
 
-    def tool_schemas(self) -> list[dict]:
-        schemas = self.registry.schemas(self.enabled_tools)
-        if self.enabled_tools is None or "parallel_tasks" in self.enabled_tools:
-            schemas = [*schemas, PARALLEL_TASKS_SCHEMA]
+    def available_tool_names(self) -> set[str]:
+        """The single final tool set: config capabilities with the explicit cap.
+
+        Used for the system prompt, the model's schemas, and the execution
+        check, so every tool category (registry, builtin, MCP) obeys the same
+        result.
+        """
+        names = self.registry.names()
+        names.add("parallel_tasks")
         if self.agents is not None and self.agents.names():
-            schemas = [*schemas, TASK_SCHEMA]
+            names.add("task")
         if self.skills is not None and self.skills.names():
-            schemas = [*schemas, USE_SKILL_SCHEMA]
+            names.add("use_skill")
+        if self.mcp_manager is not None:
+            names |= self.mcp_manager.tool_names()
+        names -= self.disabled_tools
+        if self.enabled_tools is not None:
+            names &= self.enabled_tools
+        return names
+
+    def tool_schemas(self) -> list[dict]:
+        allowed = self.available_tool_names()
+        schemas = [
+            *self.registry.schemas(None),
+            PARALLEL_TASKS_SCHEMA,
+            TASK_SCHEMA,
+            USE_SKILL_SCHEMA,
+        ]
         if self.mcp_manager:
             schemas = [*schemas, *self.mcp_manager.tool_schemas()]
-        return schemas
-
-    def all_tool_names(self) -> set[str]:
-        """Every registry tool name (MCP tools are governed by mcp_servers)."""
-        return {schema["function"]["name"] for schema in self.registry.schemas(None)}
+        return [s for s in schemas if s["function"]["name"] in allowed]
 
     def _tool_schema_tokens(self, schemas: list[dict]) -> int:
         """Estimated token cost of the tool schemas sent on every completion.
@@ -215,7 +288,7 @@ class Agent:
     async def _turn(self) -> AsyncIterator[AgentEvent]:
         for _ in range(MAX_TOOL_ITERATIONS):
             schemas = self.tool_schemas()
-            allowed = {schema["function"]["name"] for schema in schemas}
+            allowed = self.available_tool_names()
             await self.compactor.prepare(
                 self.history, self.summarizer, self._tool_schema_tokens(schemas)
             )
@@ -345,8 +418,14 @@ class Agent:
                     ),
                 )
             else:
+                # The execution layer owns the approval identity: the same
+                # capability-bound key a "always allow" decision is stored
+                # under, computed for the executing agent's context.
+                identity = approval_key(tc, grant=grant_for_toolcall(tc, ctx))
                 approved = (
-                    bool(await self.approval_handler(tc, reason)) if self.approval_handler else False
+                    bool(await self.approval_handler(tc, reason, identity))
+                    if self.approval_handler
+                    else False
                 )
         yield AgentEvent(kind="tool_start", tool_call=tc)
         if not approved:

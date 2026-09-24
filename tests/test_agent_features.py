@@ -160,6 +160,30 @@ async def test_parallel_tasks_disabled_by_enabled_tools(tmp_path):
     assert "parallel_tasks" not in names
 
 
+def test_builtin_schemas_are_self_contained_and_bounded():
+    """The advertised schemas are generated from the runtime models but stay
+    plain, self-contained JSON (no $ref) and keep the shared limits."""
+    from easycode.agent.builtin_tools import (
+        MAX_PARALLEL_TASKS,
+        PARALLEL_TASKS_SCHEMA,
+        TASK_SCHEMA,
+        USE_SKILL_SCHEMA,
+    )
+
+    for schema in (PARALLEL_TASKS_SCHEMA, TASK_SCHEMA, USE_SKILL_SCHEMA):
+        blob = json.dumps(schema)
+        assert "$ref" not in blob and "$defs" not in blob
+
+    params = PARALLEL_TASKS_SCHEMA["function"]["parameters"]
+    assert params["properties"]["tasks"]["minItems"] == 1
+    assert params["properties"]["tasks"]["maxItems"] == MAX_PARALLEL_TASKS
+    assert params["properties"]["tasks"]["items"]["required"] == ["name", "prompt"]
+    assert params["properties"]["max_parallel"]["minimum"] == 1
+    assert params["properties"]["max_parallel"]["maximum"] == MAX_PARALLEL_TASKS
+    assert TASK_SCHEMA["function"]["parameters"]["required"] == ["agent", "prompt"]
+    assert USE_SKILL_SCHEMA["function"]["parameters"]["required"] == ["name"]
+
+
 async def test_parallel_tasks_subagent_error_reported(tmp_path):
     fails = Agent(
         provider=FakeProvider(script=[{"error": "boom"}]),

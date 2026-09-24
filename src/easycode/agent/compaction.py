@@ -57,8 +57,10 @@ class Compactor:
         turns = 0
         total = 0
         pruned = 0
-        to_clear: list[dict] = []
-        for m in reversed(history.messages):
+        to_clear: list[int] = []
+        messages = history.messages
+        for idx in range(len(messages) - 1, -1, -1):
+            m = messages[idx]
             role = m.get("role")
             if role == "user":
                 turns += 1
@@ -78,10 +80,13 @@ class Compactor:
             if total <= PRUNE_PROTECT:
                 continue
             pruned += size
-            to_clear.append(m)
+            to_clear.append(idx)
         if pruned > PRUNE_MINIMUM:
-            for m in to_clear:
-                m["content"] = PRUNED_OUTPUT
+            # Replace the message objects instead of mutating them in place:
+            # Session.messages keeps a completed-turn snapshot that shares
+            # these dictionaries, so an in-place edit would rewrite history.
+            for idx in to_clear:
+                messages[idx] = {**messages[idx], "content": PRUNED_OUTPUT}
 
     async def condense(
         self, history: History, summarizer: Summarizer | None, extra: int = 0
@@ -96,6 +101,10 @@ class Compactor:
         )
         if tail_start is not None and summarizer is not None:
             messages = history.messages[:tail_start]
+            # The prior summary is passed separately as ``previous_summary``;
+            # keep it out of the transcript so it is not duplicated.
+            if messages and history.is_summary(messages[0]):
+                messages = messages[1:]
             summary = await summarizer(messages, history.summary)
             if summary and history.condense_from(summary, tail_start):
                 return

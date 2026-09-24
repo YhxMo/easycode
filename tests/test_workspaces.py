@@ -12,11 +12,6 @@ from easycode.config import Config
 from easycode.web.main import create_app
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 def test_session_create_with_root_uses_session_root(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
@@ -514,6 +509,58 @@ def test_save_project_with_session_id_updates_session(tmp_path):
             json={"root": str(proj), "secondary": [], "session_id": "nope"},
         )
         assert r2.status_code == 404
+
+
+def test_root_error_rejects_sensitive_descendants_and_symlinks(tmp_path, monkeypatch):
+    """DEC-T5: the whole media path is checked, not only the last name."""
+    from easycode.credentials import data_home
+    from easycode.workspace import root_error
+
+    proj = tmp_path / "proj"
+    objects = proj / ".git" / "objects"
+    objects.mkdir(parents=True)
+    skills = proj / ".easycode" / "skills"
+    skills.mkdir(parents=True)
+
+    assert root_error(objects) is not None
+    assert root_error(skills) is not None
+
+    link = tmp_path / "link-to-objects"
+    link.symlink_to(objects)
+    assert root_error(link) is not None
+
+    # A managed worktree stays valid (including its subdirectories)...
+    worktree = data_home() / "worktrees" / "repo"
+    sub = worktree / "pkg"
+    sub.mkdir(parents=True)
+    assert root_error(worktree) is None
+    assert root_error(sub) is None
+    # ...but the worktrees container and the data home itself do not.
+    assert root_error(data_home() / "worktrees") is not None
+    assert root_error(data_home()) is not None
+    # A project's own .easycode/worktrees gets no worktree exception.
+    fake = tmp_path / "other" / ".easycode" / "worktrees" / "x"
+    fake.mkdir(parents=True)
+    assert root_error(fake) is not None
+
+
+def test_shell_grant_root_keeps_sensitive_children_protected(tmp_path):
+    """An approval grant for an external directory must not lift the
+    .git/.easycode/config protections inside that directory."""
+    from easycode.workspace import CONFIG_FILENAME, PathContext, ToolGrant
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    ext = tmp_path / "ext"
+    (ext / ".git").mkdir(parents=True)
+    (ext / ".easycode").mkdir()
+    ctx = PathContext(primary=proj)
+    grant = ToolGrant(writable_roots=(ext,))
+
+    assert ctx.grant_granted(ext / "ok.txt", grant) is True
+    assert ctx.grant_granted(ext / ".git" / "config", grant) is False
+    assert ctx.grant_granted(ext / ".easycode" / "state.json", grant) is False
+    assert ctx.grant_granted(ext / CONFIG_FILENAME, grant) is False
 
 
 def test_primary_root_validated_like_other_roots(tmp_path):

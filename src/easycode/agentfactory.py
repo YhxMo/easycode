@@ -99,35 +99,51 @@ def build_provider(cfg: Config, alias: str) -> LiteLLMProvider:
     return LiteLLMProvider(model, **kwargs)
 
 
-def _bind_model(agent: Agent, cfg: Config, alias: str) -> None:
+def bind_agent(agent: Agent, cfg: Config, alias: str) -> Provider:
     """Bind provider/summarizer/reviewer/limits for ``alias`` onto ``agent``.
 
-    ``provider_kwargs`` is read once per binding. The reviewer gets its own
-    kwargs copy because subagents may mutate ``provider.kwargs``.
+    ``provider_kwargs`` raises ``ValueError`` when the alias has no usable
+    credential; the whole binding is built before the first assignment, so a
+    failure never leaves a mix of old and new components. The provider is
+    returned for ``DeferredProvider``'s first resolve.
     """
     from easycode.agent.summarizer import LLMSummarizer
     from easycode.reviewer import AutoReviewer
 
     model, kwargs = provider_kwargs(cfg, alias)
-    agent.provider = LiteLLMProvider(model, **kwargs)
-    agent.review_handler = AutoReviewer(LiteLLMProvider(model, **dict(kwargs))).review
-    agent.summarizer = LLMSummarizer(
+    provider = LiteLLMProvider(model, **kwargs)
+    # The reviewer gets its own kwargs copy because subagents may mutate
+    # ``provider.kwargs``.
+    reviewer = AutoReviewer(LiteLLMProvider(model, **dict(kwargs))).review
+    summarizer = LLMSummarizer(
         model, max_chars=int(cfg.compaction["summary_max_chars"]), **kwargs
     )
-    agent.model_limits = cfg.get_model_limits(alias)
+    limits = cfg.get_model_limits(alias)
+    max_tokens = agent.compactor.usable_tokens(agent.max_context_tokens, limits)
+
+    agent.provider = provider
+    agent.summarizer = summarizer
+    agent.review_handler = reviewer
+    agent.model_limits = limits
     agent.model_alias = alias
-    agent.history.max_tokens = agent.compactor.usable_tokens(
-        agent.max_context_tokens, agent.model_limits
-    )
+    agent.history.max_tokens = max_tokens
+    return provider
 
 
-rebind_agent = _bind_model
+def defer_binding(agent: Agent, cfg: Config, alias: str) -> None:
+    """Point ``agent`` at ``alias`` but resolve credentials on first use.
 
-
-def _bind_now(agent: Agent, cfg: Config, alias: str) -> Provider:
-    """Bind the model now; used by a deferred restore's first resolve."""
-    rebind_agent(agent, cfg, alias)
-    return agent.provider
+    Used when a model edit/delete leaves a session without a usable provider:
+    the alias rename still takes effect and persists, while the deferred
+    provider makes the first send fail with the existing 422 path (and recover
+    in place once the credential is restored).
+    """
+    agent.provider = DeferredProvider(lambda: bind_agent(agent, cfg, alias))
+    agent.summarizer = None
+    agent.review_handler = None
+    agent.model_limits = None
+    agent.model_alias = alias
+    agent.history.max_tokens = agent.compactor.usable_tokens(agent.max_context_tokens, None)
 
 
 def make_agent(
@@ -139,7 +155,7 @@ def make_agent(
     defer_credential: bool = False,
 ) -> Agent:
     registry = build_registry(cfg.max_tool_result_chars)
-    enabled = {name for name, on in cfg.tools.items() if on}
+    disabled = {name for name, on in cfg.tools.items() if not on}
     discovery_roots = [root, *(Path(p) for p in (secondary_roots or []))]
     from easycode.agents import AgentRegistry
     from easycode.skills import SkillRegistry
@@ -150,7 +166,7 @@ def make_agent(
         provider=LiteLLMProvider(model_alias),  # rebound below from one credential read
         registry=registry,
         root=root,
-        enabled_tools=enabled,
+        disabled_tools=disabled,
         secondary_roots=list(secondary_roots or []),
         extra_safe_dirs=cfg.path_context(root=root, secondary=[]).extra_safe_dirs,
         permission_mode=cfg.permission_mode,
@@ -162,12 +178,12 @@ def make_agent(
         skills=skills,
     )
     try:
-        rebind_agent(agent, cfg, model_alias)
+        bind_agent(agent, cfg, model_alias)
     except ValueError:
         if not defer_credential:
             raise
         # Restoring a session must not fail because the model currently has no
         # credential; the binding is retried on the first turn (routes 422).
-        agent.provider = DeferredProvider(lambda: _bind_now(agent, cfg, model_alias))
+        defer_binding(agent, cfg, model_alias)
     agent.subagent_factory = lambda alias: make_agent(cfg, alias, root, secondary_roots)
     return agent

@@ -72,6 +72,9 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         return tool
 
+    def names(self) -> set[str]:
+        return set(self._tools)
+
     def schemas(self, enabled: set[str] | None = None) -> list[dict[str, Any]]:
         names = set(self._tools) if enabled is None else enabled
         return [t.schema() for name, t in self._tools.items() if name in names]

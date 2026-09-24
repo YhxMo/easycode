@@ -12,11 +12,6 @@ from easycode.config import Config
 from easycode.web.main import create_app
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 def test_session_permission_persistence(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry

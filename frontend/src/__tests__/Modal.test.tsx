@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
+import { session } from "./helpers";
 import { Modal } from "../components/Modal";
 
 // The three inline project/session modals previously used a
@@ -16,32 +17,9 @@ import { Modal } from "../components/Modal";
 // All tests run against a mocked ./api (easycode-audit rule 3: no network, no
 // real ~/.easycode).
 
-vi.mock("../api", () => ({
-  fetchSessions: vi.fn(),
-  fetchArchivedSessions: vi.fn(),
-  fetchSession: vi.fn(),
-  fetchWorkspaces: vi.fn(),
-  fetchModels: vi.fn(),
-  fetchCommands: vi.fn(),
-  setSessionPermission: vi.fn(),
-  streamChat: vi.fn(),
-  submitApproval: vi.fn(),
-  cancelSessionChat: vi.fn(),
-  deleteSession: vi.fn(),
-  archiveProjectChats: vi.fn(),
-  createWorktree: vi.fn(),
-  pinProject: vi.fn(),
-  removeProject: vi.fn(),
-  revealInFinder: vi.fn(),
-  saveProject: vi.fn(),
-  setSessionArchived: vi.fn(),
-}));
+vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-function session(id: string, title: string): api.SessionSummary {
-  return { id, title, created_at: "2026-01-01T00:00:00Z", model_alias: "m", permission_mode: "ask" };
-}
 
 /** A streamChat mock that stays in-flight and rejects when its signal aborts. */
 function abortableStream() {
@@ -164,8 +142,9 @@ describe("App · 删除会话模态框", () => {
     await screen.findByRole("dialog");
     await user.click(screen.getByRole("button", { name: "确认删除" }));
 
-    await waitFor(() => expect(m.cancelSessionChat).toHaveBeenCalledWith("s1"));
-    expect(m.deleteSession).toHaveBeenCalledWith("s1");
+    // DELETE owns cancellation (backend stops the turn and waits it out), so
+    // the view no longer sends a separate cancel request.
+    await waitFor(() => expect(m.deleteSession).toHaveBeenCalledWith("s1"));
 
     // A late event from the deleted session's stream must not reach the view.
     await act(async () => {
@@ -175,5 +154,69 @@ describe("App · 删除会话模态框", () => {
 
     // The aborted request settles and the app returns to idle.
     await waitFor(() => expect(screen.getByText("已连接")).toBeTruthy());
+  });
+
+  it("删除等待期间切换到其他会话，成功回调不清空新视图", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A"), session("s2", "会话B")]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve({
+        ...session(id, id === "s1" ? "会话A" : "会话B"),
+        messages: [{ role: "user", content: id === "s1" ? "A-内容" : "B-内容" }],
+      }),
+    );
+    m.cancelSessionChat.mockResolvedValue(undefined);
+    let resolveDelete!: () => void;
+    m.deleteSession.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("A-内容");
+
+    fireEvent.click(document.querySelector(".session-del") as HTMLElement);
+    await screen.findByRole("dialog");
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    // Switch to B while A's DELETE is still in flight.
+    await user.click(screen.getByText("会话B"));
+    await screen.findByText("B-内容");
+
+    await act(async () => {
+      resolveDelete();
+    });
+
+    // B stays the foreground view: the stale delete must not blank it.
+    await waitFor(() =>
+      expect(document.querySelector(".chat-context strong")?.textContent).toBe("会话B"),
+    );
+    expect(screen.getByText("B-内容")).toBeTruthy();
+  });
+
+  it("删除失败时保留会话、恢复视图并提示错误", async () => {
+    const user = userEvent.setup();
+    m.cancelSessionChat.mockResolvedValue(undefined);
+    m.deleteSession.mockRejectedValue(new Error("boom"));
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("hi");
+
+    fireEvent.click(document.querySelector(".session-del") as HTMLElement);
+    await screen.findByRole("dialog");
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => {
+      expect(document.querySelector(".app-toast")?.textContent).toContain("删除会话失败");
+    });
+    // The session stays in the sidebar and stays open: a failed delete must
+    // not present itself as success.
+    expect(document.querySelector(".session-item.active")?.textContent).toContain("会话A");
+    expect(screen.getByText("hi")).toBeTruthy();
   });
 });

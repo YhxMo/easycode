@@ -3,35 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
+import { primeApiMock } from "./helpers";
 
 // 回归：后端只返回 has_api_key/key_tail（绝不下发明文）。已有密钥时“清除密钥”
 // 必须可用；输入框只承载新输入，留空保存省略 api_key，清除走 clear_key。
-vi.mock("../api", () => ({
-  fetchSessions: vi.fn(),
-  fetchArchivedSessions: vi.fn(),
-  fetchSession: vi.fn(),
-  fetchWorkspaces: vi.fn(),
-  fetchModels: vi.fn(),
-  fetchCommands: vi.fn(),
-  setSessionPermission: vi.fn(),
-  streamChat: vi.fn(),
-  submitApproval: vi.fn(),
-  cancelSessionChat: vi.fn(),
-  deleteSession: vi.fn(),
-  archiveProjectChats: vi.fn(),
-  createWorktree: vi.fn(),
-  pinProject: vi.fn(),
-  removeProject: vi.fn(),
-  revealInFinder: vi.fn(),
-  saveProject: vi.fn(),
-  setSessionArchived: vi.fn(),
-  chooseWorkspace: vi.fn(),
-  switchModel: vi.fn(),
-  addModel: vi.fn(),
-  deleteModel: vi.fn(),
-  fetchModel: vi.fn(),
-  updateModel: vi.fn(),
-}));
+vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
 
@@ -53,18 +29,9 @@ const DETAIL: api.EditableModel = {
 };
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  primeApiMock(m);
   m.fetchSessions.mockResolvedValue([]);
-  m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   m.fetchModels.mockResolvedValue(MODELS);
-  m.fetchCommands.mockResolvedValue({ commands: [] });
-  m.streamChat.mockResolvedValue(undefined);
-  m.setSessionPermission.mockImplementation(async (_id, mode) => ({
-    id: "s1",
-    permission_mode: mode,
-  }));
-  m.submitApproval.mockResolvedValue(undefined);
   m.fetchModel.mockResolvedValue(DETAIL);
   m.updateModel.mockResolvedValue(MODELS);
 });

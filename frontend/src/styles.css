@@ -149,8 +149,6 @@ body {
   cursor: not-allowed;
 }
 
-
-
 .project-tag {
   flex: 1;
   min-width: 0;
@@ -165,21 +163,8 @@ body {
   white-space: nowrap;
 }
 
-.project-tag-sec {
-  color: var(--text);
-}
-
 .project-tag.default {
   color: var(--accent);
-}
-
-.chip-list {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
 }
 
 .sec-toggle {
@@ -194,50 +179,6 @@ body {
 
 .sec-toggle:hover {
   color: var(--accent);
-}
-
-.chip-full {
-  max-width: 100%;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  font-size: 11px;
-  color: var(--text);
-  background: #232a35;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 2px 8px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chip-x {
-  border: none;
-  background: none;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 0;
-  font-size: 10px;
-}
-
-.chip-x:hover {
-  color: var(--red);
-}
-
-.chip-add {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-}
-
-.picker-error {
-  font-size: 11px;
-  color: var(--red);
 }
 
 .perm-picker {
@@ -319,11 +260,6 @@ body {
   background: #24303f;
 }
 
-.perm-check {
-  color: var(--accent);
-  font-size: 11px;
-}
-
 /* compact: inline in the chat input area */
 .perm-picker.compact .perm-trigger {
   padding: 4px 6px;
@@ -359,26 +295,6 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px;
-}
-
-.model-btn {
-  flex: none;
-  width: 28px;
-  height: 28px;
-  background: #1c2129;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.model-btn:hover {
-  border-color: var(--accent);
-}
-
-.model-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 /* Custom Dropdown System matching Dark Theme */
@@ -770,11 +686,6 @@ body {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
-}
-
-.modal-error {
-  color: var(--red);
-  font-size: 12.5px;
 }
 
 .model-toast {
@@ -1228,31 +1139,6 @@ body {
   max-width: 100%;
 }
 
-.rb-inline {
-  background: none;
-  border: none;
-  color: var(--muted);
-  font-size: 10px;
-  padding: 1px 4px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-
-.msg-row.user:hover .rb-inline,
-.rb-inline:focus-visible {
-  opacity: 1;
-}
-
-.rb-inline:hover:not(:disabled) {
-  color: var(--red);
-}
-
-.rb-inline:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
 .msg.assistant {
   align-self: flex-start;
   background: var(--panel);
@@ -1667,7 +1553,6 @@ input:focus-visible {
 .project-tag,
 .project-add-btn,
 .model-picker,
-.model-btn,
 .perm-trigger {
   background: #1d1f20;
   border-color: var(--border);
@@ -1866,6 +1751,28 @@ input:focus-visible {
   transform: translateY(-24px);
 }
 
+.session-loading,
+.session-load-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: auto 0;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.session-load-error strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.session-load-error span {
+  color: var(--muted);
+}
+
 .empty-icon {
   display: grid;
   place-items: center;
@@ -1924,21 +1831,6 @@ input:focus-visible {
   border: none;
   background: transparent;
   color: #dbddda;
-}
-
-.rb-inline {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-right: 2px;
-  padding: 3px 6px;
-  border-radius: 5px;
-  font-size: 10px;
-}
-
-.rb-inline:hover:not(:disabled) {
-  background: #242627;
-  color: var(--text);
 }
 
 .msg.error,
@@ -2104,8 +1996,7 @@ input:focus-visible {
   background: #2c2e30;
 }
 
-.command-name,
-.perm-check {
+.command-name {
   color: #e4e5e2;
 }
 
@@ -2795,13 +2686,6 @@ input:focus-visible {
   font-size: 15px;
 }
 
-.model-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  font-size: 17px;
-}
-
 @media (max-width: 760px) {
   .sidebar {
     width: 272px;
@@ -3091,10 +2975,6 @@ body {
 .msg {
   font-size: 15px;
   line-height: 1.75;
-}
-
-.rb-inline {
-  font-size: 12px;
 }
 
 .tool-card {
@@ -3431,13 +3311,6 @@ body {
   padding: 10px 13px;
   border-radius: 11px;
   font-size: 16px;
-}
-
-.sidebar .model-btn {
-  width: 50px;
-  height: 50px;
-  border-radius: 11px;
-  font-size: 19px;
 }
 
 @media (max-width: 760px) {
@@ -3797,26 +3670,6 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.sidebar .model-btn {
-  width: 44px;
-  height: 44px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
-  font-size: 16px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.sidebar .model-btn:hover:not(:disabled) {
-  background: var(--surface-hover);
-  border-color: var(--border-strong);
 }
 
 .form-trigger {

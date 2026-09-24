@@ -18,11 +18,6 @@ from easycode.web.session import SessionStore
 from tests.conftest import FakeProvider
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(
@@ -187,6 +182,43 @@ def test_sessions_list_and_delete(tmp_path):
         assert client.get("/api/sessions").json() == []
 
 
+def test_session_delete_reports_file_failure_and_can_retry(tmp_path, monkeypatch):
+    """A failed session-file removal must not report success: the session stays
+    tracked and retryable, and only a successful delete removes both the store
+    entry and the file (no resurrection on reload)."""
+    import pathlib
+
+    client = make_app(tmp_path)
+    with client:
+        client.post("/api/chat", json={"message": "session one"})
+        sid = client.get("/api/sessions").json()[0]["id"]
+        session_file = tmp_path / ".easycode" / "sessions" / f"{sid}.json"
+        assert session_file.exists()
+
+        real_unlink = pathlib.Path.unlink
+        failing = {"on": True}
+
+        def flaky_unlink(self, missing_ok=False):
+            if failing["on"] and self == session_file:
+                raise OSError("disk error")
+            return real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", flaky_unlink)
+        r = client.delete(f"/api/sessions/{sid}")
+        assert r.status_code == 500, r.text
+        assert "删除会话文件失败" in r.json()["detail"]
+        assert session_file.exists()
+        assert [s["id"] for s in client.get("/api/sessions").json()] == [sid]
+
+        # Retry after the transient failure succeeds and leaves nothing behind.
+        failing["on"] = False
+        r2 = client.delete(f"/api/sessions/{sid}")
+        assert r2.status_code == 200
+        assert not session_file.exists()
+        assert client.get("/api/sessions").json() == []
+        assert client.delete(f"/api/sessions/{sid}").status_code == 404
+
+
 def test_empty_message_rejected(tmp_path):
     client = make_app(tmp_path)
     r = client.post("/api/chat", json={"message": "   "})
@@ -307,17 +339,34 @@ def test_pin_project_persists_and_orders(tmp_path):
     assert r2.json()["projects"][0].get("pinned") is None or r2.json()["projects"][0]["pinned"] is False
 
 
-def test_reveal_unavailable_on_non_darwin(tmp_path):
+def test_reveal_unavailable_on_non_darwin(tmp_path, monkeypatch):
+    import subprocess
     import sys
 
     client = make_app(tmp_path)
     repo = _mk_repo(tmp_path, "proj-r")
+
+    # Intercept only the Finder launch so the test never pops a real window
+    # (pytest tmp_path lives under /private/var/folders/... on macOS).
+    opened: list[list[str]] = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:1] == ["open"]:
+            opened.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("easycode.web.platform.subprocess.run", fake_run)
+
     r = client.post("/api/workspaces/reveal", json={"root": str(repo)})
     assert r.status_code == 200
     if sys.platform != "darwin":
         assert r.json() == {"ok": False, "supported": False, "error": "open is only supported on macOS"}
+        assert opened == []
     else:
         assert r.json() == {"ok": True, "supported": True, "path": str(repo)}
+        assert opened == [["open", str(repo)]]
 
 
 def test_archive_project_chats_hides_them(tmp_path):
@@ -577,3 +626,119 @@ def test_session_without_credential_restores_and_reports_422(tmp_path):
         r = client.post("/api/chat", json={"message": "again", "session_id": "abc123"})
         assert r.status_code == 422
         assert "credential" in r.json()["detail"]
+
+
+def test_restored_session_with_sensitive_root_reports_422(tmp_path):
+    """A legacy session pointing at a sensitive dir stays readable, but sending
+    is refused before any tool could run in that workspace."""
+    repo = tmp_path / "repo"
+    objects = repo / ".git" / "objects"
+    objects.mkdir(parents=True)
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    sessions_dir = tmp_path / ".easycode" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "legacy1.json").write_text(
+        json.dumps(
+            {
+                "id": "legacy1",
+                "title": "旧会话",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "model_alias": "fake-a",
+                "permission_mode": "ask",
+                "messages": [{"role": "user", "content": "old work"}],
+                "root": str(objects),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    client = TestClient(create_app(cfg=cfg, static_dir=tmp_path / "no-dist"))
+
+    with client:
+        listed = client.get("/api/sessions").json()
+        assert [s["id"] for s in listed] == ["legacy1"]
+        detail = client.get("/api/sessions/legacy1")
+        assert detail.status_code == 200
+        assert detail.json()["messages"] == [{"role": "user", "content": "old work"}]
+
+        r = client.post("/api/chat", json={"message": "run", "session_id": "legacy1"})
+        assert r.status_code == 422
+        assert "工作目录无效" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_project_archive_refuses_busy_session_before_any_write(tmp_path):
+    import httpx
+
+    app = make_app(tmp_path).app
+    store = app.state.store
+    sessions = [store.create(), store.create()]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        async with sessions[-1]._lock:
+            response = await client.post("/api/workspaces/archive", json={"root": None})
+        assert response.status_code == 409
+    assert all(not sess.archived for sess in sessions)
+    assert all(not json.loads(store._path(sess.id).read_text())["archived"] for sess in sessions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_archive", [False, True])
+async def test_project_archive_and_delete_do_not_resurrect_session(tmp_path, monkeypatch, cancel_archive):
+    import asyncio
+    import threading
+
+    import httpx
+
+    from tests.helpers_web import wait_until
+
+    app = make_app(tmp_path).app
+    store = app.state.store
+    sess = store.create()
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    other = store.create(root=str(other_root))
+    entered, release = threading.Event(), threading.Event()
+    original = Path.replace
+    writes = []
+
+    def paused_replace(path, target):
+        writes.append(Path(target))
+        if Path(target) == store._path(sess.id):
+            entered.set()
+            assert release.wait(5)
+        return original(path, target)
+
+    monkeypatch.setattr(Path, "replace", paused_replace)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        archive = asyncio.create_task(client.post("/api/workspaces/archive", json={"root": None}))
+        delete = None
+        try:
+            await wait_until(entered.is_set)
+            if cancel_archive:
+                archive.cancel()
+                await asyncio.sleep(0)
+                assert not archive.done()
+            delete = asyncio.create_task(client.delete(f"/api/sessions/{sess.id}"))
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+            results = await asyncio.gather(
+                archive, *([delete] if delete else []), return_exceptions=True
+            )
+        if cancel_archive:
+            assert isinstance(results[0], asyncio.CancelledError)
+        else:
+            assert results[0].status_code == 200
+        assert results[1].status_code == 200
+    assert not store._path(sess.id).exists()
+    store.load_all()
+    assert store.get(sess.id) is None
+    assert store.get(other.id) is not None
+    assert store._path(other.id) not in writes  # only the target project's sessions are saved

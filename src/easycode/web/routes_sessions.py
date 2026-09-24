@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.web.bridge import ApprovalBroker
-from easycode.web.session import SessionStore
+from easycode.web.session import SessionStore, idle_sessions
 
 
 class PermissionRequest(BaseModel):
@@ -33,6 +33,8 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
+        # ``messages`` is the last completed-turn snapshot (stable while a turn
+        # runs); ``approvals``/``user_times`` are live per-session lists.
         return {
             **sess.summary,
             "messages": sess.messages,
@@ -41,8 +43,14 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         }
 
     @app.delete("/api/sessions/{session_id}")
-    def delete_session(session_id: str) -> dict:
-        if not store.delete(session_id):
+    async def delete_session(session_id: str) -> dict:
+        try:
+            deleted = await store.delete(session_id)
+        except OSError as exc:
+            # The session file is still on disk: report a failure the caller can
+            # retry instead of a success that would resurrect on reload.
+            raise HTTPException(500, f"删除会话文件失败: {exc}") from exc
+        if not deleted:
             raise HTTPException(404, "session not found")
         return {"ok": True}
 
@@ -51,16 +59,11 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
-        if sess._lock.locked():
-            raise HTTPException(409, "session busy")
-        await sess._lock.acquire()
-        try:
+        async with idle_sessions([sess]):
             sess = store.set_archived(session_id, req.archived)
             if sess is None:
                 raise HTTPException(404, "session not found")
             return {"ok": True, "archived": sess.archived}
-        finally:
-            sess._lock.release()
 
     @app.post("/api/sessions/{session_id}/permission")
     async def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
@@ -69,19 +72,17 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
-        if sess._lock.locked():
-            raise HTTPException(409, "session busy")
-        await sess._lock.acquire()
-        try:
+        async with idle_sessions([sess]):
             try:
                 mode = permission_parse(req.mode)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
             sess.agent.permission_mode = mode
+            # The MCP process was launched with the old sandbox; drop it so the
+            # next turn reconnects under the new mode.
+            await sess.agent.invalidate_mcp_if_context_changed()
             store.record_exchange(sess)
             return {"id": sess.id, "permission_mode": mode}
-        finally:
-            sess._lock.release()
 
     @app.post("/api/approval/{approval_id}")
     def resolve_approval(approval_id: str, req: ApprovalRequest) -> dict:

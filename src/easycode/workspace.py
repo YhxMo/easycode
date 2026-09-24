@@ -20,13 +20,8 @@ from pathlib import Path
 from easycode.credentials import data_home
 from easycode.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_WORKSPACE_WRITE
 
-CATEGORIES = ("workspace", "temp", "system", "external")
-
 #: Project configuration filename (protected inside every workspace root).
 CONFIG_FILENAME = "easycode.config.json"
-
-#: Directories that may never be registered as a workspace/temporary root.
-SENSITIVE_ROOT_NAMES = {".git", ".easycode"}
 
 #: ``data_home()`` subdirectories holding cross-session state (session records,
 #: agent/skill/command definitions). Writes there need approval — the user can
@@ -115,26 +110,45 @@ def normalise_secondary(
     return _normalise_roots(secondary, base, allow_relative=True)
 
 
+def sensitive_ancestor(path: Path) -> Path | None:
+    """The nearest ``.git``/``.easycode`` ancestor of a candidate root, if any.
+
+    The data home is itself named ``.easycode`` but may host permanent git
+    worktrees, so it is not treated as a sensitive ancestor; everything under
+    it that is not an allowed worktree is rejected by ``root_error`` itself.
+    """
+    data = data_home().resolve()
+    for anc in [path, *path.parents]:
+        if anc.name == ".git":
+            return anc
+        if anc.name == ".easycode" and anc != data:
+            return anc
+    return None
+
+
 def root_error(path: Path, *, require_dir: bool = True) -> str | None:
     """Validation for a workspace/temporary root candidate.
 
     Returns a human-readable error string when ``path`` is illegal as a root,
     else ``None``. A legal root must be absolute+canonical, must exist (unless
     ``require_dir`` is False), must be a directory (not a plain file), and must
-    never be a sensitive dir (``.git``/``.easycode``/credentials) itself or live
-    under the data home..
+    never be a sensitive dir (``.git``/``.easycode``/credentials) itself or a
+    descendant of one, nor live under the data home (permanent worktrees under
+    ``data_home()/worktrees/<name>`` stay allowed).
     """
     p = path.resolve()
-    if p.name in SENSITIVE_ROOT_NAMES:
-        return f"sensitive directory cannot be a workspace root: {p}"
+    sensitive = sensitive_ancestor(p)
+    if sensitive is not None:
+        return f"sensitive directory cannot be a workspace root: {p} (inside {sensitive})"
     cred = secret_paths()[0].resolve()
     if p == cred or p.is_relative_to(cred):
         return f"sensitive path cannot be a workspace root: {p}"
     if p.is_relative_to(data_home().resolve()):
         # Permanent git worktrees live under the data dir by design and must
-        # remain valid workspace roots.
+        # remain valid workspace roots; the container itself and every other
+        # data-home path are rejected.
         worktrees = (data_home() / "worktrees").resolve()
-        if not p.is_relative_to(worktrees):
+        if p == worktrees or not p.is_relative_to(worktrees):
             return f"directory under the data home cannot be a workspace root: {p}"
     if require_dir:
         if not p.exists():
@@ -240,15 +254,21 @@ class PathContext:
 
         A grant authorizes its exact writable roots only: the path must live
         under one of them and must never itself (or an ancestor) be a protected
-        child — ``.git``/``.easycode`` of any workspace/extra root, or a
-        credential path. The check walks the path against every protected
-        boundary, not just the grant root's own children.
+        child — ``.git``/``.easycode``/``easycode.config.json`` of any
+        workspace/extra root *or of the grant root itself* — or a credential
+        path. The check walks the path against every protected boundary, not
+        just the grant root's own children.
         """
         p = path.resolve()
         if self.is_protected_path(p):
             return False
         for root in grant.writable_roots:
             r = root.resolve()
+            if any(
+                p == sub or p.is_relative_to(sub)
+                for sub in (r / ".git", r / ".easycode", r / CONFIG_FILENAME)
+            ):
+                return False
             if p.is_relative_to(r):
                 return True
         return False

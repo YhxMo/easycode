@@ -22,7 +22,7 @@ from easycode.web.bridge import (
     stream_chat_with_approval,
 )
 from easycode.web.session import Session, SessionStore
-from easycode.workspace import resolve_workspace_path
+from easycode.workspace import resolve_workspace_path, root_error
 
 if TYPE_CHECKING:
     from easycode.commands import CommandRegistry
@@ -34,6 +34,18 @@ class ChatRequest(BaseModel):
     secondary_roots: list[str] | None = None
     permission_mode: str | None = None
     root: str | None = None
+
+
+class CommandsRequest(BaseModel):
+    """Command-discovery scope: an existing session, or a new-session draft.
+
+    For a draft, ``secondary_roots=None`` inherits the project's binding and an
+    explicit ``[]`` means "no secondary roots" (the same contract chat uses).
+    """
+
+    session_id: str | None = None
+    root: str | None = None
+    secondary_roots: list[str] | None = None
 
 
 def _session_roots(sess: Session, cfg: Config) -> list[Path]:
@@ -50,13 +62,22 @@ def _build_web_commands(roots: list[Path], skills) -> CommandRegistry:
     return build_registry(roots, skills)
 
 
-def _new_session_roots(req: ChatRequest, cfg: Config, store: SessionStore) -> list[Path]:
-    """Workspace roots a brand-new session would discover commands/skills from."""
-    root = str(Path(req.root).expanduser().resolve()) if req.root else None
-    secondary = [str(p) for p in store._resolve_secondary(root, req.secondary_roots)]
-    if root:
-        return [Path(root), *(Path(p) for p in secondary)]
-    return [Path(cfg.root), *(Path(p) for p in secondary)]
+def _draft_roots(
+    root_raw: str | None,
+    secondary_raw: list[str] | None,
+    cfg: Config,
+    store: SessionStore,
+) -> list[Path]:
+    """Workspace roots a brand-new session would discover commands/skills from.
+
+    ``secondary_raw=None`` inherits the project binding; ``[]`` is explicit.
+    """
+    from easycode.web.routes_workspaces import _normalise_root
+
+    root = _normalise_root(root_raw)
+    secondary = [str(p) for p in store._resolve_secondary(root, secondary_raw)]
+    base = Path(root) if root else Path(cfg.root)
+    return [base, *(Path(p) for p in secondary)]
 
 
 def _expand_command(message: str, roots: list[Path], skills) -> str:
@@ -94,7 +115,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             request_root = _normalise_root(root_raw)
             if project_key(request_root) != project_key(_session_primary(sess)):
                 raise HTTPException(409, "workspace root does not match session primary")
-        if secondary_raw:
+        if secondary_raw is not None:
             request_sec = sorted(
                 str(resolve_workspace_path(p, cfg.base_dir()))
                 for p in secondary_raw
@@ -107,23 +128,24 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             if request_sec != actual_sec:
                 raise HTTPException(409, "secondary roots do not match session")
 
-    @app.get("/api/commands")
-    def list_commands(session_id: str | None = None) -> dict:
+    @app.post("/api/commands")
+    def list_commands(req: CommandsRequest) -> dict:
         """Executable template and skill commands for autocomplete.
 
-        With ``session_id`` the discovery scope is exactly what chat expansion
-        uses for that session; without it the union of known roots is listed.
+        Two explicit scopes: an existing ``session_id`` (its own roots and
+        skills, exactly what its chat expansion uses), or a new-session draft
+        described by ``root``/``secondary_roots``. There is no union fallback.
         """
-        sess = store.get(session_id) if session_id else None
-        if sess is not None:
+        if req.session_id:
+            sess = store.get(req.session_id)
+            if sess is None:
+                raise HTTPException(404, "session not found")
             roots, skills = _session_roots(sess, cfg), sess.agent.skills
         else:
-            roots = [cfg.root]
-            for s in store.list():
-                for p in [s.root, *s.secondary_roots] if s.root else list(s.secondary_roots):
-                    if p:
-                        roots.append(Path(p))
-            roots = list(dict.fromkeys(Path(r).resolve() for r in roots))
+            try:
+                roots = _draft_roots(req.root, req.secondary_roots, cfg, store)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
             skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
         reg = _build_web_commands(roots, skills)
         return {
@@ -154,7 +176,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
         kwargs: dict = {}
-        if req.secondary_roots:
+        if req.secondary_roots is not None:
             kwargs["secondary_roots"] = req.secondary_roots
         if req.root:
             kwargs["root"] = _normalise_root(req.root)
@@ -170,17 +192,28 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             # Resolve the command BEFORE creating the session: an unknown command
             # must not leave an empty session behind.
             try:
-                roots = _new_session_roots(req, cfg, store)
+                roots = _draft_roots(req.root, req.secondary_roots, cfg, store)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
             skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
             req.message = _expand_command(req.message, roots, skills)
         try:
-            sess = _get_session(req.session_id, **kwargs)
-            # A session restored without a usable credential resolves its
-            # provider on first use; failure is a clear 422, not a hidden
-            # mid-stream error.
-            store.ensure_provider(sess)
+            # Session creation and turn preparation read cfg/credentials; the
+            # config guard keeps them from interleaving with a model/project
+            # change, which would assemble the agent from a half-updated config.
+            async with store.config_change():
+                sess = _get_session(req.session_id, **kwargs)
+                # A restored session can predate the current root rules (e.g. it
+                # points at a sensitive dir): keep its history viewable, but
+                # refuse to execute against an invalid workspace.
+                primary_root = Path(sess.root) if sess.root else cfg.root
+                root_err = root_error(primary_root)
+                if root_err is not None:
+                    raise HTTPException(422, f"会话工作目录无效: {root_err}")
+                # A session restored without a usable credential resolves its
+                # provider on first use; failure is a clear 422, not a hidden
+                # mid-stream error.
+                store.ensure_provider(sess)
         except ValueError as exc:
             # Session creation can fail while building the agent (e.g. the
             # default model has no credential configured) or while validating
@@ -206,10 +239,17 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             cancel_event = asyncio.Event()
             sess.cancel_event = cancel_event
             try:
+                # A session deleted between the route's get() and this acquire
+                # must not run a turn: the request holds a stale object only.
+                if store.get(sess.id) is None:
+                    return
                 # Mutations belong under the lock so they cannot race a concurrent
                 # permission change (which is rejected with 409 while busy).
                 if perm_mode:
                     sess.agent.permission_mode = perm_mode
+                    # A chat-requested mode change must drop MCP started under
+                    # the previous sandbox, same as the permission endpoint.
+                    await sess.agent.invalidate_mcp_if_context_changed()
                 if sess.title == "新会话":
                     sess.title = raw_message.strip()[:30]
                 sess.user_times.append(datetime.now(UTC).isoformat())
@@ -226,14 +266,18 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                         else:
                             yield event_to_sse(payload)
             finally:
-                if sess.cancel_event is cancel_event:
-                    sess.cancel_event = None
-                # do not resurrect a session the user deleted while
-                # the stream was in flight; record_exchange is also gated, but
-                # check here so the StreamResponse settles cleanly either way.
-                if store.get(sess.id) is not None:
-                    store.record_exchange(sess)
-                sess._lock.release()
+                # Persistence failures must not keep the session lock: release
+                # it in an inner finally so the next turn can still start.
+                try:
+                    if sess.cancel_event is cancel_event:
+                        sess.cancel_event = None
+                    # do not resurrect a session the user deleted while
+                    # the stream was in flight; record_exchange is also gated, but
+                    # check here so the StreamResponse settles cleanly either way.
+                    if store.get(sess.id) is not None:
+                        store.record_exchange(sess)
+                finally:
+                    sess._lock.release()
 
         return StreamingResponse(
             gen(),

@@ -98,11 +98,6 @@ def test_model_spec_passthrough_and_display():
     assert "key: x" in cfg.models["k"].to_display()
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(
@@ -478,6 +473,350 @@ def test_switch_model_via_build_provider(tmp_path):
     assert r.json()["default"] == "keyed"
 
 
+def test_model_mutations_409_while_session_busy(tmp_path):
+    """Switch/edit/delete/rename of an affected model are refused with 409 while
+    a turn holds the session lock — nothing changes in memory or on disk."""
+    import asyncio
+
+    import httpx
+
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.helpers_web import GateProvider, wait_until
+
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(
+        json.dumps(
+            {"models": {"fake-a": "fake/a", "other": "fake/b"}, "default_model": "fake-a"}
+        ),
+        encoding="utf-8",
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    gate = asyncio.Event()
+
+    def factory(alias: str = "fake-a", **_):
+        return Agent(
+            provider=GateProvider(gate=gate, script=[{"text": "done"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as c:
+            chat = asyncio.create_task(c.post("/api/chat", json={"message": "hi"}))
+            await wait_until(lambda: len(store.list()) == 1)
+            sid = store.list()[0].id
+            await wait_until(store.get(sid)._lock.locked)
+            sess = store.get(sid)
+            provider_before = sess.agent.provider
+
+            for method, url, body in (
+                ("PUT", "/api/models/fake-a", {"model": "fake/a2"}),
+                ("PUT", "/api/models/fake-a", {"model": "fake/a2", "new_alias": "renamed"}),
+                ("DELETE", "/api/models/fake-a", None),
+                ("POST", "/api/models", {"alias": "other"}),
+            ):
+                r = await c.request(method, url, json=body) if body else await c.request(method, url)
+                assert r.status_code == 409, (method, url, r.status_code, r.text)
+                assert "busy" in r.json()["detail"]
+
+            assert cfg.models["fake-a"].model == "fake/a"
+            assert cfg.default_model == "fake-a"
+            assert "renamed" not in cfg.models
+            assert sess.model_alias == "fake-a"
+            assert sess.agent.provider is provider_before
+            disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+            assert disk["default_model"] == "fake-a"
+            assert disk["models"]["fake-a"] == "fake/a"
+
+            gate.set()
+            assert (await chat).status_code == 200
+
+    asyncio.run(scenario())
+
+
+def test_update_model_rebinds_only_given_sessions(tmp_path):
+    """The service rebinds exactly the sessions the route locked: a session
+    created after the snapshot must not be rebound without its lock."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web import services
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(
+        json.dumps({"models": {"fake-a": "fake/a"}, "default_model": "fake-a"}),
+        encoding="utf-8",
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str = "fake-a", **_):
+        return Agent(
+            provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    locked = store.create("fake-a")
+    late = store.create("fake-a")
+    late_provider = late.agent.provider
+
+    services.update_model(
+        cfg,
+        store,
+        [locked],
+        alias="fake-a",
+        target_alias="renamed",
+        model="fake/a",
+        provider=None,
+        base_url=None,
+        api_key=None,
+        clear_key=False,
+        api_format="openai_compatible",
+    )
+
+    assert locked.model_alias == "renamed"
+    assert late.model_alias == "fake-a"
+    assert late.agent.provider is late_provider
+
+
+def test_model_edit_does_not_rebind_concurrent_running_session(tmp_path):
+    """A model edit in flight serializes with session creation: a chat that
+    arrives meanwhile binds the post-edit alias and is never rebound mid-turn
+    by a worker that re-enumerated the store."""
+    import asyncio
+    import threading
+
+    import httpx
+
+    from easycode.agent.loop import Agent
+    from easycode.models.base import DeferredProvider
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.helpers_web import GateProvider, wait_until
+
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(
+        json.dumps({"models": {"fake-a": "fake/a"}, "default_model": "fake-a"}),
+        encoding="utf-8",
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    gate = asyncio.Event()
+
+    def factory(alias: str = "fake-a", **_):
+        return Agent(
+            provider=GateProvider(gate=gate, script=[{"text": "done"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
+
+    # Pause the edit worker on the alias rename: that is before the config
+    # mutation lands and before the service enumerates sessions, which is
+    # exactly the window in which a concurrent chat can appear.
+    entered = threading.Event()
+    release = threading.Event()
+    real_rename = Config.rename_model_alias
+    calls = {"n": 0}
+
+    def gated_rename(self, old, new):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            entered.set()
+            release.wait(5)
+        return real_rename(self, old, new)
+
+    Config.rename_model_alias = gated_rename
+    try:
+
+        async def scenario() -> None:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://t"
+            ) as c:
+                idle = store.create("fake-a")
+                edit = asyncio.create_task(
+                    c.put("/api/models/fake-a", json={"model": "fake/a", "new_alias": "renamed"})
+                )
+                await wait_until(entered.is_set)
+
+                chat = asyncio.create_task(c.post("/api/chat", json={"message": "hi"}))
+                # Either the chat already created its session (uncoordinated) or
+                # it is waiting on the config guard; bound the wait either way.
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 0.2
+                while len(store.list()) < 2 and loop.time() < deadline:
+                    await asyncio.sleep(0.01)
+                release.set()
+
+                r_edit = await edit
+                assert r_edit.status_code == 200, r_edit.text
+                await wait_until(lambda: len(store.list()) == 2)
+                new_sess = next(s for s in store.list() if s.id != idle.id)
+                await wait_until(new_sess._lock.locked)
+
+                # The running turn keeps its own provider: no mid-turn rebind.
+                assert new_sess.model_alias == "renamed"
+                assert not isinstance(new_sess.agent.provider, DeferredProvider)
+
+                gate.set()
+                r_chat = await chat
+                assert r_chat.status_code == 200, r_chat.text
+
+        asyncio.run(scenario())
+    finally:
+        Config.rename_model_alias = real_rename
+
+
+def test_secondary_change_409_while_session_busy(tmp_path):
+    """A session-bound secondary change is refused (409) while the turn runs and
+    leaves no project binding on disk; it succeeds once the session is idle."""
+    import asyncio
+
+    import httpx
+
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.helpers_web import GateProvider, wait_until
+
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    gate = asyncio.Event()
+
+    def factory(alias: str = "fake-a", **_):
+        return Agent(
+            provider=GateProvider(gate=gate, script=[{"text": "done"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as c:
+            chat = asyncio.create_task(c.post("/api/chat", json={"message": "hi"}))
+            await wait_until(lambda: len(store.list()) == 1)
+            sid = store.list()[0].id
+            await wait_until(store.get(sid)._lock.locked)
+            sess = store.get(sid)
+
+            r = await c.post(
+                "/api/workspaces/projects",
+                json={"root": None, "secondary": [str(extra)], "session_id": sid},
+            )
+            assert r.status_code == 409, r.text
+            assert sess.secondary_roots == []
+            disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+            assert not disk.get("workspace_projects")
+
+            gate.set()
+            assert (await chat).status_code == 200
+
+            r = await c.post(
+                "/api/workspaces/projects",
+                json={"root": None, "secondary": [str(extra)], "session_id": sid},
+            )
+            assert r.status_code == 200, r.text
+            assert sess.secondary_roots == [str(extra)]
+
+    asyncio.run(scenario())
+
+
+def test_rename_clear_key_keeps_session_viewable_and_recovers(tmp_path):
+    """A rename + key removal updates the session alias and defers the binding:
+    the session stays visible, sending fails with 422, and restoring the key
+    binds in place; the persisted alias survives a restart."""
+    from easycode.agent.loop import Agent
+    from easycode.models.base import DeferredProvider
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    client = make_app(tmp_path, {"models": {"fake-a": "fake/a"}})
+    client.post("/api/models/add", json=add_model_body(alias="gpt-local"))
+    with client:
+        store = client.app.state.store
+        session = store.create("gpt-local")
+        sid = session.id
+
+        r = client.put(
+            "/api/models/gpt-local",
+            json={"model": "gpt-4o", "new_alias": "renamed", "clear_key": True},
+        )
+        assert r.status_code == 200, r.text
+        assert session.model_alias == "renamed"
+        assert session.agent.model_alias == "renamed"
+        assert isinstance(session.agent.provider, DeferredProvider)
+        # A failed rebind must not keep any stale component around.
+        assert session.agent.summarizer is None
+        assert session.agent.review_handler is None
+        assert session.agent.model_limits is None
+
+        assert any(s["id"] == sid for s in client.get("/api/sessions").json())
+        detail = client.get(f"/api/sessions/{sid}")
+        assert detail.status_code == 200
+        assert detail.json()["model_alias"] == "renamed"
+
+        r = client.post("/api/chat", json={"message": "hi", "session_id": sid})
+        assert r.status_code == 422, r.text
+
+        r = client.put("/api/models/renamed", json={"model": "gpt-4o", "api_key": "sk-new"})
+        assert r.status_code == 200, r.text
+        store.ensure_provider(session)
+        assert not isinstance(session.agent.provider, DeferredProvider)
+        assert session.agent.summarizer is not None
+        assert session.agent.review_handler is not None
+
+    # Restart: the persisted alias is the renamed one.
+    cfg2 = Config.load(start=tmp_path)
+    store2 = SessionStore(
+        cfg2,
+        tmp_path,
+        lambda alias, **_: Agent(
+            provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path
+        ),
+    )
+    store2.load_all()
+    restored = store2.get(sid)
+    assert restored is not None
+    assert restored.model_alias == "renamed"
+
+
+def test_delete_model_invalidates_live_session_binding(tmp_path):
+    """Deleting a model that a live session uses makes the next send a clear
+    422 instead of silently calling the removed alias."""
+    from easycode.models.base import DeferredProvider
+
+    client = make_app(tmp_path, {"models": {"fake-a": "fake/a"}})
+    client.post("/api/models/add", json=add_model_body(alias="gpt-local"))
+    with client:
+        store = client.app.state.store
+        session = store.create("gpt-local")
+        r = client.delete("/api/models/gpt-local")
+        assert r.status_code == 200, r.text
+        assert isinstance(session.agent.provider, DeferredProvider)
+        r = client.post("/api/chat", json={"message": "hi", "session_id": session.id})
+        assert r.status_code == 422, r.text
+
+
 def test_classify_path_categories(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     import tempfile
@@ -719,7 +1058,7 @@ async def test_agent_approval_rejected_skips_tool(tmp_path):
         root=tmp_path,
     )
 
-    async def handler(tc: ToolCall, _reason: str) -> bool:
+    async def handler(tc: ToolCall, _reason: str, _key: str) -> bool:
         return False
 
     agent.approval_handler = handler
@@ -754,7 +1093,7 @@ async def test_agent_approval_approved_forces_allowed(tmp_path):
         root=tmp_path,
     )
 
-    async def handler(tc: ToolCall, _reason: str) -> bool:
+    async def handler(tc: ToolCall, _reason: str, _key: str) -> bool:
         return True
 
     agent.approval_handler = handler
@@ -1075,3 +1414,50 @@ def test_get_models_uses_in_memory_config(tmp_path):
 
     assert "external" not in body["models"]
     assert "fake-a" in body["models"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_model_edit_finishes_before_next_chat(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+
+    import httpx
+
+    from easycode.web import services
+    from tests.helpers_web import wait_until
+
+    app = make_app(tmp_path).app
+    sess = app.state.store.create("fake-a")
+    entered, release = threading.Event(), threading.Event()
+    original = services.update_model
+
+    def delayed(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(services, "update_model", delayed)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        edit = asyncio.create_task(client.put(
+            "/api/models/fake-a", json={"model": "fake/new", "clear_key": True}
+        ))
+        chat = None
+        try:
+            await wait_until(entered.is_set)
+            edit.cancel()
+            await asyncio.sleep(0)
+            edit.cancel()  # repeated cancellation must not abandon the worker either
+            await asyncio.sleep(0)
+            assert not edit.done()
+            chat = asyncio.create_task(client.post(
+                "/api/chat", json={"session_id": sess.id, "message": "continue"}
+            ))
+            await asyncio.sleep(0)
+            assert not chat.done()
+        finally:
+            release.set()
+            await asyncio.gather(edit, return_exceptions=True)
+        assert edit.cancelled()
+        assert (await chat).status_code == 422  # sees the finished edit, never the old binding

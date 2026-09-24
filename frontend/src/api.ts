@@ -85,9 +85,23 @@ export interface CommandInfo {
   source?: "builtin" | "project" | "user";
 }
 
-export function fetchCommands(sessionId?: string | null): Promise<{ commands: CommandInfo[] }> {
-  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-  return request<{ commands: CommandInfo[] }>(`/api/commands${query}`);
+/** New-session command scope: `secondary: null` inherits the project binding. */
+export interface DraftCommandScope {
+  root: string | null;
+  secondary: string[] | null;
+}
+
+export function fetchCommands(
+  sessionId?: string | null,
+  draft?: DraftCommandScope,
+): Promise<{ commands: CommandInfo[] }> {
+  return request<{ commands: CommandInfo[] }>("/api/commands", {
+    method: "POST",
+    body: {
+      session_id: sessionId ?? null,
+      ...(draft ? { root: draft.root, secondary_roots: draft.secondary } : {}),
+    },
+  });
 }
 
 export interface AddModelBody {
@@ -130,11 +144,6 @@ async function errorDetail(resp: Response, fallback: string): Promise<string> {
   return fallback;
 }
 
-async function json<T>(resp: Response): Promise<T> {
-  if (!resp.ok) throw new Error(await errorDetail(resp, `HTTP ${resp.status}`));
-  return (await resp.json()) as T;
-}
-
 /** Fetch + JSON decode + backend-detail errors for one endpoint. */
 async function request<T>(url: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const resp = await fetch(url, {
@@ -143,7 +152,8 @@ async function request<T>(url: string, init: { method?: string; body?: unknown }
       ? {}
       : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(init.body) }),
   });
-  return json<T>(resp);
+  if (!resp.ok) throw new Error(await errorDetail(resp, `HTTP ${resp.status}`));
+  return (await resp.json()) as T;
 }
 
 export function fetchSessions(): Promise<SessionSummary[]> {
@@ -274,7 +284,9 @@ export async function streamChat(
 ): Promise<void> {
   const body: Record<string, unknown> = { message, session_id: sessionId };
   if (opts.root) body.root = opts.root;
-  if (opts.secondary_roots?.length) body.secondary_roots = opts.secondary_roots;
+  // A missing field means "inherit the project binding"; an explicit empty
+  // array means "no secondary roots", so the check is presence, not length.
+  if (opts.secondary_roots !== undefined) body.secondary_roots = opts.secondary_roots;
   if (opts.permission_mode) body.permission_mode = opts.permission_mode;
   const resp = await fetch("/api/chat", {
     method: "POST",
@@ -283,31 +295,44 @@ export async function streamChat(
     signal: opts.signal,
   });
   if (!resp.ok) {
-    let detail = `chat HTTP ${resp.status}`;
-    try {
-      const errBody = (await resp.json()) as { detail?: string };
-      if (errBody.detail) detail = String(errBody.detail);
-    } catch {
-      // Keep the HTTP status when the server did not return JSON.
-    }
-    throw new Error(detail);
+    throw new Error(await errorDetail(resp, `chat HTTP ${resp.status}`));
   }
   if (!resp.body) throw new Error("no body");
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
+  // The backend always ends a turn with done/cancelled, or reports an error
+  // event. Reaching EOF without any of those means the connection dropped.
+  let terminated = false;
+  const handleRaw = (raw: string) => {
+    for (const line of raw.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      const ev = JSON.parse(line.slice(6)) as ChatEvent;
+      if (ev.type === "done" || ev.type === "cancelled" || ev.type === "error") {
+        terminated = true;
+      }
+      onEvent(ev);
+    }
+  };
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     const parts = buf.split("\n\n");
     buf = parts.pop() ?? "";
-    for (const part of parts) {
-      for (const line of part.split("\n")) {
-        if (line.startsWith("data: ")) {
-          onEvent(JSON.parse(line.slice(6)) as ChatEvent);
-        }
-      }
+    for (const part of parts) handleRaw(part);
+  }
+  // Flush the decoder and process a trailing event that lost its blank-line
+  // separator; a truncated final frame counts as an interruption below.
+  buf += decoder.decode();
+  if (buf.trim()) {
+    try {
+      handleRaw(buf);
+    } catch {
+      // truncated JSON: leave terminated=false so the turn reports an interruption
     }
+  }
+  if (!terminated) {
+    throw new Error("连接中断：本轮未正常结束，已保留已生成内容。");
   }
 }

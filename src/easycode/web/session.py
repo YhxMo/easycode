@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterable
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,9 +19,49 @@ from easycode.credentials import data_home
 from easycode.models.base import DeferredProvider
 from easycode.workspace import normalise_secondary, root_error
 
+log = logging.getLogger("easycode.web.session")
+
 #: Creates an agent for an alias; implementations may accept extra kwargs
 #: (root/secondary_roots) from ``SessionStore.create``.
 AgentFactory = Callable[..., Agent]
+
+
+class SessionBusyError(RuntimeError):
+    """A session-scoped operation targeted a session with an active turn."""
+
+
+@asynccontextmanager
+async def idle_sessions(sessions: Iterable[Session]) -> AsyncIterator[None]:
+    """Serialize a session-scoped mutation against running chat turns.
+
+    Refuses (``SessionBusyError``) when any target session holds its chat lock;
+    otherwise holds every target lock for the duration so no turn can start
+    mid-mutation. Must run on the event loop; targets are locked in a stable
+    order so two bulk operations cannot deadlock.
+    """
+    ordered = sorted(sessions, key=lambda s: s.id)
+    for sess in ordered:
+        if sess._lock.locked():
+            raise SessionBusyError(f"session busy: {sess.id}")
+    async with AsyncExitStack() as stack:
+        for sess in ordered:
+            await stack.enter_async_context(sess._lock)
+        yield
+
+
+async def run_mutation(func: Callable, *args, **kwargs):
+    """Finish a state-writing worker before cancellation can release its locks."""
+    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = worker.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
 
 
 def _now() -> str:
@@ -102,6 +144,17 @@ class SessionStore:
         self.dir = data_home() / "sessions"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, Session] = {}
+        # Serializes config writes with session creation/turn preparation so no
+        # session is assembled from a half-updated config. Never held across a
+        # running turn (that is ``idle_sessions``) or any model/approval/shell
+        # wait; session locks are always taken after this one.
+        self._config_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def config_change(self) -> AsyncIterator[None]:
+        """Short-lived guard for config mutations and session assembly."""
+        async with self._config_lock:
+            yield
 
     def _path(self, session_id: str) -> Path:
         return self.dir / f"{session_id}.json"
@@ -199,31 +252,41 @@ class SessionStore:
         self._flush(sess)
         return sess
 
-    def archive_root(self, root: str | None) -> int:
-        count = 0
-        for sess in self._sessions.values():
-            if sess.root == root:
-                sess.archived = True
-                count += 1
-        if count:
-            self._flush_many()
-        return count
+    async def archive_root(self, root: str | None) -> int:
+        sessions = [s for s in self.list() if s.root == root]
+        async with idle_sessions(sessions):
+            for sess in sessions:
+                await run_mutation(self.set_archived, sess.id, True)
+        return len(sessions)
 
-    def delete_root(self, root: str | None) -> int:
-        """Delete every session under ``root`` (including archived)."""
+    async def delete_root(self, root: str | None) -> int:
+        """Delete every session under ``root`` through the single-delete path."""
         ids = [s.id for s in self._sessions.values() if s.root == root]
         for sid in ids:
-            self.delete(sid)
+            await self.delete(sid)
         return len(ids)
 
-    def delete(self, session_id: str) -> bool:
-        if session_id not in self._sessions:
+    async def delete(self, session_id: str) -> bool:
+        """Delete a session: stop its turn, wait it out, then release resources.
+
+        Cancellation is signalled first, then the session lock is held while the
+        file is removed and the session detached: no turn can be running (it
+        would hold the lock) and no flush can write the file back (membership is
+        gone), so a successful delete leaves neither store entry nor file. A
+        file-removal failure propagates and the session stays tracked and
+        retryable; the session-owned MCP process is released afterwards.
+        """
+        sess = self.get(session_id)
+        if sess is None:
             return False
-        del self._sessions[session_id]
-        try:
+        sess.cancel_stream()
+        async with sess._lock:
             self._path(session_id).unlink(missing_ok=True)
-        except OSError:
-            pass
+            self._sessions.pop(session_id, None)
+        try:
+            await sess.agent.close_mcp()
+        except Exception:
+            log.warning("failed to close MCP for session %s", session_id, exc_info=True)
         return True
 
     def load_all(self) -> None:
@@ -274,10 +337,6 @@ class SessionStore:
         if len(session.user_times) > n_user:
             session.user_times = list(session.user_times[-n_user:]) if n_user else []
         self._flush(session)
-
-    def _flush_many(self) -> None:
-        for sess in self._sessions.values():
-            self._flush(sess)
 
     def _flush(self, session: Session) -> None:
         # never write a session that is no longer tracked (deleted).

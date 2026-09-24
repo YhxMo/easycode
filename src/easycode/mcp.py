@@ -108,6 +108,7 @@ class StdioTransport(_BaseTransport):
         self.cwd = cwd
         self.ctx = ctx
         self.proc: asyncio.subprocess.Process | None = None
+        self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
         # Conservative child env: secret-bearing parent variables are stripped,
@@ -122,13 +123,14 @@ class StdioTransport(_BaseTransport):
             env=merged_env,
             cwd=self.cwd,
         )
-        asyncio.get_running_loop().create_task(self._read_loop())
-        asyncio.get_running_loop().create_task(self._err_loop())
+        loop = asyncio.get_running_loop()
+        self._tasks = [loop.create_task(self._read_loop()), loop.create_task(self._err_loop())]
 
     async def _read_loop(self) -> None:
-        assert self.proc is not None and self.proc.stdout is not None
+        proc = self.proc
+        assert proc is not None and proc.stdout is not None
         while True:
-            line = await self.proc.stdout.readline()
+            line = await proc.stdout.readline()
             if not line:
                 break
             raw = line.strip()
@@ -138,12 +140,13 @@ class StdioTransport(_BaseTransport):
                 self._handle_message(json.loads(raw))
             except json.JSONDecodeError:
                 log.warning("MCP server sent non-JSON line: %.120s", raw)
-        log.warning("MCP stdio server exited (code=%s); requests will fail", self.proc.returncode)
+        log.warning("MCP stdio server exited (code=%s); requests will fail", proc.returncode)
 
     async def _err_loop(self) -> None:
-        assert self.proc is not None and self.proc.stderr is not None
+        proc = self.proc
+        assert proc is not None and proc.stderr is not None
         while True:
-            line = await self.proc.stderr.readline()
+            line = await proc.stderr.readline()
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip()
@@ -159,17 +162,31 @@ class StdioTransport(_BaseTransport):
 
     async def close(self) -> None:
         await super().close()
-        if self.proc is not None:
+        proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        try:
+            if proc.stdin is not None:
+                proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except TimeoutError:
             try:
-                if self.proc.stdin is not None:
-                    self.proc.stdin.close()
-                await asyncio.wait_for(self.proc.wait(), timeout=2.0)
-            except (TimeoutError, ProcessLookupError):
-                try:
-                    self.proc.kill()
-                except ProcessLookupError:
-                    pass
-            self.proc = None
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            # Even after SIGKILL the process must be reaped, otherwise it
+            # stays a zombie and the pipes stay open.
+            await proc.wait()
+        # Reap the background reader tasks so their pipes/streams are freed.
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
 
 
 class HttpTransport(_BaseTransport):
@@ -308,6 +325,11 @@ class MCPSessionManager:
         self._started = False
         self._lock = asyncio.Lock()
 
+    @property
+    def ctx(self) -> PathContext:
+        """The sandbox context this manager's processes were started under."""
+        return self._ctx
+
     async def start(self) -> None:
         if self._started:
             return
@@ -334,7 +356,13 @@ class MCPSessionManager:
                 ctx=self._ctx,
             )
         session = MCPSession(name, transport)
-        await session.start()
+        try:
+            await session.start()
+        except BaseException:
+            # A transport that was created but never initialized must not leak
+            # its subprocess/socket (including when startup is cancelled).
+            await transport.close()
+            raise
         return session
 
     def tool_schemas(self) -> list[dict[str, Any]]:
@@ -342,6 +370,9 @@ class MCPSessionManager:
         for session in self._sessions.values():
             out.extend(entry["schema"] for entry in session.tools.values())
         return out
+
+    def tool_names(self) -> set[str]:
+        return {name for session in self._sessions.values() for name in session.tools}
 
     def has_tool(self, name: str) -> bool:
         return any(name in session.tools for session in self._sessions.values())
@@ -379,6 +410,15 @@ class MCPSessionManager:
         return json.dumps({"status": "error", "message": f"unknown MCP tool: {fname}"}, ensure_ascii=False)
 
     async def close(self) -> None:
-        for session in self._sessions.values():
-            await session.close()
-        self._sessions.clear()
+        """Close every server; safe to call repeatedly.
+
+        Errors from one server are logged and do not prevent the others from
+        being released.
+        """
+        sessions, self._sessions = self._sessions, {}
+        self._started = False
+        for name, session in sessions.items():
+            try:
+                await session.close()
+            except Exception:
+                log.warning("MCP server %r failed to close cleanly", name, exc_info=True)

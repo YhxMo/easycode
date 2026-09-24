@@ -114,7 +114,7 @@ Template $ARGUMENTS
     store = SessionStore(cfg, proj, factory)
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
 
-    r = client.get("/api/commands")
+    r = client.post("/api/commands", json={})
     assert r.status_code == 200
     cmds = r.json()["commands"]
     names = [c["name"] for c in cmds]
@@ -205,7 +205,8 @@ async def test_handle_command_smoke_help_agents_model_list(tmp_path, monkeypatch
 
 
 def test_commands_endpoint_scoped_to_session(tmp_path, monkeypatch):
-    """DEC-C8: /api/commands?session_id= matches what chat expansion sees."""
+    """DEC-C8: /api/commands matches what chat expansion sees, with two
+    explicit scopes (session id, or draft root/secondary) and no union fallback."""
     monkeypatch.setenv("HOME", str(tmp_path))
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
@@ -231,12 +232,114 @@ def test_commands_endpoint_scoped_to_session(tmp_path, monkeypatch):
     store.create(root=str(proj_b))
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
 
-    scoped = client.get(f"/api/commands?session_id={sess_a.id}").json()["commands"]
+    scoped = client.post("/api/commands", json={"session_id": sess_a.id}).json()["commands"]
     names = [c["name"] for c in scoped]
     assert "only-a" in names
     assert "only-b" not in names
 
-    # Without a session the endpoint still lists the union (autocomplete for a
-    # not-yet-created session).
-    union = [c["name"] for c in client.get("/api/commands").json()["commands"]]
-    assert "only-b" in union
+    # A new-session draft is scoped to its own root, not a union of projects.
+    draft = client.post("/api/commands", json={"root": str(proj_b)}).json()["commands"]
+    draft_names = [c["name"] for c in draft]
+    assert "only-b" in draft_names
+    assert "only-a" not in draft_names
+
+    # An unknown session id is a 404, never a silent global scope.
+    assert client.post("/api/commands", json={"session_id": "nope"}).status_code == 404
+
+
+def test_secondary_change_refreshes_agent_skills_and_commands(tmp_path, monkeypatch):
+    """Changing a session's secondary roots re-discovers skills/agents and
+    rebuilds the system prompt, so the menu and the agent share one scope."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    sec = tmp_path / "sec"
+    skill_dir = sec / ".easycode" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: demo skill\n---\nBody\n", encoding="utf-8"
+    )
+    cmd_dir = sec / ".easycode" / "commands"
+    cmd_dir.mkdir()
+    (cmd_dir / "sec-cmd.md").write_text(
+        "---\ndescription: sec cmd\n---\nDo $ARGUMENTS\n", encoding="utf-8"
+    )
+
+    cfg = Config.load(start=proj)
+    cfg.root = proj
+
+    def factory(alias: str, **kwargs):
+        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
+
+    store = SessionStore(cfg, proj, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+
+    with client:
+        sess = store.create(root=str(proj), secondary_roots=[])
+        before = client.post("/api/commands", json={"session_id": sess.id}).json()["commands"]
+        assert "sec-cmd" not in [c["name"] for c in before]
+        assert sess.agent.skills is None or "demo" not in sess.agent.skills.names()
+
+        r = client.post(
+            "/api/workspaces/projects",
+            json={"root": str(proj), "secondary": [str(sec)], "session_id": sess.id},
+        )
+        assert r.status_code == 200, r.text
+
+        after = client.post("/api/commands", json={"session_id": sess.id}).json()["commands"]
+        assert "sec-cmd" in [c["name"] for c in after]
+        assert "demo" in sess.agent.skills.names()
+        assert "demo skill" in sess.agent.history.payload()[0]["content"]
+
+
+def test_secondary_roots_explicit_empty_vs_inherited(tmp_path, monkeypatch):
+    """A draft chat: omitted secondary_roots inherits the project binding, an
+    explicit empty list creates a session with no secondary roots."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from pathlib import Path
+
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    sec = tmp_path / "sec"
+    sec.mkdir()
+    cfg = Config.load(start=proj)
+    cfg.root = proj
+    cfg.workspace_projects = [{"root": str(proj), "secondary": [str(sec)]}]
+
+    def factory(alias: str, **kwargs):
+        root = Path(kwargs.get("root") or proj)
+        secondaries = [Path(p) for p in (kwargs.get("secondary_roots") or [])]
+        return Agent(
+            provider=FakeProvider(script=[{"text": "ok"}]),
+            registry=build_registry(8000),
+            root=root,
+            secondary_roots=secondaries,
+        )
+
+    store = SessionStore(cfg, proj, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+
+    with client:
+        # Omitting the field inherits the project's secondary binding.
+        client.post("/api/chat", json={"message": "inherit", "root": str(proj)})
+        inherited = [s for s in store.list() if s.title == "inherit"][0]
+        assert inherited.secondary_roots == [str(sec)]
+
+        # An explicit empty list means "no secondary roots".
+        client.post(
+            "/api/chat",
+            json={"message": "explicit", "root": str(proj), "secondary_roots": []},
+        )
+        explicit = [s for s in store.list() if s.title == "explicit"][0]
+        assert explicit.secondary_roots == []

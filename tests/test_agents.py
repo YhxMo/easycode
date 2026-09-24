@@ -11,6 +11,7 @@ from easycode.agents import AgentRegistry
 from easycode.frontmatter import FrontmatterError, parse_frontmatter, parse_spec
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
+from tests.helpers_history import assert_valid_tool_protocol
 
 
 def test_parse_frontmatter_valid():
@@ -235,6 +236,176 @@ You only read files.
     assert not target.exists()
     sub_tools = [m for m in subs[0].history.payload() if m["role"] == "tool"]
     assert any('"rejected": true' in str(m.get("content")) for m in sub_tools)
+
+
+@pytest.mark.asyncio
+async def test_subagent_cannot_exceed_parent_tool_cap(tmp_path):
+    """A capped parent's delegate must not gain tools the parent lacks."""
+    from easycode.agents import AgentSpec
+
+    reg = AgentRegistry({"writer": AgentSpec(name="writer", description="writes")})
+    target = tmp_path / "blocked.txt"
+    sub_script = [
+        {"tool_calls": [("s1", "write_file", {"path": str(target), "content": "nope"})]},
+        {"text": "done"},
+    ]
+    subs: list[Agent] = []
+
+    def factory(_model: str) -> Agent:
+        # Mirrors make_agent: the factory hands back its own config-level set.
+        sub = Agent(
+            provider=FakeProvider(script=sub_script),
+            registry=build_registry(8000),
+            root=tmp_path,
+            enabled_tools={"read_file", "write_file"},
+        )
+        subs.append(sub)
+        return sub
+
+    script = [
+        {"tool_calls": [("t1", "task", {"agent": "writer", "prompt": "write it"})], "text": ""},
+        {"text": "finished"},
+    ]
+    approved: list[str] = []
+
+    async def approval(tc, _reason, _key):
+        approved.append(tc.name)
+        return True
+
+    parent = Agent(
+        provider=FakeProvider(script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        agents=reg,
+        subagent_factory=factory,
+        enabled_tools={"read_file", "task"},
+        approval_handler=approval,
+    )
+
+    events = [ev async for ev in parent.respond("delegate")]
+    result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
+
+    assert result["status"] == "ok"
+    sub_tools = [m for m in subs[0].history.payload() if m["role"] == "tool"]
+    assert any('"rejected": true' in str(m.get("content")) for m in sub_tools)
+    assert not target.exists()
+    assert approved == [], "a capped tool must be rejected before any approval"
+    assert_valid_tool_protocol(subs[0].history.payload())
+    assert_valid_tool_protocol(parent.history.payload())
+
+
+@pytest.mark.asyncio
+async def test_subagent_cannot_delegate_further(tmp_path):
+    """Sub-agents get neither task nor parallel_tasks (no recursive delegation)."""
+    from easycode.agents import AgentSpec
+
+    reg = AgentRegistry({"writer": AgentSpec(name="writer", description="writes")})
+    sub_script = [
+        {"tool_calls": [("s1", "task", {"agent": "writer", "prompt": "write"})], "text": ""},
+        {"text": "done"},
+    ]
+    subs: list[Agent] = []
+
+    def factory(_model: str) -> Agent:
+        sub = Agent(
+            provider=FakeProvider(script=sub_script),
+            registry=build_registry(8000),
+            root=tmp_path,
+            agents=reg,
+            enabled_tools={"read_file", "task", "parallel_tasks"},
+        )
+        subs.append(sub)
+        return sub
+
+    script = [
+        {"tool_calls": [("t1", "task", {"agent": "writer", "prompt": "go"})], "text": ""},
+        {"text": "finished"},
+    ]
+    parent = Agent(
+        provider=FakeProvider(script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        agents=reg,
+        subagent_factory=factory,
+        enabled_tools={"read_file", "task"},
+    )
+
+    events = [ev async for ev in parent.respond("delegate")]
+    result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
+
+    assert result["status"] == "ok"
+    sub_tools = [m for m in subs[0].history.payload() if m["role"] == "tool"]
+    assert any('"rejected": true' in str(m.get("content")) for m in sub_tools)
+    assert subs[0].provider.calls, "the child must answer without delegating"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name,args,needle",
+    [
+        ("parallel_tasks", {"tasks": []}, "tasks"),
+        (
+            "parallel_tasks",
+            {"tasks": [{"name": f"t{i}", "prompt": "x"} for i in range(7)]},
+            "tasks",
+        ),
+        ("parallel_tasks", {"tasks": ["not-an-object"]}, "tasks.0"),
+        (
+            "parallel_tasks",
+            {"tasks": [{"name": "t", "prompt": "x"}], "max_parallel": 0},
+            "max_parallel",
+        ),
+        (
+            "parallel_tasks",
+            {"tasks": [{"name": "t", "prompt": "x"}], "max_parallel": "many"},
+            "max_parallel",
+        ),
+        ("task", {"agent": "writer", "prompt": "   "}, "prompt"),
+        ("task", {"agent": "writer"}, "prompt"),
+        ("use_skill", {"name": ""}, "name"),
+    ],
+)
+async def test_builtin_tool_argument_errors_are_results(tmp_path, name, args, needle):
+    """Runtime validation mirrors the advertised schema: bad arguments become a
+    tool result (no subagent starts) and the conversation continues paired."""
+    from easycode.agents import AgentSpec
+    from easycode.skills import Skill, SkillRegistry
+    from tests.helpers_history import assert_valid_tool_protocol
+
+    made: list[str] = []
+    reg = AgentRegistry({"writer": AgentSpec(name="writer", description="writes")})
+    skills = SkillRegistry({"s": Skill(name="s", description="d", body="b")})
+
+    def factory(model: str) -> Agent:
+        made.append(model)
+        return Agent(
+            provider=FakeProvider(script=[{"text": "unused"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    script = [
+        {"tool_calls": [("c1", name, args)], "text": ""},
+        {"text": "recovered"},
+    ]
+    agent = Agent(
+        provider=FakeProvider(script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        agents=reg,
+        skills=skills,
+        subagent_factory=factory,
+    )
+
+    events = [ev async for ev in agent.respond("go")]
+    result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
+
+    assert result["status"] == "error"
+    assert "invalid" in result["message"]
+    assert needle in result["message"]
+    assert made == [], "invalid arguments must not start a subagent"
+    assert "".join(e.content or "" for e in events if e.kind == "text") == "recovered"
+    assert_valid_tool_protocol(agent.history.payload())
 
 
 def test_subagent_requires_factory(tmp_path):

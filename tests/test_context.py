@@ -48,6 +48,36 @@ def test_over_budget_char_backstop() -> None:
     assert h.over_budget() is True
 
 
+def test_dense_code_token_count_beats_chars_over_four() -> None:
+    """10B: dense ASCII code tokenizes far denser than the 4-chars/token
+    heuristic; the exact token count must drive the gate (the character
+    ceiling is a memory backstop, far away in this case)."""
+    code = "x+=1;" * 10_000
+    h = History(max_tokens=15_000, max_chars=10_000_000)
+    h.add({"role": "user", "content": code})
+    assert h.estimate_tokens() > h.estimate_messages_tokens(h.messages)
+    assert h.over_budget() is True
+
+
+def test_large_tool_output_counts_toward_token_budget() -> None:
+    """Tool outputs are token-accounted like any other message content."""
+    output = "\n".join(f"item-{i}: value {i * 7}" for i in range(4000))
+    h = History(max_tokens=10_000, max_chars=10_000_000)
+    h.add_user("q")
+    h.add({"role": "assistant", "content": "", "tool_calls": [_tc("a")]})
+    h.add_tool("a", "f", output)
+    assert h.over_budget() is True
+
+
+def test_char_backstop_is_independent_of_model_budget() -> None:
+    """The character ceiling stays an explicit memory guard: a history that
+    fits a huge token budget still trips once it exceeds ``max_chars``."""
+    h = History(max_tokens=10_000_000, max_chars=50_000)
+    h.add({"role": "user", "content": "x" * 60_000})
+    assert h.estimate_tokens() < h.max_tokens
+    assert h.over_budget() is True
+
+
 def test_select_tail_start_keeps_recent_turns() -> None:
     h = History()
     for i in range(4):

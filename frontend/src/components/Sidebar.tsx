@@ -1,3 +1,4 @@
+import type { RefObject } from "react";
 import type {
   ModelsInfo,
   SessionSummary,
@@ -33,6 +34,10 @@ export interface SidebarProps {
   showArchived: boolean;
   collapsedProjects: Record<string, boolean>;
   busy: boolean;
+  /** Foreground session loading/failed: session-scoped edits stay disabled. */
+  sessionBlocked: boolean;
+  /** Current view version, for dropping superseded secondary-root saves. */
+  viewToken: RefObject<number>;
   models: ModelsInfo;
   workspaces: WorkspacesInfo;
   groups: Array<[string | null, SessionSummary[]]>;
@@ -63,6 +68,8 @@ export function Sidebar({
   showArchived,
   collapsedProjects,
   busy,
+  sessionBlocked,
+  viewToken,
   models,
   workspaces,
   groups,
@@ -100,6 +107,7 @@ export function Sidebar({
             root={chosenRoot}
             secondary={secondary}
             disabled={busy}
+            viewToken={viewToken}
             onRoot={onSetChosenRoot}
             onSecondary={onSetSecondary}
             onProjects={onProjects}
@@ -117,7 +125,8 @@ export function Sidebar({
             root={currentRoot}
             secondary={secondary}
             sessionId={currentId}
-            disabled={busy}
+            disabled={busy || sessionBlocked}
+            viewToken={viewToken}
             onSecondary={onSetSecondary}
             onProjects={onProjects}
             onError={onError}

@@ -3,60 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import type { HistoryMessage } from "../lib/history";
+import { deferred, detail, primeApiMock, session } from "./helpers";
 
 // The App is exercised purely against a mocked ./api. No real backend, no
 // network, no ~/.easycode data (easycode-audit rule 3). SSE is driven by
 // capturing the `onEvent` callback that App forwards to `streamChat`, so we can
 // replay browser-like events deterministically.
-vi.mock("../api", () => ({
-  fetchSessions: vi.fn(),
-  fetchArchivedSessions: vi.fn(),
-  fetchSession: vi.fn(),
-  fetchWorkspaces: vi.fn(),
-  fetchModels: vi.fn(),
-  fetchCommands: vi.fn(),
-  setSessionPermission: vi.fn(),
-  streamChat: vi.fn(),
-  submitApproval: vi.fn(),
-  cancelSessionChat: vi.fn(),
-  deleteSession: vi.fn(),
-  archiveProjectChats: vi.fn(),
-  createWorktree: vi.fn(),
-  pinProject: vi.fn(),
-  removeProject: vi.fn(),
-  revealInFinder: vi.fn(),
-  saveProject: vi.fn(),
-  setSessionArchived: vi.fn(),
-}));
+vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-function session(id: string, title: string): api.SessionSummary {
-  return { id, title, created_at: "2026-01-01T00:00:00Z", model_alias: "m", permission_mode: "ask" };
-}
-
-function detail(id: string, title: string, messages: HistoryMessage[]): api.SessionDetail {
-  return {
-    id,
-    title,
-    created_at: "2026-01-01T00:00:00Z",
-    model_alias: "m",
-    permission_mode: "ask",
-    messages,
-  };
-}
-
-/** A controllable promise whose resolve/reject are owned by the test. */
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 /** A streamChat mock that captures `onEvent` and stays in-flight forever. */
 function captureStream() {
@@ -69,17 +24,9 @@ function captureStream() {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  primeApiMock(m);
   m.fetchSessions.mockResolvedValue([]);
-  m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
-  m.fetchCommands.mockResolvedValue({ commands: [] });
-  m.streamChat.mockResolvedValue(undefined);
-  // Echo the requested mode back so the App's optimistic update is confirmed
-  // rather than being reverted to a stale value.
-  m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "s1", permission_mode: mode }));
-  m.submitApproval.mockResolvedValue(undefined);
 });
 
 describe("App", () => {
@@ -320,6 +267,29 @@ describe("App", () => {
     expect(document.querySelector(".tool-card")?.textContent).not.toContain("执行中");
   });
 
+  it("后端 error 后连接中断不重复追加错误行", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
+    m.streamChat.mockImplementation(async (_sid, _msg, cb) => {
+      cb({ type: "tool_start", tool_call: { id: "t1", name: "execute_shell", arguments: {} } });
+      cb({ type: "error", error: "provider exploded" });
+      throw new Error("连接中断：本轮未正常结束，已保留已生成内容。");
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await user.type(screen.getByRole("textbox"), "run");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+
+    await screen.findByText("provider exploded");
+    // The backend error is the single terminal report; the later connection
+    // failure must not append a second error row.
+    expect(document.querySelectorAll(".msg.error").length).toBe(1);
+    expect(document.querySelector(".tool-card.running")).toBeNull();
+  });
+
   it("多审批显示动态 position/total", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
@@ -371,7 +341,67 @@ describe("App", () => {
 
     await user.click(screen.getByText("会话A"));
 
-    await waitFor(() => expect(m.fetchCommands).toHaveBeenLastCalledWith("s1"));
+    await waitFor(() => expect(m.fetchCommands).toHaveBeenLastCalledWith("s1", undefined));
+  });
+
+  it("命令范围快速切换时旧响应不覆盖新范围", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A"), session("s2", "会话B")]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve(id === "s1" ? detail("s1", "会话A", []) : detail("s2", "会话B", [])),
+    );
+    const pending: Array<{
+      sessionId: string | null;
+      resolve: (v: { commands: api.CommandInfo[] }) => void;
+    }> = [];
+    m.fetchCommands.mockImplementation(
+      (sessionId?: string | null) =>
+        new Promise<{ commands: api.CommandInfo[] }>((resolve) => {
+          pending.push({ sessionId: sessionId ?? null, resolve });
+        }),
+    );
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await screen.findByText("会话B");
+    await user.click(screen.getByText("会话A"));
+    await user.click(screen.getByText("会话B"));
+
+    const callFor = (id: string) => pending.filter((p) => p.sessionId === id).at(-1)!;
+    await waitFor(() => expect(callFor("s2")).toBeTruthy());
+
+    // B (current scope) resolves first, then A's stale response arrives late.
+    await act(async () => {
+      callFor("s2").resolve({
+        commands: [{ name: "only-b", description: "", kind: "template" }],
+      });
+    });
+    await act(async () => {
+      callFor("s1").resolve({
+        commands: [{ name: "only-a", description: "", kind: "template" }],
+      });
+    });
+
+    await user.type(screen.getByRole("textbox"), "/");
+    await screen.findByText("/only-b");
+    expect(screen.queryByText("/only-a")).toBeNull();
+  });
+
+  it("新会话发送显式携带次目录列表（空列表表示明确不使用）", async () => {
+    const user = userEvent.setup();
+
+    render(<App />);
+    await screen.findByRole("button", { name: /请求批准/ });
+    await user.type(screen.getByRole("textbox"), "hello");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
+    expect(m.streamChat).toHaveBeenCalledWith(
+      null,
+      "hello",
+      expect.any(Function),
+      expect.objectContaining({ secondary_roots: [] }),
+    );
   });
 
   it("Escape 关闭权限菜单（useDismiss 统一行为）", async () => {
@@ -434,6 +464,322 @@ describe("App", () => {
     expect(app().classList.contains("sidebar-open")).toBe(false);
   });
 
+  it("A 的权限响应迟到时不改写 B 的权限，B 发送使用 B 的权限", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A"), session("s2", "会话B")]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "s1"
+          ? detail("s1", "会话A", [{ role: "user", content: "A-内容" }])
+          : detail("s2", "会话B", [{ role: "user", content: "B-内容" }]),
+      ),
+    );
+    const perm = deferred<{ id: string; permission_mode: string }>();
+    m.setSessionPermission.mockReturnValue(perm.promise);
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("A-内容");
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    await waitFor(() => expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all"));
+
+    // Switch to B while A's permission request is still pending.
+    await user.click(screen.getByText("会话B"));
+    await screen.findByText("B-内容");
+
+    await act(async () => {
+      perm.resolve({ id: "s1", permission_mode: "allow-all" });
+    });
+
+    // The late A response must not flip B to allow-all.
+    await waitFor(() => expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy());
+
+    await user.type(screen.getByRole("textbox"), "hello");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
+    expect(m.streamChat).toHaveBeenCalledWith(
+      "s2",
+      "hello",
+      expect.any(Function),
+      expect.objectContaining({ permission_mode: "ask" }),
+    );
+  });
+
+  it("权限请求未确认前禁止发送，确认后使用新权限", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
+    const perm = deferred<{ id: string; permission_mode: string }>();
+    m.setSessionPermission.mockReturnValue(perm.promise);
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    await waitFor(() => expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all"));
+
+    // The view still shows the confirmed mode and sending is blocked until the
+    // server confirms: a turn must not write the old mode back.
+    expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy();
+    await user.type(screen.getByRole("textbox"), "hello");
+    const sendBtn = screen.getByRole("button", { name: /发送消息/ }) as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+    await user.click(sendBtn);
+    expect(m.streamChat).not.toHaveBeenCalled();
+
+    await act(async () => {
+      perm.resolve({ id: "s1", permission_mode: "allow-all" });
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
+    expect(m.streamChat).toHaveBeenCalledWith(
+      "s1",
+      "hello",
+      expect.any(Function),
+      expect.objectContaining({ permission_mode: "allow-all" }),
+    );
+  });
+
+  it("权限修改失败时保留原确认值并提示错误", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
+    m.setSessionPermission.mockRejectedValue(new Error("boom"));
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+
+    await waitFor(() => {
+      expect(document.querySelector(".app-toast")?.textContent).toContain("修改权限失败");
+    });
+    // No optimistic flip: the confirmed "ask" mode stays in place.
+    expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy();
+  });
+
+  it("B 详情未返回前禁止发送，加载完成后使用 B 的权限", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A"), session("s2", "会话B")]);
+    const d1 = deferred<api.SessionDetail>();
+    const d2 = deferred<api.SessionDetail>();
+    m.fetchSession.mockImplementation((id: string) => (id === "s1" ? d1.promise : d2.promise));
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await act(async () => {
+      d1.resolve({ ...detail("s1", "会话A", []), permission_mode: "allow-all" });
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
+
+    // Open B; its detail has not arrived yet.
+    await user.click(screen.getByText("会话B"));
+    await screen.findByText("正在加载会话…");
+
+    await user.type(screen.getByRole("textbox"), "hello");
+    const sendBtn = screen.getByRole("button", { name: /发送消息/ }) as HTMLButtonElement;
+    expect(sendBtn.disabled).toBe(true);
+    await user.click(sendBtn);
+    expect(m.streamChat).not.toHaveBeenCalled();
+
+    await act(async () => {
+      d2.resolve(detail("s2", "会话B", [{ role: "user", content: "B-初始" }]));
+    });
+    await screen.findByText("B-初始");
+    expect(screen.queryByText("正在加载会话…")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
+    expect(m.streamChat).toHaveBeenCalledWith(
+      "s2",
+      "hello",
+      expect.any(Function),
+      expect.objectContaining({ permission_mode: "ask" }),
+    );
+  });
+
+  it("会话详情加载失败时禁止发送，重试成功后恢复", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "A-内容" }]));
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+
+    await screen.findByText(/会话加载失败/);
+    await user.type(screen.getByRole("textbox"), "hello");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    expect(m.streamChat).not.toHaveBeenCalled();
+
+    // Retry by clicking the same session again.
+    await user.click(document.querySelector(".session-item") as HTMLElement);
+    await screen.findByText("A-内容");
+
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
+  });
+
+  it("次目录保存期间切换会话，旧结果不覆盖新会话", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([
+      { ...session("s1", "会话A"), root: "/pa" },
+      { ...session("s2", "会话B"), root: "/pb" },
+    ]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "s1"
+          ? { ...detail("s1", "会话A", []), secondary_roots: ["/s1a"] }
+          : { ...detail("s2", "会话B", []), secondary_roots: ["/s2a"] },
+      ),
+    );
+    const save = deferred<{ root: string | null; secondary: string[]; projects: [] }>();
+    m.saveProject.mockReturnValue(save.promise);
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await waitFor(() =>
+      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+    );
+
+    await user.click(screen.getByRole("button", { name: /次目录/ }));
+    await user.click(screen.getByRole("button", { name: "移除次目录 s1a" }));
+
+    // Switch to B while A's save is in flight.
+    await user.click(screen.getByText("会话B"));
+    await waitFor(() =>
+      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+    );
+
+    await act(async () => {
+      save.resolve({ root: "/pa", secondary: [], projects: [] });
+    });
+
+    // A's stale save result must not blank B's secondary list.
+    expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录");
+  });
+
+  it("会话加载期间次目录移除按钮不可用，不会调用保存", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([
+      { ...session("s1", "会话A"), root: "/pa" },
+      { ...session("s2", "会话B"), root: "/pb" },
+    ]);
+    const dB = deferred<api.SessionDetail>();
+    m.fetchSession.mockImplementation((id: string) =>
+      id === "s1"
+        ? Promise.resolve({ ...detail("s1", "会话A", []), secondary_roots: ["/s1a"] })
+        : dB.promise,
+    );
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await waitFor(() =>
+      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+    );
+    await user.click(screen.getByRole("button", { name: /次目录/ }));
+
+    // Switch to B while its detail is still in flight: the editor shows A's
+    // stale list but must not allow a save against the unconfirmed view.
+    await user.click(screen.getByText("会话B"));
+    await screen.findByText("正在加载会话…");
+
+    const remove = screen.getByRole("button", { name: "移除次目录 s1a" }) as HTMLButtonElement;
+    expect(remove.disabled).toBe(true);
+    fireEvent.click(remove);
+    expect(m.saveProject).not.toHaveBeenCalled();
+  });
+
+  it("次目录保存返回前 A→B→A，旧响应不覆盖重新加载的 A", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([
+      { ...session("s1", "会话A"), root: "/pa" },
+      { ...session("s2", "会话B"), root: "/pb" },
+    ]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "s1"
+          ? { ...detail("s1", "会话A", []), secondary_roots: ["/s1a"] }
+          : { ...detail("s2", "会话B", []), secondary_roots: ["/s2a"] },
+      ),
+    );
+    const save = deferred<{ root: string | null; secondary: string[]; projects: [] }>();
+    m.saveProject.mockReturnValue(save.promise);
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await waitFor(() =>
+      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+    );
+    await user.click(screen.getByRole("button", { name: /次目录/ }));
+    await user.click(screen.getByRole("button", { name: "移除次目录 s1a" }));
+    await waitFor(() => expect(m.saveProject).toHaveBeenCalledTimes(1));
+
+    // A -> B -> A while A's save is still in flight: the view version changed
+    // twice, so the old response must be dropped even though the session id
+    // matches the current view again.
+    await user.click(screen.getByText("会话B"));
+    await waitFor(() =>
+      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+    );
+    await user.click(screen.getByText("会话A"));
+    await waitFor(() =>
+      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+    );
+
+    await act(async () => {
+      save.resolve({ root: "/pa", secondary: [], projects: [] });
+    });
+
+    // A's freshly reloaded list stays intact.
+    expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录");
+  });
+
+  it("移除当前会话所属项目后清空会话视图", async () => {
+    const user = userEvent.setup();
+    const s1 = { ...session("s1", "会话A"), root: "/workspace/projA" };
+    m.fetchSessions.mockResolvedValue([s1]);
+    m.fetchWorkspaces.mockResolvedValue({
+      projects: [{ root: "/workspace/projA", secondary: [], name: "Project A" }],
+    });
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
+    m.removeProject.mockResolvedValue({ deleted_sessions: 1, projects: [] });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByText("会话A"));
+    await screen.findByText("hi");
+
+    fireEvent.click(document.querySelector(".group-more-btn") as HTMLElement);
+    await user.click(screen.getByRole("menuitem", { name: /移除项目/ }));
+    await user.click(screen.getByRole("button", { name: "确认移除" }));
+
+    await waitFor(() => expect(m.removeProject).toHaveBeenCalledWith("/workspace/projA"));
+    // The open session was deleted with the project; the view returns to a
+    // blank new session instead of showing a session that no longer exists.
+    await waitFor(() =>
+      expect(document.querySelector(".chat-context strong")?.textContent).toBe("新会话"),
+    );
+    expect(document.querySelector(".session-item.active")).toBeNull();
+  });
+
   it("项目置顶标记与项目折叠/展开功能正常", async () => {
     const user = userEvent.setup();
     const s1 = { ...session("s1", "会话A"), root: "/workspace/projA" };
@@ -465,4 +811,54 @@ describe("App", () => {
     // 会话重新显示
     expect(screen.getByText("会话A")).toBeTruthy();
   });
+});
+
+
+it("草稿切换项目后丢弃旧次目录保存结果", async () => {
+  const user = userEvent.setup();
+  const projects = [{ root: "/A", secondary: ["/alpha"] }, { root: "/B", secondary: ["/beta"] }];
+  m.fetchWorkspaces.mockResolvedValue({ projects });
+  const save = deferred<Awaited<ReturnType<typeof api.saveProject>>>();
+  m.saveProject.mockReturnValue(save.promise);
+  render(<App />);
+  await waitFor(() => expect(m.fetchWorkspaces).toHaveBeenCalled());
+  await user.click(document.querySelector(".project-select")!);
+  await user.click(await screen.findByRole("option", { name: /A/ }));
+  await user.click(screen.getByRole("button", { name: /次目录/ }));
+  await user.click(await screen.findByRole("button", { name: "移除次目录 alpha" }));
+  await user.click(document.querySelector(".project-select")!);
+  await user.click(screen.getByRole("option", { name: /B/ }));
+  await screen.findByRole("button", { name: "移除次目录 beta" });
+  await act(async () => save.resolve({ root: "/A", secondary: [], projects }));
+  expect(screen.getByRole("button", { name: "移除次目录 beta" })).toBeTruthy();
+  await user.type(screen.getByRole("textbox"), "hi");
+  await user.click(screen.getByRole("button", { name: "发送消息" }));
+  expect(m.streamChat).toHaveBeenCalledWith(null, "hi", expect.any(Function),
+    expect.objectContaining({ root: "/B", secondary_roots: ["/beta"] }));
+});
+
+it("移除项目期间切换会话后保留新视图", async () => {
+  const user = userEvent.setup();
+  m.fetchSessions.mockResolvedValue([
+    { ...session("s1", "会话A"), root: "/A" }, { ...session("s2", "会话B"), root: "/B" },
+  ]);
+  m.fetchWorkspaces.mockResolvedValue({ projects: [
+    { root: "/A", secondary: [] }, { root: "/B", secondary: [] },
+  ] });
+  m.fetchSession.mockImplementation(async (id) => detail(id, id, [
+    { role: "user", content: id === "s1" ? "A content" : "B content" },
+  ]));
+  const deleted = deferred<Awaited<ReturnType<typeof api.removeProject>>>();
+  m.removeProject.mockReturnValue(deleted.promise);
+  render(<App />);
+  await user.click(await screen.findByText("会话A"));
+  await screen.findByText("A content");
+  fireEvent.click(document.querySelector(".group-more-btn")!);
+  await user.click(screen.getByRole("menuitem", { name: /移除项目/ }));
+  await user.click(screen.getByRole("button", { name: "确认移除" }));
+  await user.click(screen.getByRole("button", { name: "取消" }));
+  await user.click(screen.getByText("会话B"));
+  await screen.findByText("B content");
+  await act(async () => deleted.resolve({ deleted_sessions: 1, projects: [] }));
+  expect(screen.getByText("B content")).toBeTruthy();
 });

@@ -8,11 +8,6 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 def mcp_server_config():
     import sys
 
@@ -142,6 +137,308 @@ async def test_unknown_mcp_tool_call_is_rejected(tmp_path):
     assert "tool not enabled" in results[0]["message"]
 
     await agent.mcp_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_tool_cap_rejects_registered_mcp_tool(tmp_path):
+    """An empty explicit cap rejects even a connected MCP tool, without executing it."""
+    from easycode.agent.loop import Agent
+    from easycode.mcp import mcp_tool_name
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    fname = mcp_tool_name("demo", "add")
+    script = [
+        {"tool_calls": [("c1", fname, {"a": 1, "b": 2})], "text": ""},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        provider=FakeProvider(model="fake", script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        mcp_servers=mcp_server_config(),
+        enabled_tools=set(),
+        permission_mode="allow-all",
+    )
+
+    results = []
+    async for ev in agent.respond("add it"):
+        if ev.kind == "tool_result":
+            results.append(json.loads(ev.tool_result))
+
+    assert len(results) == 1
+    assert results[0]["rejected"] is True
+    assert "tool not enabled" in results[0]["message"]
+
+    await agent.mcp_manager.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_connect_closes_transport(monkeypatch):
+    """A transport created before a server's init failed must be closed."""
+    from easycode.mcp import MCPSessionManager, StdioTransport
+
+    closed: list[str] = []
+
+    async def fail_start(self):
+        raise RuntimeError("boom")
+
+    async def spy_close(self):
+        closed.append(self.command)
+
+    monkeypatch.setattr(StdioTransport, "start", fail_start)
+    monkeypatch.setattr(StdioTransport, "close", spy_close)
+
+    mgr = MCPSessionManager(mcp_server_config())
+    await mgr.start()
+    assert mgr.tool_schemas() == []
+    assert closed, "the transport created for a failed server must be closed"
+
+
+@pytest.mark.asyncio
+async def test_stdio_close_reaps_process_and_reader_tasks():
+    from easycode.mcp import MCPSessionManager
+
+    mgr = MCPSessionManager(mcp_server_config())
+    await mgr.start()
+    transport = mgr._sessions["demo"].transport
+    proc = transport.proc
+    assert proc is not None
+
+    await mgr.close()
+    assert proc.returncode is not None, "the MCP child must be reaped"
+    assert all(task.done() for task in transport._tasks)
+
+    # Cleanup is idempotent.
+    await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_subagent_task_keeps_borrowed_parent_mcp(tmp_path):
+    """A subtask borrowing the parent's MCP manager must not close it."""
+    from easycode.agent.loop import Agent
+    from easycode.agents import AgentRegistry, AgentSpec
+    from easycode.mcp import mcp_tool_name
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    fname = mcp_tool_name("demo", "add")
+    reg = AgentRegistry({"coder": AgentSpec(name="coder", description="calls mcp")})
+    sub_script = [
+        {"tool_calls": [("s1", fname, {"a": 1, "b": 2})], "text": ""},
+        {"text": "3"},
+    ]
+
+    def factory(_model: str) -> Agent:
+        return Agent(
+            provider=FakeProvider(script=sub_script),
+            registry=build_registry(8000),
+            root=tmp_path,
+        )
+
+    script = [
+        {"tool_calls": [("t1", "task", {"agent": "coder", "prompt": "add"})], "text": ""},
+        {"text": "done"},
+    ]
+    parent = Agent(
+        provider=FakeProvider(model="fake", script=script),
+        registry=build_registry(8000),
+        root=tmp_path,
+        mcp_servers=mcp_server_config(),
+        permission_mode="allow-all",
+        agents=reg,
+        subagent_factory=factory,
+    )
+
+    events = [ev async for ev in parent.respond("delegate")]
+    result = json.loads(
+        next(
+            e.tool_result
+            for e in events
+            if e.kind == "tool_result" and e.tool_call and e.tool_call.name == "task"
+        )
+    )
+    assert result["status"] == "ok"
+
+    manager = parent.mcp_manager
+    assert manager is not None and manager.tool_names(), "parent MCP must survive the subtask"
+    out = await manager.call(fname, {"a": 2, "b": 3})
+    assert "5" in out
+    await parent.close_mcp()
+
+
+@pytest.mark.asyncio
+async def test_subagent_with_different_sandbox_gets_own_mcp(tmp_path):
+    """Only an identical sandbox context may borrow the parent's MCP process."""
+    from easycode.agent.builtin_tools import make_subagent
+    from easycode.agent.loop import Agent
+    from easycode.agents import AgentSpec
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    parent = Agent(
+        provider=FakeProvider(model="fake"),
+        registry=build_registry(8000),
+        root=tmp_path,
+        mcp_servers=mcp_server_config(),
+        permission_mode="allow-all",
+        subagent_factory=lambda _model: Agent(
+            provider=FakeProvider(model="fake"),
+            registry=build_registry(8000),
+            root=tmp_path,
+        ),
+    )
+    await parent.init_mcp()
+    try:
+        borrowed = make_subagent(parent)
+        assert borrowed.mcp_manager is parent.mcp_manager
+
+        capped = make_subagent(
+            parent, AgentSpec(name="reader", description="ask", permission="ask")
+        )
+        assert capped.permission_mode == "ask"
+        assert capped.mcp_manager is None, (
+            "a differently sandboxed subagent must not share the parent's process"
+        )
+        assert capped.mcp_servers == parent.mcp_servers
+    finally:
+        await parent.close_mcp()
+
+
+@pytest.mark.asyncio
+async def test_session_delete_closes_owned_mcp(tmp_path):
+    from easycode.agent.loop import Agent
+    from easycode.config import Config
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str = "fake-a", **_):
+        return Agent(
+            provider=FakeProvider(model="fake"),
+            registry=build_registry(8000),
+            root=tmp_path,
+            mcp_servers=mcp_server_config(),
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    sess = store.create()
+    await sess.agent.init_mcp()
+    manager = sess.agent.mcp_manager
+    assert manager is not None
+    proc = manager._sessions["demo"].transport.proc
+    assert proc is not None
+
+    assert await store.delete(sess.id) is True
+    assert sess.agent.mcp_manager is None
+    assert manager._sessions == {}
+    assert proc.returncode is not None
+    assert await store.delete(sess.id) is False
+
+
+def test_web_shutdown_closes_owned_mcp(tmp_path):
+    """Leaving the FastAPI lifespan releases every session-owned MCP process."""
+    from fastapi.testclient import TestClient
+
+    from easycode.agent.loop import Agent
+    from easycode.config import Config
+    from easycode.mcp import mcp_tool_name
+    from easycode.tools import build_registry
+    from easycode.web.main import create_app
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    fname = mcp_tool_name("demo", "add")
+    script = [
+        {"tool_calls": [("c1", fname, {"a": 1, "b": 1})], "text": ""},
+        {"text": "2"},
+    ]
+
+    def factory(alias: str = "fake-a", **_):
+        return Agent(
+            provider=FakeProvider(model="fake", script=list(script)),
+            registry=build_registry(8000),
+            root=tmp_path,
+            mcp_servers=mcp_server_config(),
+            permission_mode="allow-all",
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
+    client = TestClient(app)
+    with client:
+        r = client.post(
+            "/api/chat", json={"message": "go", "permission_mode": "allow-all"}
+        )
+        assert r.status_code == 200, r.text
+        sess = store.list()[0]
+        manager = sess.agent.mcp_manager
+        assert manager is not None
+        proc = manager._sessions["demo"].transport.proc
+        assert proc is not None
+
+    # Context exit ran the lifespan shutdown.
+    assert sess.agent.mcp_manager is None
+    assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_chat_permission_change_drops_stale_mcp(tmp_path):
+    """A chat-requested permission change must not keep serving MCP tools from
+    the previous sandbox: the old manager is released immediately, exactly like
+    the permission endpoint (regression: /api/chat switched the mode only)."""
+    import httpx
+
+    from easycode.agent.loop import Agent
+    from easycode.config import Config
+    from easycode.tools import build_registry
+    from easycode.web.main import create_app
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str = "fake-a", **_):
+        return Agent(
+            provider=FakeProvider(model="fake", script=[{"text": "ok"}]),
+            registry=build_registry(8000),
+            root=tmp_path,
+            mcp_servers=mcp_server_config(),
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
+
+    sess = store.create(permission_mode="allow-all")
+    await sess.agent.init_mcp()
+    manager = sess.agent.mcp_manager
+    assert manager is not None
+    proc = manager._sessions["demo"].transport.proc
+    assert proc is not None
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://t"
+    ) as c:
+        r = await c.post(
+            "/api/chat",
+            json={"message": "hi", "session_id": sess.id, "permission_mode": "ask"},
+        )
+        assert r.status_code == 200, r.text
+
+    assert sess.agent.permission_mode == "ask"
+    assert sess.agent.mcp_manager is not manager
+    assert proc.returncode is not None
+    await sess.agent.close_mcp()
 
 
 @pytest.mark.asyncio

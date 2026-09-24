@@ -14,10 +14,16 @@ class History:
     """Bounded message history (OpenAI-format dicts).
 
     Budgets: ``max_tokens`` (usable model budget, primary) and ``max_chars``
-    (backstop for non-token-countable models). Old turns are dropped only by
-    ``trim``/``condense`` under those budgets, never by a raw message count.
-    ``summary`` derives from the head summary message so repeated compactions
-    merge instead of overwriting (aligned with opencode).
+    (an explicit memory backstop independent of the model budget; token
+    accounting stays primary and is CJK-aware rather than a flat chars/4 rule).
+    Old turns are dropped only by ``trim``/``condense`` under those budgets,
+    never by a raw message count. ``summary`` derives from the head summary
+    message so repeated compactions merge instead of overwriting (aligned with
+    opencode).
+
+    Invariant: once a message dict is in the list it is never mutated in place
+    (compaction replaces the object) — ``Session.messages`` snapshots share
+    these dictionaries without copying them.
     """
 
     system: Message | None = None

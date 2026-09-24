@@ -14,8 +14,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
 from easycode.agent.loop import Agent, file_change
-from easycode.agentfactory import make_agent, rebind_agent
-from easycode.approval import approval_key
+from easycode.agentfactory import bind_agent, make_agent
 from easycode.config import Config
 from easycode.ui.render import (
     banner,
@@ -77,8 +76,7 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
     always_allow: set[str] = set()
     from easycode.agent.loop import ToolCall
 
-    async def approval_handler(tc: ToolCall, _reason: str) -> bool:
-        key = approval_key(tc)
+    async def approval_handler(tc: ToolCall, _reason: str, key: str) -> bool:
         if key in always_allow:
             return True
         console.print(
@@ -131,7 +129,15 @@ def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: list[Pat
     commands = build_commands(agent, ctx.roots)
     console.print()
     banner(cfg.resolve_model(current))
-    asyncio.run(repl_loop(cfg, agent, current, commands))
+
+    async def _repl() -> None:
+        try:
+            await repl_loop(cfg, agent, current, commands)
+        finally:
+            # The REPL owns its agent's MCP processes; close them on exit.
+            await agent.close_mcp()
+
+    asyncio.run(_repl())
 
 
 @app.command()
@@ -296,7 +302,7 @@ def _cmd_model(cfg: Config, agent: Agent, current: str, rest: str) -> None:
         alias = rest
         if alias in cfg.models:
             try:
-                rebind_agent(agent, cfg, alias)
+                bind_agent(agent, cfg, alias)
             except ValueError as exc:
                 console.print(f"[red]{exc}[/]")
                 return

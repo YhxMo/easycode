@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { RefObject } from "react";
 import type { WorkspaceProject } from "./api";
 import { chooseWorkspace, saveProject } from "./api";
 import { basename, DEFAULT_PROJECT } from "./lib/paths";
@@ -8,6 +9,7 @@ export function SecondaryEditor({
   secondary,
   sessionId,
   disabled,
+  viewToken,
   onSecondary,
   onProjects,
   onError,
@@ -16,6 +18,8 @@ export function SecondaryEditor({
   secondary: string[];
   sessionId?: string | null;
   disabled: boolean;
+  /** Current view version; a save that started for a superseded view is dropped. */
+  viewToken: RefObject<number>;
   onSecondary: (r: string[]) => void;
   onProjects?: (projects: WorkspaceProject[]) => void;
   onError?: (msg: string) => void;
@@ -24,6 +28,8 @@ export function SecondaryEditor({
   const [open, setOpen] = useState(false);
 
   const mutate = async (next: string[]) => {
+    if (disabled) return null;
+    const startView = viewToken.current;
     setBusy(true);
     try {
       const { secondary: saved, projects } = await saveProject(
@@ -31,11 +37,12 @@ export function SecondaryEditor({
         next,
         sessionId ?? undefined,
       );
+      if (viewToken.current !== startView) return null;
       onSecondary(saved);
       onProjects?.(projects);
       return saved;
     } catch (e) {
-      onError?.(e instanceof Error ? e.message : String(e));
+      if (viewToken.current === startView) onError?.(e instanceof Error ? e.message : String(e));
       return null;
     } finally {
       setBusy(false);
@@ -43,19 +50,22 @@ export function SecondaryEditor({
   };
 
   const pickViaFinder = async () => {
+    if (disabled || busy) return;
+    const startView = viewToken.current;
     setBusy(true);
     try {
       const { paths, supported } = await chooseWorkspace(
         true,
         `为 ${root ? basename(root) : DEFAULT_PROJECT} 添加次目录（可多选）`,
       );
+      if (viewToken.current !== startView) return;
       if (!supported) {
         onError?.("当前平台不支持访达选择");
       } else if (paths.length) {
         await mutate([...new Set([...secondary, ...paths])]);
       }
     } catch (e) {
-      onError?.(e instanceof Error ? e.message : String(e));
+      if (viewToken.current === startView) onError?.(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -95,7 +105,7 @@ export function SecondaryEditor({
                   className="secondary-remove"
                   title={`移除 ${basename(p)}`}
                   aria-label={`移除次目录 ${basename(p)}`}
-                  disabled={busy}
+                  disabled={disabled || busy}
                   onClick={() => remove(p)}
                 >
                   ✕

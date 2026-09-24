@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Any
+
+from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
 from easycode.policy import cap_permission
 
@@ -13,6 +15,60 @@ if TYPE_CHECKING:
     from easycode.agents import AgentSpec
 
 DEFAULT_MAX_PARALLEL = 4
+MAX_PARALLEL_TASKS = 6
+
+NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class TaskSpec(BaseModel):
+    """One parallel subtask."""
+
+    name: NonEmptyStr = Field(description="short task label")
+    prompt: NonEmptyStr = Field(description="self-contained task instructions")
+
+
+class TaskArgs(BaseModel):
+    """Arguments of the ``task`` tool."""
+
+    agent: NonEmptyStr = Field(description="name of the agent to delegate to")
+    prompt: NonEmptyStr = Field(description="self-contained task instructions")
+
+
+class ParallelTasksArgs(BaseModel):
+    """Arguments of the ``parallel_tasks`` tool."""
+
+    tasks: list[TaskSpec] = Field(min_length=1, max_length=MAX_PARALLEL_TASKS)
+    max_parallel: int = Field(default=DEFAULT_MAX_PARALLEL, ge=1, le=MAX_PARALLEL_TASKS)
+
+
+class UseSkillArgs(BaseModel):
+    """Arguments of the ``use_skill`` tool."""
+
+    name: NonEmptyStr = Field(description="skill name to load")
+
+
+def _parameters_schema(model: type[BaseModel]) -> dict:
+    """JSON schema for a builtin tool, with nested ``$ref``s inlined.
+
+    The runtime model is the single source of truth, while the wire format
+    stays a self-contained object schema.
+    """
+    schema = model.model_json_schema()
+    defs = schema.pop("$defs", {})
+
+    def inline(node: Any) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                target = defs.get(ref.rsplit("/", 1)[-1], {})
+                return inline({k: v for k, v in target.items() if k != "title"})
+            return {k: inline(v) for k, v in node.items() if k != "title"}
+        if isinstance(node, list):
+            return [inline(item) for item in node]
+        return node
+
+    return inline(schema)
+
 
 PARALLEL_TASKS_SCHEMA = {
     "type": "function",
@@ -24,34 +80,7 @@ PARALLEL_TASKS_SCHEMA = {
             "read & analyze several files, draft several small functions). "
             "Each task runs with its own fresh context sharing the same tools and workspace."
         ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "tasks": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 6,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "short task label"},
-                            "prompt": {
-                                "type": "string",
-                                "description": "self-contained task instructions",
-                            },
-                        },
-                        "required": ["name", "prompt"],
-                    },
-                },
-                "max_parallel": {
-                    "type": "integer",
-                    "default": DEFAULT_MAX_PARALLEL,
-                    "minimum": 1,
-                    "maximum": 6,
-                },
-            },
-            "required": ["tasks"],
-        },
+        "parameters": _parameters_schema(ParallelTasksArgs),
     },
 }
 
@@ -67,14 +96,7 @@ TASK_SCHEMA = {
             "agent's description; prefer parallel_tasks for several independent "
             "generic subtasks."
         ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "agent": {"type": "string", "description": "name of the agent to delegate to"},
-                "prompt": {"type": "string", "description": "self-contained task instructions"},
-            },
-            "required": ["agent", "prompt"],
-        },
+        "parameters": _parameters_schema(TaskArgs),
     },
 }
 
@@ -87,23 +109,21 @@ USE_SKILL_SCHEMA = {
             "conversation by name. The skill body is injected once and stays in "
             "context for the rest of the session."
         ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "skill name to load"},
-            },
-            "required": ["name"],
-        },
+        "parameters": _parameters_schema(UseSkillArgs),
     },
 }
 
-BUILTIN_TOOLS = {"parallel_tasks", "task", "use_skill"}
+ARG_MODELS: dict[str, type[BaseModel]] = {
+    "parallel_tasks": ParallelTasksArgs,
+    "task": TaskArgs,
+    "use_skill": UseSkillArgs,
+}
+BUILTIN_TOOLS = frozenset(ARG_MODELS)
 
 
-async def run_task(agent: Agent, tc: ToolCall) -> str:
+async def run_task(agent: Agent, agent_name: str, prompt: str) -> str:
     """Runner for the ``task`` tool: delegate one job to a named subagent."""
-    name = str(tc.arguments.get("agent", "")).strip().lower()
-    prompt = str(tc.arguments.get("prompt", "")).strip()
+    name = agent_name.strip().lower()
     if not agent.agents or not name:
         return json.dumps({"status": "error", "message": "unknown agent or no agents configured"})
     spec = agent.agents.get(name)
@@ -121,22 +141,24 @@ async def run_task(agent: Agent, tc: ToolCall) -> str:
             {"status": "error", "message": f"agent is not delegatable: {name}"},
             ensure_ascii=False,
         )
-    if not prompt:
-        return json.dumps({"status": "error", "message": "task prompt is empty"})
+    sub: Agent | None = None
     try:
         sub = make_subagent(agent, spec)
         text = await sub.run_task(prompt)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"status": "error", "message": f"{type(exc).__name__}: {exc}"})
+    finally:
+        if sub is not None:
+            await sub.close_mcp()
     return json.dumps(
         {"status": "ok", "agent": spec.name, "model": spec.model, "result": text},
         ensure_ascii=False,
     )
 
 
-async def run_use_skill(agent: Agent, tc: ToolCall) -> str:
+async def run_use_skill(agent: Agent, name: str) -> str:
     """Runner for the ``use_skill`` tool: inject a skill body into the session."""
-    name = str(tc.arguments.get("name", "")).strip().lower()
+    name = name.strip().lower()
     if not agent.skills:
         return json.dumps({"status": "error", "message": "no skills configured"})
     skill = agent.skills.get(name)
@@ -158,20 +180,22 @@ async def run_use_skill(agent: Agent, tc: ToolCall) -> str:
     )
 
 
-async def run_parallel(agent: Agent, tasks: list[dict], max_parallel: int) -> str:
+async def run_parallel(agent: Agent, tasks: list[TaskSpec], max_parallel: int) -> str:
     """Runner for the ``parallel_tasks`` tool: run independent subtasks concurrently."""
-    sem = asyncio.Semaphore(min(max_parallel, 6) or 1)
+    sem = asyncio.Semaphore(max_parallel)
 
-    async def run_one(task: dict) -> dict:
+    async def run_one(task: TaskSpec) -> dict:
         async with sem:
-            name = task.get("name", "task")
-            prompt = task.get("prompt", "")
+            sub: Agent | None = None
             try:
                 sub = make_subagent(agent)
-                text = await sub.run_task(prompt)
-                return {"name": name, "result": text}
+                text = await sub.run_task(task.prompt)
+                return {"name": task.name, "result": text}
             except Exception as exc:  # noqa: BLE001
-                return {"name": name, "error": f"{type(exc).__name__}: {exc}"}
+                return {"name": task.name, "error": f"{type(exc).__name__}: {exc}"}
+            finally:
+                if sub is not None:
+                    await sub.close_mcp()
 
     results = await asyncio.gather(*(run_one(t) for t in tasks))
     return json.dumps(
@@ -180,19 +204,29 @@ async def run_parallel(agent: Agent, tasks: list[dict], max_parallel: int) -> st
 
 
 async def run_builtin(agent: Agent, tc: ToolCall) -> str:
-    """Dispatch one builtin tool call to its runner."""
+    """Dispatch one builtin tool call to its runner.
+
+    Arguments are validated against the same Pydantic models the advertised
+    schemas are generated from; a validation failure becomes a normal tool
+    result so the model can correct itself and the history stays paired.
+    """
+    model = ARG_MODELS.get(tc.name)
+    if model is None:
+        return json.dumps({"status": "error", "message": f"unknown builtin tool: {tc.name}"})
+    try:
+        args = model.model_validate(tc.arguments)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        where = ".".join(str(part) for part in first["loc"]) or "arguments"
+        return json.dumps(
+            {"status": "error", "message": f"invalid {model.__name__}: {where}: {first['msg']}"},
+            ensure_ascii=False,
+        )
     if tc.name == "parallel_tasks":
-        try:
-            sub_tasks = tc.arguments.get("tasks", [])
-            max_parallel = int(tc.arguments.get("max_parallel", DEFAULT_MAX_PARALLEL))
-            return await run_parallel(agent, sub_tasks, max_parallel)
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({"status": "error", "message": f"{type(exc).__name__}: {exc}"})
+        return await run_parallel(agent, args.tasks, args.max_parallel)
     if tc.name == "task":
-        return await run_task(agent, tc)
-    if tc.name == "use_skill":
-        return await run_use_skill(agent, tc)
-    return json.dumps({"status": "error", "message": f"unknown builtin tool: {tc.name}"})
+        return await run_task(agent, args.agent, args.prompt)
+    return await run_use_skill(agent, args.name)
 
 
 def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
@@ -208,30 +242,31 @@ def make_subagent(agent: Agent, spec: AgentSpec | None = None) -> Agent:
     # the factory resolves aliases; without a spec model, inherit the parent's
     # alias so credentials and api_format stay correct
     sub = agent.subagent_factory(model or agent.model_alias or agent.provider.model)
+    # A subagent can never exceed its parent: the parent's final tool set is
+    # the ceiling, and an explicit spec.tools list narrows it further. Task
+    # delegation itself is never inheritable (no recursive delegation).
+    parent_tools = agent.available_tool_names() - {"task", "parallel_tasks"}
     if spec is not None and spec.tools is not None:
-        sub_tools = set(spec.tools)
-    elif sub.enabled_tools is not None:
-        sub_tools = set(sub.enabled_tools)
+        sub.enabled_tools = set(spec.tools) & parent_tools
     else:
-        sub_tools = (
-            set(agent.enabled_tools)
-            if agent.enabled_tools is not None
-            else agent.all_tool_names()
-        )
-    # A subagent never recurses into parallel delegation.
-    sub_tools.discard("parallel_tasks")
-    sub.enabled_tools = sub_tools
+        sub.enabled_tools = set(parent_tools)
     sub.secondary_roots = list(agent.secondary_roots)
     sub.extra_safe_dirs = list(agent.extra_safe_dirs)
-    sub.mcp_servers = agent.mcp_servers
-    sub.mcp_manager = agent.mcp_manager
     sub.permission_mode = agent.permission_mode
+    if spec is not None and spec.permission:
+        sub.permission_mode = cap_permission(agent.permission_mode, spec.permission)
+    sub.mcp_servers = agent.mcp_servers
+    sub.mcp_owned = False
+    # Only an identical sandbox context may share the parent's MCP process; a
+    # differently sandboxed subagent creates (and later closes) its own.
+    if agent.mcp_manager is not None and sub.path_context() == agent.path_context():
+        sub.mcp_manager = agent.mcp_manager
+    else:
+        sub.mcp_manager = None
     sub.permission_rules = dict(agent.permission_rules)
     sub.approval_handler = agent.approval_handler
     sub.review_handler = agent.review_handler
     if spec is not None:
-        if spec.permission:
-            sub.permission_mode = cap_permission(agent.permission_mode, spec.permission)
         if spec.system:
             sub.system_override = spec.system
         if spec.temperature is not None and hasattr(sub.provider, "kwargs"):

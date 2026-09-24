@@ -9,7 +9,6 @@ import type {
 } from "./api";
 import {
   archiveProjectChats,
-  cancelSessionChat,
   createWorktree,
   deleteSession,
   fetchArchivedSessions,
@@ -43,6 +42,9 @@ import { SecondaryEditor } from "./SecondaryEditor";
 
 const EMPTY_MODELS: ModelsInfo = { default: "", models: {}, providers: {}, limits: {} };
 
+/** Foreground session load phase; null means ready. */
+type SessionLoad = { status: "loading" } | { status: "error"; message: string };
+
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -54,14 +56,27 @@ export default function App() {
   // a session event updates them in place, and openSession resets them.
   const [secondary, setSecondary] = useState<string[]>([]);
   const [permission, setPermission] = useState<string>("ask");
+  // Foreground session load state: while loading (or after a failed load) the
+  // composer, permission picker and secondary editor are disabled, so no
+  // request can be sent against a target whose state is not confirmed yet.
+  const [sessionLoad, setSessionLoad] = useState<SessionLoad | null>(null);
+  // A permission change is server-confirmed: while the request is in flight the
+  // view keeps the old value and sending is blocked, so a turn can never write
+  // an unconfirmed mode back to the server.
+  const [permissionPending, setPermissionPending] = useState(false);
   const [overlayOpen, setOverlayOpen] = useState(true);
-  const [commands, setCommands] = useState<CommandInfo[]>([]);
+  const [commandResult, setCommandResult] = useState<{ scope: string; commands: CommandInfo[] }>({
+    scope: "",
+    commands: [],
+  });
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdIndex, setCmdIndex] = useState(0);
   // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const mainRef = useRef<HTMLDivElement>(null);
+  // View version: a response is applied only while it still matches, and the
+  // ref is readable at response time by child editors.
   const openSeqRef = useRef(0);
 
   // Escape closes the mobile drawer. Scoped to when the drawer is open so
@@ -95,6 +110,8 @@ export default function App() {
     (currentId ? (models.models[currentSession?.model_alias ?? ""]?.model ?? currentSession?.model_alias) : null) ??
     models.models[models.default]?.model ??
     models.default;
+  const sessionBlocked = sessionLoad !== null;
+  const sendBlocked = sessionBlocked || permissionPending;
 
   const { send, stop, busy, items, setItems, detach } = useChatStream({
     input,
@@ -103,6 +120,7 @@ export default function App() {
     secondary,
     permission,
     currentModelName,
+    sendBlocked,
     refreshSessions,
     setInput,
     setCurrentId,
@@ -137,12 +155,23 @@ export default function App() {
     fetchModels().then(setModels).catch(() => {});
   }, [refreshSessions]);
 
-  // Command discovery follows the session: its own project roots and skills.
+  // Command discovery follows the exact foreground scope: an open session's
+  // own roots/skills, or the draft's root + secondary list. A result carries
+  // the scope it was fetched for, so a stale menu disappears the moment the
+  // scope changes and a late reply can never replace the current one.
+  const commandScope = JSON.stringify([currentId, chosenRoot, secondary]);
+  const commands = commandResult.scope === commandScope ? commandResult.commands : [];
   useEffect(() => {
-    fetchCommands(currentId)
-      .then((r) => setCommands(r.commands))
-      .catch(() => {});
-  }, [currentId]);
+    const scope = JSON.stringify([currentId, chosenRoot, secondary]);
+    const draft = currentId === null ? { root: chosenRoot, secondary } : undefined;
+    let live = true;
+    fetchCommands(currentId, draft)
+      .then((r) => live && setCommandResult({ scope, commands: r.commands }))
+      .catch(() => live && setCommandResult({ scope, commands: [] }));
+    return () => {
+      live = false;
+    };
+  }, [currentId, chosenRoot, secondary]);
 
   useEffect(() => {
     refreshArchived();
@@ -193,19 +222,22 @@ export default function App() {
       // Re-opening the session that is currently streaming must not reload the
       // stale disk snapshot: that would drop this turn's items and its pending
       // approval while the stream keeps appending events.
-      if (id !== null && id === currentId && busy) {
+      if (id !== null && id === currentId && (busy || sessionLoad?.status === "loading")) {
         setSidebarOpen(false);
         return;
       }
       const token = ++openSeqRef.current;
-      // Switching sessions abandons the previous stream so its events cannot
-      // leak into the new view.
+      // Switching sessions abandons the previous stream (and releases its busy
+      // state) so its events cannot leak into the new view.
       detach();
       setCurrentId(id);
       setItems([]);
       setOverlayOpen(true);
       setSidebarOpen(false);
+      // An unconfirmed permission change belongs to the view that started it.
+      setPermissionPending(false);
       if (id) {
+        setSessionLoad({ status: "loading" });
         try {
           const detail: SessionDetail = await fetchSession(id);
           // Guard against out-of-order responses: only the most recent open
@@ -214,17 +246,20 @@ export default function App() {
           setItems(historyToItems(detail.messages, detail.approvals, detail.user_times));
           setSecondary(detail.secondary_roots ?? []);
           setPermission(detail.permission_mode ?? "ask");
+          setSessionLoad(null);
         } catch (e) {
           if (openSeqRef.current !== token) return;
-          setOverlayOpen(false);
-          showToast("err", `打开会话失败: ${e instanceof Error ? e.message : String(e)}`);
+          const message = e instanceof Error ? e.message : String(e);
+          setSessionLoad({ status: "error", message });
+          showToast("err", `打开会话失败: ${message}`);
         }
       } else {
+        setSessionLoad(null);
         setSecondary([]);
         setPermission("ask");
       }
     },
-    [showToast, currentId, busy, detach, setItems],
+    [showToast, currentId, busy, sessionLoad, detach, setItems],
   );
 
   const projectMeta = useMemo(() => {
@@ -232,6 +267,11 @@ export default function App() {
     for (const p of workspaces.projects ?? []) map.set(p.root ?? null, p);
     return map;
   }, [workspaces]);
+
+  const chooseRoot = useCallback((root: string | null) => {
+    ++openSeqRef.current;
+    setChosenRoot(root);
+  }, []);
 
   const newSession = useCallback(() => {
     openSession(null);
@@ -248,19 +288,35 @@ export default function App() {
 
   const confirmDeleteSession = useCallback(async () => {
     if (!deleteTarget) return;
-    const isCurrent = currentId === deleteTarget.id;
-    if (isCurrent) {
-      // Stop the backend turn before the session disappears; openSession(null)
-      // below aborts the local reader and resets the view.
-      await cancelSessionChat(deleteTarget.id).catch(() => {});
+    const target = deleteTarget;
+    const viewToken = openSeqRef.current;
+    const isCurrent = currentId === target.id;
+    // The backend owns cancellation: DELETE stops the turn, waits for it to
+    // unwind and only then removes the file, so no separate cancel is needed.
+    try {
+      await deleteSession(target.id);
+    } catch (e) {
+      // The session still exists: keep it in the list/view and surface why.
+      showToast("err", `删除会话失败: ${e instanceof Error ? e.message : String(e)}`);
+      setDeleteTarget(null);
+      return;
     }
-    await deleteSession(deleteTarget.id).catch(() => {});
-    setArchived((prev) => prev.filter((x) => x.id !== deleteTarget.id));
-    if (isCurrent) openSession(null);
+    setArchived((prev) => prev.filter((x) => x.id !== target.id));
+    // Clear the view only when it is still the one the delete targeted: a
+    // switch during the delete must not blank the new view.
+    if (isCurrent && openSeqRef.current === viewToken) openSession(null);
     setDeleteTarget(null);
     refreshSessions();
     refreshArchived();
-  }, [deleteTarget, currentId, openSession, refreshSessions, refreshArchived, setDeleteTarget]);
+  }, [
+    deleteTarget,
+    currentId,
+    openSession,
+    refreshSessions,
+    refreshArchived,
+    setDeleteTarget,
+    showToast,
+  ]);
 
   const restoreArchived = useCallback(
     async (session: SessionSummary) => {
@@ -336,18 +392,36 @@ export default function App() {
 
   const confirmRemoveProject = useCallback(async () => {
     if (!removeTarget) return;
+    const removedRoot = removeTarget.root;
+    const viewToken = openSeqRef.current;
     try {
-      const r = await removeProject(removeTarget.root);
+      const r = await removeProject(removedRoot);
       setProjects(r.projects);
       refreshSessions();
-      if (currentId === null && removeTarget.root === chosenRoot) setChosenRoot(null);
+      refreshArchived();
+      if (openSeqRef.current === viewToken) {
+        if (currentId !== null && (currentSession?.root ?? null) === removedRoot) openSession(null);
+        else if (currentId === null && removedRoot === chosenRoot) chooseRoot(null);
+      }
       showToast("ok", `已移除项目（删除 ${r.deleted_sessions} 条会话）`);
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : String(e));
     } finally {
       setRemoveTarget(null);
     }
-  }, [removeTarget, refreshSessions, chosenRoot, currentId, setProjects, setRemoveTarget, showToast]);
+  }, [
+    removeTarget,
+    chooseRoot,
+    refreshSessions,
+    refreshArchived,
+    currentSession,
+    currentId,
+    chosenRoot,
+    openSession,
+    setProjects,
+    setRemoveTarget,
+    showToast,
+  ]);
 
   // sessions grouped by project root (null = default project); pinned projects first
   const groups = useMemo(() => {
@@ -402,16 +476,32 @@ export default function App() {
 
   const changePermission = useCallback(
     async (mode: string) => {
-      setPermission(mode);
-      if (currentId === null) return;
+      // One permission request at a time: the picker is disabled while pending,
+      // so a second request can never race the first (no request token needed).
+      if (sendBlocked) return;
+      const id = currentId;
+      // The draft's mode is a local choice for the next send: update at once.
+      if (id === null) {
+        setPermission(mode);
+        return;
+      }
+      const viewToken = openSeqRef.current;
+      // The view keeps the confirmed mode until the server answers; a failed
+      // request therefore leaves the old value in place with no rollback.
+      setPermissionPending(true);
       try {
-        const r = await setSessionPermission(currentId, mode);
+        const r = await setSessionPermission(id, mode);
+        if (openSeqRef.current !== viewToken) return;
         setPermission(r.permission_mode);
-      } catch {
-        refreshSessions();
+      } catch (e) {
+        if (openSeqRef.current !== viewToken) return;
+        showToast("err", `修改权限失败: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        // A response from a superseded view must not release a newer request.
+        if (openSeqRef.current === viewToken) setPermissionPending(false);
       }
     },
-    [currentId, refreshSessions],
+    [currentId, showToast, sendBlocked],
   );
 
   return (
@@ -422,6 +512,8 @@ export default function App() {
         showArchived={showArchived}
         collapsedProjects={collapsedProjects}
         busy={busy}
+        sessionBlocked={sessionBlocked}
+        viewToken={openSeqRef}
         models={models}
         workspaces={workspaces}
         groups={groups}
@@ -434,7 +526,7 @@ export default function App() {
         onToggleCollapsed={toggleProjectCollapsed}
         onNewChatInProject={newChatInProject}
         onProjectAction={runProjectAction}
-        onSetChosenRoot={setChosenRoot}
+        onSetChosenRoot={chooseRoot}
         onSetSecondary={setSecondary}
         onProjects={setProjects}
         onToggleArchived={() => setShowArchived(!showArchived)}
@@ -483,13 +575,23 @@ export default function App() {
           </div>
         </header>
         <div className="chat-main" ref={mainRef}>
-          {items.length === 0 && (
-            <div className="empty">
-              <div className="empty-icon" aria-hidden="true">&gt;_</div>
-              <h2>从一个任务开始</h2>
-              <p>描述你想完成的工作，Easy code 会在当前工作区中协助你。</p>
-            </div>
-          )}
+          {items.length === 0 &&
+            (sessionLoad?.status === "loading" ? (
+              <div className="session-loading" role="status">
+                正在加载会话…
+              </div>
+            ) : sessionLoad?.status === "error" ? (
+              <div className="session-load-error" role="alert">
+                <strong>会话加载失败：{sessionLoad.message}</strong>
+                <span>请再次点击左侧会话重试。</span>
+              </div>
+            ) : (
+              <div className="empty">
+                <div className="empty-icon" aria-hidden="true">&gt;_</div>
+                <h2>从一个任务开始</h2>
+                <p>描述你想完成的工作，Easy code 会在当前工作区中协助你。</p>
+              </div>
+            ))}
           <ChatMessages items={items} busy={busy} currentModelName={currentModelName} />
           {busy && !activeTool && !pendingApproval && (
             <div className="agent-status running" role="status" aria-live="polite">
@@ -572,7 +674,7 @@ export default function App() {
                   <PermissionPicker
                     compact
                     value={permission}
-                    disabled={busy}
+                    disabled={busy || sendBlocked}
                     onChange={changePermission}
                   />
                 </div>
@@ -583,7 +685,7 @@ export default function App() {
                 aria-label={busy ? "停止生成" : "发送消息"}
                 title={busy ? "停止生成" : "发送消息"}
                 onClick={busy ? stop : send}
-                disabled={!busy && !input.trim()}
+                disabled={busy ? false : !input.trim() || sendBlocked}
               >
                 {busy ? <span className="stop-square" /> : <span aria-hidden="true">↑</span>}
               </button>
@@ -677,6 +779,7 @@ export default function App() {
               root={editTarget.root}
               secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
               disabled={false}
+              viewToken={openSeqRef}
               onSecondary={() => {}}
               onProjects={setProjects}
               onError={(msg) => showToast("err", msg)}

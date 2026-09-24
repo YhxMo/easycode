@@ -106,3 +106,19 @@ def test_config_permission_mode_valid_and_invalid(tmp_path, monkeypatch):
     # the legacy `permission_mode` key is no longer read
     cfg_file.write_text(json.dumps({"permission_mode": "allow-all"}), encoding="utf-8")
     assert Config.load().permission_mode == "ask"
+
+
+def test_path_context_relative_paths_use_load_time_base(tmp_path, monkeypatch):
+    """10D: relative workspace paths anchor at the same base as base_dir()
+    (config dir, else load-time root) — never a later CWD."""
+    (tmp_path / "extra").mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(tmp_path)
+    cfg = Config.load(start=tmp_path)  # no config file: root = load-time CWD
+    cfg.extra_safe_dirs = ["extra"]
+
+    monkeypatch.chdir(elsewhere)  # a later chdir must not move the anchor
+    ctx = cfg.path_context()
+    assert ctx.extra_safe_dirs == [(tmp_path / "extra").resolve()]
+    assert cfg.base_dir() == cfg.root

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
+import { primeApiMock } from "./helpers";
 
 // Switching to a model without a configured API key returns
 // HTTP 422 and the old code closed the menu / only logged, so the user believed
@@ -12,40 +13,13 @@ import * as api from "../api";
 //
 // Test drives App purely against a mocked ./api (easycode-audit rule 3: no
 // network, no real ~/.easycode).
-vi.mock("../api", () => ({
-  fetchSessions: vi.fn(),
-  fetchArchivedSessions: vi.fn(),
-  fetchSession: vi.fn(),
-  fetchWorkspaces: vi.fn(),
-  fetchModels: vi.fn(),
-  fetchCommands: vi.fn(),
-  setSessionPermission: vi.fn(),
-  streamChat: vi.fn(),
-  submitApproval: vi.fn(),
-  cancelSessionChat: vi.fn(),
-  deleteSession: vi.fn(),
-  archiveProjectChats: vi.fn(),
-  createWorktree: vi.fn(),
-  pinProject: vi.fn(),
-  removeProject: vi.fn(),
-  revealInFinder: vi.fn(),
-  saveProject: vi.fn(),
-  setSessionArchived: vi.fn(),
-  chooseWorkspace: vi.fn(),
-  switchModel: vi.fn(),
-  addModel: vi.fn(),
-  deleteModel: vi.fn(),
-  fetchModel: vi.fn(),
-  updateModel: vi.fn(),
-}));
+vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  primeApiMock(m);
   m.fetchSessions.mockResolvedValue([]);
-  m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   // Two models so a switch to a second one can be attempted.
   m.fetchModels.mockResolvedValue({
     default: "alpha",
@@ -53,10 +27,6 @@ beforeEach(() => {
     providers: { alpha: "openai", beta: "openai" },
     limits: {},
   });
-  m.fetchCommands.mockResolvedValue({ commands: [] });
-  m.streamChat.mockResolvedValue(undefined);
-  m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "s1", permission_mode: mode }));
-  m.submitApproval.mockResolvedValue(undefined);
 });
 
 describe("App · 模型切换失败反馈", () => {

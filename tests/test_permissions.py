@@ -164,6 +164,51 @@ async def test_disabled_tool_call_is_rejected_at_execution(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_approval_identity_binds_capabilities_and_is_reused(tmp_path):
+    """The loop hands the handler a capability-bound identity: the same command
+    with different granted capabilities must not silently reuse an earlier
+    'always allow'; an identical call does reuse it."""
+    from easycode.approval import approval_key, grant_for_toolcall
+
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    calls: list[str] = []
+    allowed: set[str] = set()
+
+    async def handler(tc, _reason, key):
+        if key in allowed:
+            return True
+        calls.append(key)
+        allowed.add(key)
+        return True
+
+    escalated = {"command": "echo one", "sandbox_permissions": "require_escalated"}
+    script = [
+        {"tool_calls": [("c1", "execute_shell", dict(escalated))]},
+        {"tool_calls": [("c2", "execute_shell", {**escalated, "writable_roots": [str(ext)]})]},
+        {"tool_calls": [("c3", "execute_shell", dict(escalated))]},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        tmp_path,
+        approval_handler=handler,
+    )
+
+    events = [event async for event in agent.respond("go")]
+    assert events[-1].kind == "done"
+
+    # c1 and c2 share the command but not the capability: both prompt.
+    assert len(calls) == 2, calls
+    assert calls[0] != calls[1]
+    # c3 repeats c1 exactly: the stored identity is reused (handler no-op).
+    tc = ToolCall(id="c1", name="execute_shell", arguments=escalated)
+    expected = approval_key(tc, grant=grant_for_toolcall(tc, agent.path_context()))
+    assert calls[0] == expected
+
+
+@pytest.mark.asyncio
 async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
     """Approval must grant against the *executing* agent's context.
 
@@ -204,7 +249,7 @@ async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
     )
     asked: list[str] = []
 
-    async def approval(tc, _reason):
+    async def approval(tc, _reason, _key):
         grant = grant_for_toolcall(tc, parent.path_context())
         asked.append(tc.name)
         return grant if grant else True

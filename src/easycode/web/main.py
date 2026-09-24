@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from easycode.config import Config
@@ -15,7 +17,7 @@ from easycode.web.routes_chat import register_chat
 from easycode.web.routes_models import register_models
 from easycode.web.routes_sessions import register_sessions
 from easycode.web.routes_workspaces import register_workspaces
-from easycode.web.session import SessionStore
+from easycode.web.session import SessionBusyError, SessionStore
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
@@ -63,8 +65,21 @@ def create_app(
     store = session_store or SessionStore(cfg, cfg.root, factory, restore_factory=restore_factory)
     store.load_all()
 
-    app = FastAPI(title="Easy code", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        # Release every session-owned MCP process when the server stops.
+        for sess in store.list():
+            await sess.agent.close_mcp()
+
+    app = FastAPI(title="Easy code", version="0.1.0", lifespan=lifespan)
     app.state.store = store
+
+    @app.exception_handler(SessionBusyError)
+    async def _session_busy(_request, exc: SessionBusyError) -> JSONResponse:
+        """One 409 mapping for every route that mutates a busy session."""
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

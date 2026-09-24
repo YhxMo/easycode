@@ -250,7 +250,9 @@ class Config:
         ``~`` is expanded.
         """
         primary = (root or self.root).resolve()
-        base = self.config_path.parent if self.config_path else Path.cwd()
+        # Relative config paths resolve against the same anchor as every other
+        # workspace path (config dir, else the load-time root).
+        base = self.base_dir()
         secondary_resolved = [resolve_workspace_path(raw, base) for raw in (secondary or [])]
         extra = [resolve_workspace_path(raw, base) for raw in self.extra_safe_dirs]
         return PathContext(primary=primary, secondary=secondary_resolved, extra_safe_dirs=extra)

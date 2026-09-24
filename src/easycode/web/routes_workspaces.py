@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from easycode.sandbox import sandbox_command
 from easycode.web.platform import WorktreeAddError, choose_folders_via_finder, finder_supported
 from easycode.web.platform import create_worktree as platform_create_worktree
 from easycode.web.platform import reveal_in_finder as platform_reveal
-from easycode.web.session import Session, SessionStore, project_key
+from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
 from easycode.workspace import normalise_secondary, root_error
 
 
@@ -111,8 +112,27 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         """
         return {"default": str(cfg.root), "projects": build_projects(cfg, store)}
 
+    def _ensure_project_entry(root: str | None, base_secondary: list[str] | None = None) -> dict:
+        """Locate the config entry for ``root``, appending one when absent.
+
+        ``base_secondary`` seeds a new entry; ``None`` derives it from the
+        merged project view (config + session history).
+        """
+        key = project_key(root)
+        for proj in cfg.workspace_projects:
+            if project_key(proj.get("root")) == key:
+                return proj
+        if base_secondary is None:
+            merged = next(
+                (p for p in build_projects(cfg, store) if project_key(p.get("root")) == key), None
+            )
+            base_secondary = sorted(merged.get("secondary") or []) if merged else []
+        entry: dict[str, Any] = {"root": root, "secondary": base_secondary}
+        cfg.workspace_projects.append(entry)
+        return entry
+
     @app.post("/api/workspaces/projects")
-    def save_project(req: SaveProjectRequest) -> dict:
+    async def save_project(req: SaveProjectRequest) -> dict:
         root = _normalise_root(req.root)
         if root:
             err = root_error(Path(root))
@@ -131,59 +151,47 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
             # the requested root must match the session's valid primary.
             if project_key(root) != project_key(_session_primary(sess)):
                 raise HTTPException(409, "project root does not match session primary")
-        key = project_key(root)
-        found = False
-        for proj in cfg.workspace_projects:
-            if project_key(proj.get("root")) == key:
-                proj["root"] = root
-                proj["secondary"] = secondary
-                if req.name is not None:
-                    name = req.name.strip()
-                    if name:
-                        proj["name"] = name
-                    else:
-                        proj.pop("name", None)
-                found = True
-                break
-        if not found:
-            entry: dict[str, Any] = {"root": root, "secondary": secondary}
-            if req.name and req.name.strip():
-                entry["name"] = req.name.strip()
-            cfg.workspace_projects.append(entry)
-        cfg.save()
-        if sess is not None:
-            sess.secondary_roots = list(secondary)
-            sess.agent.secondary_roots = [Path(p) for p in secondary]
-            store.record_exchange(sess)
-        return {"root": root, "secondary": secondary, "projects": build_projects(cfg, store)}
 
-    def _ensure_project_entry(root: str | None, base_secondary: list[str] | None = None) -> dict:
-        """Locate or create a config workspace project entry by root key."""
-        key = project_key(root)
-        for proj in cfg.workspace_projects:
-            if project_key(proj.get("root")) == key:
-                return proj
-        secondary = base_secondary
-        if secondary is None:
-            merged = next(
-                (p for p in build_projects(cfg, store) if project_key(p.get("root")) == key), None
-            )
-            secondary = sorted(merged.get("secondary") or []) if merged else []
-        entry: dict[str, Any] = {"root": root, "secondary": secondary}
-        cfg.workspace_projects.append(entry)
-        return entry
+        def mutate() -> dict:
+            entry = _ensure_project_entry(root, secondary)
+            entry["root"] = root
+            entry["secondary"] = secondary
+            if req.name is not None:
+                name = req.name.strip()
+                if name:
+                    entry["name"] = name
+                else:
+                    entry.pop("name", None)
+            cfg.save()
+            if sess is not None:
+                sess.secondary_roots = list(secondary)
+                sess.agent.secondary_roots = [Path(p) for p in secondary]
+                # Agents/skills and the system prompt follow the new scope, so
+                # the command menu and the running agent cannot drift apart.
+                sess.agent.rediscover_extensions(with_skills=cfg.skills_enabled)
+                store.record_exchange(sess)
+            return {"root": root, "secondary": secondary, "projects": build_projects(cfg, store)}
+
+        async with store.config_change(), idle_sessions([sess] if sess else []):
+            try:
+                return await run_mutation(mutate)
+            finally:
+                if sess is not None:
+                    await sess.agent.invalidate_mcp_if_context_changed()
 
     @app.post("/api/workspaces/pin")
-    def pin_project(req: PinProjectRequest) -> dict:
+    async def pin_project(req: PinProjectRequest) -> dict:
         root = _normalise_root(req.root)
-        entry = _ensure_project_entry(root)
-        entry["pinned"] = bool(req.pinned)
-        cfg.save()
+        async with store.config_change():
+            entry = _ensure_project_entry(root)
+            entry["pinned"] = bool(req.pinned)
+            cfg.save()
+            projects = build_projects(cfg, store)
         return {
             "ok": True,
             "root": root,
             "pinned": entry.get("pinned"),
-            "projects": build_projects(cfg, store),
+            "projects": projects,
         }
 
     @app.post("/api/workspaces/reveal")
@@ -195,17 +203,22 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         return platform_reveal(path)
 
     @app.post("/api/workspaces/projects/remove")
-    def remove_project(req: RemoveProjectRequest) -> dict:
+    async def remove_project(req: RemoveProjectRequest) -> dict:
         """Remove a project binding; with ``delete_sessions`` delete its chats too."""
         root = _normalise_root(req.root)
         key = project_key(root)
-        cfg.workspace_projects = [
-            p for p in cfg.workspace_projects if project_key(p.get("root")) != key
-        ]
-        cfg.save()
+        async with store.config_change():
+            cfg.workspace_projects = [
+                p for p in cfg.workspace_projects if project_key(p.get("root")) != key
+            ]
+            cfg.save()
         deleted = 0
         if req.delete_sessions:
-            deleted = store.delete_root(root)
+            # Same lifecycle as a single DELETE: cancel, wait, release.
+            try:
+                deleted = await store.delete_root(root)
+            except OSError as exc:
+                raise HTTPException(500, f"删除会话文件失败: {exc}") from exc
         return {
             "ok": True,
             "root": root,
@@ -214,14 +227,14 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         }
 
     @app.post("/api/workspaces/archive")
-    def archive_project_chats(req: RevealRequest) -> dict:
+    async def archive_project_chats(req: RevealRequest) -> dict:
         """Archive every chat under the project (对齐 codex 归档语义)."""
         root = _normalise_root(req.root)
-        count = store.archive_root(root)
+        count = await store.archive_root(root)
         return {"ok": True, "archived_sessions": count, "projects": build_projects(cfg, store)}
 
     @app.post("/api/workspaces/worktree")
-    def create_worktree(req: WorktreeRequest) -> dict:
+    async def create_worktree(req: WorktreeRequest) -> dict:
         """Create a permanent Git worktree as its own project (对齐 codex).
 
         Mirrors Codex's ``$CODEX_HOME/worktrees`` location via our data dir
@@ -237,15 +250,18 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         if not src.is_dir():
             raise HTTPException(422, f"not a directory: {root}")
         try:
-            result = platform_create_worktree(src, sandbox_command=sandbox_command)
+            result = await asyncio.to_thread(
+                platform_create_worktree, src, sandbox_command=sandbox_command
+            )
         except WorktreeAddError as exc:
             raise HTTPException(500, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        entry = _ensure_project_entry(result["root"])
-        if not entry.get("name"):
-            entry["name"] = result["slug"]
-        cfg.save()
+        async with store.config_change():
+            entry = _ensure_project_entry(result["root"])
+            if not entry.get("name"):
+                entry["name"] = result["slug"]
+            cfg.save()
         return {
             "ok": True,
             "root": result["root"],

@@ -10,11 +10,6 @@ from easycode.config import Config
 from easycode.credentials import Credential, save_credential
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 def test_history_token_budget():
     from easycode.agent.context import History
 
@@ -213,6 +208,44 @@ async def test_summarizer_merges_previous_summary(tmp_path, monkeypatch):
         pass
     assert captured.get("previous") == "[first summary]"
     assert "[merged]" in " ".join(str(m.get("content", "")) for m in agent.history.messages)
+
+
+@pytest.mark.asyncio
+async def test_summarizer_transcript_skips_prior_summary(tmp_path):
+    """10A: the prior summary reaches the summarizer once (previous_summary),
+    not a second time as the head of the transcript."""
+    from easycode.agent.context import SUMMARY_PREFIX
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    captured: dict = {}
+
+    async def fake_summarize(messages, previous_summary=None):
+        captured["messages"] = list(messages)
+        captured["previous"] = previous_summary
+        return "[merged]"
+
+    agent = Agent(
+        provider=FakeProvider(script=[{"text": "ok"}]),
+        registry=build_registry(8000),
+        root=tmp_path,
+        summarizer=fake_summarize,
+        max_context_tokens=100_000,
+    )
+    h = agent.history
+    h.max_chars = 1_000
+    h.add({"role": "system", "content": f"{SUMMARY_PREFIX}\n[first summary]"})
+    h.add_user("old " + "z" * 20_000)
+    h.add_assistant("old answer")
+    h.add_user("recent")
+    h.add_assistant("recent answer")
+    agent.compaction["preserve_recent_tokens"] = 2_000
+
+    await agent.compactor.condense(agent.history, agent.summarizer)
+
+    assert captured["previous"] == "[first summary]"
+    assert all("[first summary]" not in str(m.get("content", "")) for m in captured["messages"])
 
 
 def test_make_agent_wires_summarizer(tmp_path, monkeypatch):

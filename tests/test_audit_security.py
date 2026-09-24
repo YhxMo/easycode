@@ -36,12 +36,6 @@ from easycode.web.session import SessionStore
 from easycode.workspace import PathContext, ToolGrant
 from tests.conftest import FakeProvider
 
-
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 # ----------------------------------------------------------------
 
 
@@ -650,6 +644,95 @@ def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, m
     # the script was NOT run (fail-closed, no unsandboxed fallback)
     wt = Path(data["root"])
     assert (wt / ".easycode" / "setup.sh").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+@pytest.mark.parametrize("sandbox_mode", ["workspace-write", "danger-full-access"])
+def test_managed_worktree_root_is_usable_in_every_mode(tmp_path, monkeypatch, sandbox_mode):
+    """A worktree under ~/.easycode/worktrees must be readable/writable by its
+    own shell in every permission mode (allow-all used to deny the whole data
+    home, breaking even `pwd`)."""
+    _, home = make_home_ctx(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    worktree = data_home() / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    (worktree / "source.py").write_text("x = 1\n", encoding="utf-8")
+    ctx = PathContext(primary=worktree, sandbox_mode=sandbox_mode)
+
+    result = json.loads(
+        build_registry(8000).execute(
+            "execute_shell",
+            {"command": "pwd && cat source.py && printf 'y=2\\n' > own.txt && cat own.txt"},
+            worktree,
+            ctx,
+        )
+    )
+    assert result["status"] == "ok", result
+    assert result["exit_code"] == 0, result
+    assert (worktree / "own.txt").read_text(encoding="utf-8") == "y=2\n"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+@pytest.mark.parametrize("sandbox_mode", ["workspace-write", "danger-full-access"])
+def test_worktree_exception_keeps_state_dirs_denied(tmp_path, monkeypatch, sandbox_mode):
+    """The worktree exception must not open sessions, global extensions or
+    credentials to model-originated shells."""
+    _, home = make_home_ctx(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    worktree = data_home() / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    sessions = data_home() / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "s.json").write_text('{"secret":"session-record"}', encoding="utf-8")
+    cred = data_home() / "credentials.json"
+    cred.write_text('{"api_key":"sk-worktree-secret"}', encoding="utf-8")
+    ctx = PathContext(primary=worktree, sandbox_mode=sandbox_mode)
+    registry = build_registry(8000)
+
+    for command, needle in (
+        (f"cat {sessions / 's.json'}", "session-record"),
+        (f"cat {cred}", "sk-worktree-secret"),
+        (f"printf x > {sessions / 'new.json'}", None),
+    ):
+        result = json.loads(
+            registry.execute("execute_shell", {"command": command}, worktree, ctx)
+        )
+        assert result["status"] == "ok", (command, result)
+        assert result["exit_code"] != 0, (command, result)
+        if needle is not None:
+            assert needle not in json.dumps(result), command
+    assert not (sessions / "new.json").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+def test_grant_root_shell_cannot_write_metadata(tmp_path):
+    """A granted external writable root stays writable, but its
+    .git/.easycode/config remain write-protected in the Seatbelt policy."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    ext = tmp_path / "ext"
+    (ext / ".git" / "hooks").mkdir(parents=True)
+    ctx = PathContext(primary=proj)
+    grant = ToolGrant(writable_roots=(ext,))
+    command = (
+        f"printf ok > {ext}/ok.txt; "
+        f"printf x > {ext}/.git/hooks/x; "
+        f"printf y > {ext}/easycode.config.json"
+    )
+
+    result = json.loads(
+        build_registry(8000).execute(
+            "execute_shell",
+            {"command": command, "writable_roots": [str(ext)]},
+            proj,
+            ctx,
+            grant=grant,
+        )
+    )
+    assert result["status"] == "ok", result
+    assert (ext / "ok.txt").read_text(encoding="utf-8") == "ok"
+    assert not (ext / ".git" / "hooks" / "x").exists()
+    assert not (ext / "easycode.config.json").exists()
 
 
 # -------------------------------------------------- finder prompt sanitization

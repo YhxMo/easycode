@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { useDismiss } from "./lib/useDismiss";
 import type { WorkspaceProject, WorkspacesInfo } from "./api";
 import { chooseWorkspace } from "./api";
@@ -10,6 +11,7 @@ export function ProjectPicker({
   root,
   secondary,
   disabled,
+  viewToken,
   onRoot,
   onSecondary,
   onProjects,
@@ -19,6 +21,7 @@ export function ProjectPicker({
   root: string | null;
   secondary: string[];
   disabled: boolean;
+  viewToken: RefObject<number>;
   onRoot: (r: string | null) => void;
   onSecondary: (r: string[]) => void;
   onProjects: (projects: WorkspaceProject[]) => void;
@@ -136,6 +139,7 @@ export function ProjectPicker({
           root={root}
           secondary={secondary}
           disabled={disabled}
+          viewToken={viewToken}
           onSecondary={onSecondary}
           onProjects={onProjects}
           onError={onError}

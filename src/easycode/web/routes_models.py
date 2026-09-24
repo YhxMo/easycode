@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from easycode.config import API_FORMATS, DEFAULT_API_FORMAT, Config
 from easycode.web import services
-from easycode.web.session import SessionStore
+from easycode.web.session import SessionStore, idle_sessions, run_mutation
 
 
 class ModelRequest(BaseModel):
@@ -40,7 +40,7 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         return services.models_response(cfg)
 
     @app.post("/api/models/add")
-    def add_model(req: AddModelRequest) -> dict:
+    async def add_model(req: AddModelRequest) -> dict:
         alias = req.alias.strip()
         model = req.model.strip()
         if not alias or not model:
@@ -48,17 +48,18 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         api_format = req.api_format
         if api_format not in API_FORMATS:
             raise HTTPException(422, f"unsupported api_format: {api_format}")
-        if alias in cfg.models:
-            raise HTTPException(409, f"model alias already exists: {alias}")
-        return services.add_model(
-            cfg,
-            alias=alias,
-            model=model,
-            provider=req.provider,
-            base_url=req.base_url,
-            api_key=req.api_key,
-            api_format=api_format,
-        )
+        async with store.config_change():
+            if alias in cfg.models:
+                raise HTTPException(409, f"model alias already exists: {alias}")
+            return services.add_model(
+                cfg,
+                alias=alias,
+                model=model,
+                provider=req.provider,
+                base_url=req.base_url,
+                api_key=req.api_key,
+                api_format=api_format,
+            )
 
     @app.get("/api/models/{alias}")
     def get_model_detail(alias: str) -> dict:
@@ -74,47 +75,63 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         return services.get_model_detail(cfg, alias)
 
     @app.put("/api/models/{alias}")
-    def update_model(alias: str, req: UpdateModelRequest) -> dict:
-        spec = cfg.models.get(alias)
+    async def update_model(alias: str, req: UpdateModelRequest) -> dict:
         target_alias = (req.new_alias or alias).strip()
         model = req.model.strip()
-        if spec is None:
-            raise HTTPException(404, f"unknown alias: {alias}")
         if not target_alias or not model:
             raise HTTPException(422, "alias and model are required")
-        if target_alias != alias and target_alias in cfg.models:
-            raise HTTPException(409, f"alias already exists: {target_alias}")
-
-        api_format = req.api_format or spec.api_format
-        if api_format not in API_FORMATS:
-            raise HTTPException(422, f"unsupported api_format: {api_format}")
-        return services.update_model(
-            cfg,
-            store,
-            alias=alias,
-            target_alias=target_alias,
-            model=model,
-            provider=req.provider,
-            base_url=req.base_url,
-            api_key=req.api_key,
-            clear_key=req.clear_key,
-            api_format=api_format,
-        )
+        async with store.config_change():
+            spec = cfg.models.get(alias)
+            if spec is None:
+                raise HTTPException(404, f"unknown alias: {alias}")
+            if target_alias != alias and target_alias in cfg.models:
+                raise HTTPException(409, f"alias already exists: {target_alias}")
+            api_format = req.api_format or spec.api_format
+            if api_format not in API_FORMATS:
+                raise HTTPException(422, f"unsupported api_format: {api_format}")
+            affected = [s for s in store.list() if s.model_alias == alias]
+            async with idle_sessions(affected):
+                return await run_mutation(
+                    services.update_model,
+                    cfg,
+                    store,
+                    affected,
+                    alias=alias,
+                    target_alias=target_alias,
+                    model=model,
+                    provider=req.provider,
+                    base_url=req.base_url,
+                    api_key=req.api_key,
+                    clear_key=req.clear_key,
+                    api_format=api_format,
+                )
 
     @app.delete("/api/models/{alias}")
-    def delete_model(alias: str) -> dict:
-        if alias not in cfg.models:
-            raise HTTPException(404, f"unknown alias: {alias}")
-        return services.delete_model(cfg, alias=alias)
+    async def delete_model(alias: str) -> dict:
+        async with store.config_change():
+            if alias not in cfg.models:
+                raise HTTPException(404, f"unknown alias: {alias}")
+            affected = [s for s in store.list() if s.model_alias == alias]
+            async with idle_sessions(affected):
+                return await run_mutation(
+                    services.delete_model, cfg, store, affected, alias=alias
+                )
 
     @app.post("/api/models")
-    def set_model(req: ModelRequest) -> dict:
-        if req.alias not in cfg.models:
-            raise HTTPException(404, f"unknown alias: {req.alias}")
-        # Validate the target model BEFORE mutating anything: switching to a
-        # model without a usable credential must fail atomically — no default
-        # flip on disk, no partially rebound sessions (ValueError -> 422).
-        try:
-            return services.switch_default(cfg, store, alias=req.alias)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
+    async def set_model(req: ModelRequest) -> dict:
+        async with store.config_change():
+            if req.alias not in cfg.models:
+                raise HTTPException(404, f"unknown alias: {req.alias}")
+            # Validate the target model BEFORE mutating anything: switching to a
+            # model without a usable credential must fail atomically — no
+            # default flip on disk, no partially rebound sessions
+            # (ValueError -> 422). Switching rebinds every live session, so all
+            # of them must be idle.
+            sessions = store.list()
+            try:
+                async with idle_sessions(sessions):
+                    return await run_mutation(
+                        services.switch_default, cfg, store, sessions, alias=req.alias
+                    )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
