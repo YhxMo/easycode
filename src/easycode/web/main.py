@@ -14,6 +14,7 @@ from easycode.config import Config
 from easycode.web.bridge import ApprovalBroker
 from easycode.web.middleware import _LocalOriginMiddleware
 from easycode.web.routes_chat import register_chat
+from easycode.web.routes_files import register_files
 from easycode.web.routes_models import register_models
 from easycode.web.routes_sessions import register_sessions
 from easycode.web.routes_workspaces import register_workspaces
@@ -93,6 +94,7 @@ def create_app(
     register_workspaces(app, cfg, store)
     register_sessions(app, store, broker)
     register_chat(app, cfg, store, broker)
+    register_files(app, cfg, store)
 
     dist = static_dir or FRONTEND_DIST
     if dist.is_dir():
