@@ -18,12 +18,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from easycode.credentials import data_home
-from easycode.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_READ_ONLY, SANDBOX_WORKSPACE_WRITE
+from easycode.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_WORKSPACE_WRITE
 
 CATEGORIES = ("workspace", "temp", "system", "external")
 
+#: Project configuration filename (protected inside every workspace root).
+CONFIG_FILENAME = "easycode.config.json"
+
 #: Directories that may never be registered as a workspace/temporary root.
 SENSITIVE_ROOT_NAMES = {".git", ".easycode"}
+
+#: ``data_home()`` subdirectories holding cross-session state (session records,
+#: agent/skill/command definitions). Writes there need approval — the user can
+#: still authorize editing their own extensions, but nothing changes silently.
+DATA_HOME_STATE_DIRS = ("sessions", "agents", "skills", "commands")
 
 
 @dataclass(frozen=True)
@@ -123,7 +131,11 @@ def root_error(path: Path, *, require_dir: bool = True) -> str | None:
     if p == cred or p.is_relative_to(cred):
         return f"sensitive path cannot be a workspace root: {p}"
     if p.is_relative_to(data_home().resolve()):
-        return f"directory under the data home cannot be a workspace root: {p}"
+        # Permanent git worktrees live under the data dir by design and must
+        # remain valid workspace roots.
+        worktrees = (data_home() / "worktrees").resolve()
+        if not p.is_relative_to(worktrees):
+            return f"directory under the data home cannot be a workspace root: {p}"
     if require_dir:
         if not p.exists():
             return f"missing path: {p}"
@@ -166,17 +178,19 @@ class PathContext:
         """Write-level protected boundaries.
 
         Generated per writable *authorization* root — primary, secondary, and
-        ``extra_safe_dirs`` — as ``<root>/.git`` and ``<root>/.easycode``, plus
-        the credential files (always blocked, even before they exist). The tool
-        data dir (``data_home``) and the OS temp dir are deliberately NOT keyed
-        here as their own ``.git``/``.easycode`` so tool-owned data (e.g.
-        ``~/.easycode/sessions``) stays usable; temporary approval grant roots
-        add their own ``.git``/``.easycode`` at the sandbox prompt.
+        ``extra_safe_dirs`` — as ``<root>/.git``, ``<root>/.easycode``, and the
+        project ``easycode.config.json``, plus the credential files (always
+        blocked, even before they exist). The tool data dir (``data_home``) and
+        the OS temp dir are deliberately NOT keyed here as their own
+        ``.git``/``.easycode`` so tool-owned data stays usable; writes to the
+        data-home *state* dirs require approval instead (see ``in_allowed``).
+        Temporary approval grant roots add their own boundaries at the sandbox
+        prompt.
         """
         seen: set[Path] = set()
         out: list[Path] = []
         for root in [*self.roots, *self.extra_safe_dirs]:
-            for sub in (root / ".git", root / ".easycode"):
+            for sub in (root / ".git", root / ".easycode", root / CONFIG_FILENAME):
                 resolved = sub.resolve()
                 if resolved not in seen:
                     seen.add(resolved)
@@ -206,14 +220,20 @@ class PathContext:
     def is_protected_path(self, path: Path) -> bool:
         """True when ``path`` (or an ancestor) crosses a permanent write boundary.
 
-        Covers credentials plus every authorization root's ``.git``/``.easycode``
-        (primary, secondary, extra_safe_dirs). An approval grant can never lift
-        this — it is checked by the file tools and by ``grant_granted``.
+        Covers credentials plus every authorization root's
+        ``.git``/``.easycode``/``easycode.config.json`` (primary, secondary,
+        extra_safe_dirs). An approval grant can never lift this — it is checked
+        by the file tools and by ``grant_granted``.
         """
         p = path.resolve()
         if self.is_protected(p):
             return True
         return any(p.is_relative_to(d) for d in self.protected_paths())
+
+    def is_model_state(self, path: Path) -> bool:
+        """True for data-home state dirs whose writes require approval."""
+        dh = data_home().resolve()
+        return any(path.is_relative_to(dh / sub) for sub in DATA_HOME_STATE_DIRS)
 
     def grant_granted(self, path: Path, grant: ToolGrant) -> bool:
         """True when ``path`` may be written under a precise approval grant.
@@ -238,11 +258,9 @@ class PathContext:
         p = path.resolve()
         if self.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
             return True
-        if self.sandbox_mode == SANDBOX_READ_ONLY:
-            return False
         if self.sandbox_mode != SANDBOX_WORKSPACE_WRITE:
             return False
-        if self.is_protected_path(p):
+        if self.is_protected_path(p) or self.is_model_state(p):
             return False
         return any(p.is_relative_to(d) for d in self.writable_roots())
 

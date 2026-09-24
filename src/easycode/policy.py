@@ -6,7 +6,6 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Any
 
-SANDBOX_READ_ONLY = "read-only"
 SANDBOX_WORKSPACE_WRITE = "workspace-write"
 SANDBOX_DANGER_FULL_ACCESS = "danger-full-access"
 

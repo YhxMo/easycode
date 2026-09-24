@@ -595,9 +595,11 @@ def test_config_workspace_fields(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     cfg = Config.load()
-    assert cfg.secondary_roots == ["sec_a", "~/sec_b"]
     assert cfg.extra_safe_dirs == ["notes"]
-    ctx = cfg.path_context()
+    # `workspace.secondary` is not a supported field: CLI/Web pass secondary
+    # roots explicitly, so the config must not widen the sandbox.
+    assert cfg.path_context().secondary == []
+    ctx = cfg.path_context(secondary=["sec_a", "~/sec_b"])
     assert len(ctx.secondary) == 2
     assert ctx.secondary[0] == (tmp_path / "sec_a").resolve()
 

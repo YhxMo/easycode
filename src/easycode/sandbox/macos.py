@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from easycode.credentials import data_home
-from easycode.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_READ_ONLY
+from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
 from easycode.workspace import PathContext, ToolGrant, secret_paths
 
 SEATBELT_EXECUTABLE = Path("/usr/bin/sandbox-exec")
@@ -101,7 +101,7 @@ def sandbox_command(
     if sys.platform != "darwin" or not SEATBELT_EXECUTABLE.is_file():
         raise RuntimeError("workspace sandbox is currently supported only on macOS")
 
-    writable = [] if ctx.sandbox_mode == SANDBOX_READ_ONLY else list(ctx.writable_roots())
+    writable = list(ctx.writable_roots())
     if grant:
         for r in grant.writable_roots:
             rp = r.resolve()

@@ -14,7 +14,7 @@ from easycode.web.platform import WorktreeAddError, choose_folders_via_finder, f
 from easycode.web.platform import create_worktree as platform_create_worktree
 from easycode.web.platform import reveal_in_finder as platform_reveal
 from easycode.web.session import Session, SessionStore, project_key
-from easycode.workspace import normalise_secondary
+from easycode.workspace import normalise_secondary, root_error
 
 
 class ChooseWorkspaceRequest(BaseModel):
@@ -114,8 +114,10 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
     @app.post("/api/workspaces/projects")
     def save_project(req: SaveProjectRequest) -> dict:
         root = _normalise_root(req.root)
-        if root and not Path(root).is_dir():
-            raise HTTPException(422, f"not a directory: {root}")
+        if root:
+            err = root_error(Path(root))
+            if err is not None:
+                raise HTTPException(422, err)
         # Validate every secondary before mutating anything: all-or-nothing.
         sec_paths, sec_err = normalise_secondary(req.secondary, cfg.base_dir())
         if sec_err is not None:

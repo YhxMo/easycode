@@ -2,8 +2,9 @@
 
 Three permission modes (config global / CLI flag / Web session):
 
-- ``ask`` (default): workspace/temp/~/.easycode actions run automatically;
-  editing external files and network-ish shell commands ask the user first.
+- ``ask`` (default): workspace/temp actions run automatically; editing
+  external files, the data-home state dirs (~/.easycode/{sessions,agents,
+  skills,commands}), and network-ish shell commands ask the user first.
 - ``auto-review``: everything runs; changes are summarized afterwards.
 - ``allow-all``: everything runs; no tracking at all.
 """
@@ -151,7 +152,9 @@ def approval_reason(tc: ToolCall, ctx: PathContext) -> str:
         resolved = ctx.resolve(str(path))
         for protected in ctx.protected_paths():
             if resolved.is_relative_to(protected):
-                return "修改受保护目录 (.git/.easycode)"
+                return "修改受保护目录 (.git/.easycode/项目配置)"
+        if ctx.is_model_state(resolved):
+            return "修改会话或扩展数据目录 (~/.easycode)"
         return "访问项目目录之外的文件"
     if tc.name == "execute_shell":
         if tc.arguments.get("sandbox_permissions") == "require_escalated":

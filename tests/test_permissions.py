@@ -324,15 +324,9 @@ def test_shell_network_is_blocked_by_default(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
-def test_read_only_blocks_workspace_write_and_full_access_allows_external_write(tmp_path):
+def test_full_access_allows_external_write(tmp_path):
     primary = tmp_path / "primary"
     primary.mkdir()
-    target = primary / "blocked.txt"
-    readonly = PathContext(primary=primary, sandbox_mode="read-only")
-    blocked = _shell(primary, readonly, "printf no > blocked.txt")
-    assert blocked["exit_code"] != 0
-    assert not target.exists()
-
     outside = tmp_path / "outside.txt"
     full = PathContext(primary=primary, sandbox_mode="danger-full-access")
     allowed = _shell(primary, full, f"printf yes > {outside}")
@@ -450,11 +444,13 @@ def test_approval_reason_is_categorical(tmp_path):
 
     (tmp_path / ".git").mkdir()
     protected = ToolCall(id="c3", name="write_file", arguments={"path": str(tmp_path / ".git" / "config"), "content": "x"})
-    assert approval_reason(protected, ctx) == "修改受保护目录 (.git/.easycode)"
+    assert approval_reason(protected, ctx) == "修改受保护目录 (.git/.easycode/项目配置)"
 
 
-def test_system_dir_exempt_but_credentials_protected(tmp_path, monkeypatch):
+def test_data_home_state_dirs_need_approval_but_worktrees_stay_writable(tmp_path, monkeypatch):
+    """DEC-T3: ~/.easycode state dirs are no longer silently writable."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.approval import needs_approval
     from easycode.credentials import data_home
 
     proj = tmp_path / "proj"
@@ -463,13 +459,23 @@ def test_system_dir_exempt_but_credentials_protected(tmp_path, monkeypatch):
     (dh / "sessions").mkdir(parents=True, exist_ok=True)
     ctx = PathContext(primary=proj)
 
-    # ~/.easycode/** is now approval-exempt (matches README claim).
-    assert ctx.in_allowed(dh / "sessions" / "s.json") is True
+    # Session records and extension definitions require approval (never silent).
+    for rel in ("sessions/s.json", "agents/a.md", "skills/s/SKILL.md", "commands/c.md"):
+        target = dh / rel
+        assert ctx.in_allowed(target) is False, rel
+        tc = ToolCall(id="c", name="write_file", arguments={"path": str(target), "content": "x"})
+        assert needs_approval(tc, ctx, "ask") is True, rel
 
-    # but credentials.json stays protected once it exists.
+    # Permanent worktrees under the data dir stay writable without approval.
+    worktree = dh / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    assert ctx.in_allowed(worktree / "file.txt") is True
+
+    # credentials.json stays hard-protected (approval cannot lift it).
     cred = dh / "credentials.json"
     cred.write_text("{}", encoding="utf-8")
     assert ctx.in_allowed(cred) is False
+    assert ctx.is_protected_path(cred) is True
 
 
 # ------------------------------------------------------------ P0-1 precise ToolGrant
@@ -495,20 +501,32 @@ def test_secondary_and_extra_safe_need_no_approval(tmp_path):
     assert ctx.in_allowed(extra / "b.txt") is True
 
 
-def test_git_and_easycode_hard_denied_everywhere(tmp_path):
-    """.git/.easycode are never writable by the file-tool chain, even with a grant."""
+def test_git_easycode_and_config_hard_denied_everywhere(tmp_path):
+    """.git/.easycode/项目配置 are never writable by the file-tool chain, even with a grant."""
     primary = tmp_path / "p"
     primary.mkdir()
     (primary / ".git").mkdir()
     (primary / ".easycode").mkdir()
+    (primary / "easycode.config.json").write_text("{}", encoding="utf-8")
     ctx = PathContext(primary=primary)
     reg = build_registry(8000)
 
     assert ctx.in_allowed(primary / ".git" / "config") is False
+    assert ctx.is_protected_path(primary / "easycode.config.json") is True
     r = json.loads(reg.execute("write_file", {"path": str(primary / ".git" / "config"), "content": "x"}, primary, ctx, grant=ToolGrant()))
     assert r["status"] == "error"
     r2 = json.loads(reg.execute("write_file", {"path": str(primary / ".easycode" / "x"), "content": "x"}, primary, ctx, grant=ToolGrant()))
     assert r2["status"] == "error"
+    r3 = json.loads(
+        reg.execute(
+            "write_file",
+            {"path": str(primary / "easycode.config.json"), "content": "{}"},
+            primary,
+            ctx,
+            grant=ToolGrant(writable_roots=(primary,)),
+        )
+    )
+    assert r3["status"] == "error"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")

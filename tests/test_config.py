@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from easycode.config import Config
 
 
@@ -74,23 +76,32 @@ def test_tools_enabled_map(tmp_path, monkeypatch):
     assert cfg.tools["read_file"] is True
 
 
-def test_permission_rules_roundtrip_without_changing_secondary_roots(tmp_path, monkeypatch):
+def test_permission_rules_roundtrip(tmp_path, monkeypatch):
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(
-        json.dumps(
-            {
-                "permissions": {"execute_shell": {"*": "ask", "git status*": "allow"}},
-                "workspace": {"secondary": ["shared"]},
-            }
-        ),
+        json.dumps({"permissions": {"execute_shell": {"*": "ask", "git status*": "allow"}}}),
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     cfg = Config.load()
     assert cfg.permission_rules["execute_shell"]["git status*"] == "allow"
-    assert cfg.secondary_roots == ["shared"]
 
     cfg.save()
     raw = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert raw["permissions"] == cfg.permission_rules
-    assert raw["workspace"]["secondary"] == ["shared"]
+
+
+def test_config_permission_mode_valid_and_invalid(tmp_path, monkeypatch):
+    """DEC-C2: only the `permission` key is read; an invalid value is an error."""
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"permission": "auto-review"}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert Config.load().permission_mode == "auto-review"
+
+    cfg_file.write_text(json.dumps({"permission": "bogus"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid permission mode"):
+        Config.load()
+
+    # the legacy `permission_mode` key is no longer read
+    cfg_file.write_text(json.dumps({"permission_mode": "allow-all"}), encoding="utf-8")
+    assert Config.load().permission_mode == "ask"

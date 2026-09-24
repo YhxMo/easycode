@@ -11,9 +11,8 @@ from dotenv import load_dotenv
 
 from easycode.agent.compaction import COMPACTION_DEFAULTS
 from easycode.policy import PERM_ASK, permission_parse
-from easycode.workspace import PathContext, resolve_workspace_path
+from easycode.workspace import CONFIG_FILENAME, PathContext, resolve_workspace_path
 
-CONFIG_FILENAME = "easycode.config.json"
 DEFAULT_MAX_TOOL_RESULT_CHARS = 8000
 DEFAULT_MAX_CONTEXT_TOKENS = 32_000
 
@@ -133,7 +132,6 @@ class Config:
     tools: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_TOOLS))
     permission_rules: dict[str, Any] = field(default_factory=dict)
     max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS
-    secondary_roots: list[str] = field(default_factory=list)
     extra_safe_dirs: list[str] = field(default_factory=list)
     permission_mode: str = PERM_ASK
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -158,11 +156,9 @@ class Config:
         models = {alias: ModelSpec.parse(value) for alias, value in merged_models.items()}
         tools = {**DEFAULT_TOOLS, **(raw.get("tools") or {})}
         workspace = raw.get("workspace") or {}
-        permission_raw = raw.get("permission", raw.get("permission_mode", PERM_ASK))
-        try:
-            permission_mode = permission_parse(str(permission_raw))
-        except ValueError:
-            permission_mode = PERM_ASK
+        # Only the documented key is read, and an invalid value is an error
+        # instead of a silent fallback to the most permissive parse.
+        permission_mode = permission_parse(str(raw.get("permission", PERM_ASK)))
         return cls(
             config_path=cfg_path,
             root=root,
@@ -173,7 +169,6 @@ class Config:
             max_tool_result_chars=int(
                 raw.get("max_tool_result_chars", DEFAULT_MAX_TOOL_RESULT_CHARS)
             ),
-            secondary_roots=list(workspace.get("secondary") or []),
             extra_safe_dirs=list(workspace.get("extra_safe_dirs") or []),
             workspace_projects=list(workspace.get("projects") or []),
             permission_mode=permission_mode,
@@ -254,10 +249,7 @@ class Config:
         """
         primary = (root or self.root).resolve()
         base = self.config_path.parent if self.config_path else Path.cwd()
-        secondary_resolved = [
-            resolve_workspace_path(raw, base)
-            for raw in (secondary if secondary is not None else self.secondary_roots)
-        ]
+        secondary_resolved = [resolve_workspace_path(raw, base) for raw in (secondary or [])]
         extra = [resolve_workspace_path(raw, base) for raw in self.extra_safe_dirs]
         return PathContext(primary=primary, secondary=secondary_resolved, extra_safe_dirs=extra)
 
@@ -275,8 +267,7 @@ class Config:
         if self.permission_rules:
             payload["permissions"] = self.permission_rules
         workspace_payload: dict[str, Any] = {}
-        if self.secondary_roots or self.extra_safe_dirs:
-            workspace_payload["secondary"] = self.secondary_roots
+        if self.extra_safe_dirs:
             workspace_payload["extra_safe_dirs"] = self.extra_safe_dirs
         if self.workspace_projects:
             workspace_payload["projects"] = self.workspace_projects

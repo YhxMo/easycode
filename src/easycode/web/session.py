@@ -14,7 +14,7 @@ from typing import Any
 
 from easycode.agent.loop import Agent
 from easycode.credentials import data_home
-from easycode.workspace import normalise_secondary
+from easycode.workspace import normalise_secondary, root_error
 
 #: Creates an agent for an alias; implementations may accept extra kwargs
 #: (root/secondary_roots) from ``SessionStore.create``.
@@ -106,6 +106,12 @@ class SessionStore:
     ) -> Session:
         sid = uuid.uuid4().hex[:12]
         alias = model_alias or self.cfg.default_model
+        # The primary root must satisfy the same rules as any other root:
+        # never a sensitive dir (.git/.easycode), the config file, or arbitrary
+        # data-home paths (permanent worktrees stay allowed).
+        primary_err = root_error(Path(root) if root else self.cfg.root)
+        if primary_err is not None:
+            raise ValueError(primary_err)
         secondary = self._resolve_secondary(root, secondary_roots)
         if root is not None:
             agent_kwargs["root"] = root

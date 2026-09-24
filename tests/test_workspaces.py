@@ -514,3 +514,35 @@ def test_save_project_with_session_id_updates_session(tmp_path):
             json={"root": str(proj), "secondary": [], "session_id": "nope"},
         )
         assert r2.status_code == 404
+
+
+def test_primary_root_validated_like_other_roots(tmp_path):
+    """DEC-T5: the primary root must pass root_error; worktrees stay exempt."""
+    from easycode.agent.loop import Agent
+    from easycode.credentials import data_home
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from easycode.workspace import root_error
+    from tests.conftest import FakeProvider
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".git").mkdir()
+    cfg = Config.load(start=proj)
+    cfg.root = proj
+
+    def factory(alias: str, **kw):
+        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
+
+    store = SessionStore(cfg, proj, factory)
+
+    assert root_error(proj / ".git") is not None
+    with pytest.raises(ValueError, match="sensitive directory"):
+        store.create(root=str(proj / ".git"))
+
+    # permanent worktrees under the data dir are legitimate roots
+    worktree = data_home() / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    assert root_error(worktree) is None
+    sess = store.create(root=str(worktree))
+    assert sess.root == str(worktree)

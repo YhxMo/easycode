@@ -98,3 +98,15 @@ async def test_run_collects_real_changes_only(tmp_path, monkeypatch):
     assert len(captured[0]) == 1
     assert captured[0][0]["tool"] == "write_file"
     assert captured[0][0]["path"] == "out.txt"
+
+
+def test_main_rejects_sensitive_root(tmp_path, monkeypatch):
+    """DEC-T5: the CLI primary root goes through root_error validation."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+
+    result = CliRunner().invoke(cli.app, ["main", "--root", str(git_dir)])
+
+    assert result.exit_code != 0
+    assert "sensitive directory" in result.output

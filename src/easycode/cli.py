@@ -24,6 +24,7 @@ from easycode.ui.render import (
     render_event,
     show_diff_summary,
 )
+from easycode.workspace import root_error
 
 if TYPE_CHECKING:
     from easycode.commands import CommandRegistry
@@ -121,6 +122,10 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
 
 
 def _cli_main(cfg: Config, current: str, workdir: Path, secondary_root: list[Path] | None) -> None:
+    err = root_error(workdir)
+    if err is not None:
+        console.print(f"[red]{err}[/]")
+        raise typer.Exit(code=1)
     ctx = cfg.path_context(root=workdir, secondary=[str(p) for p in (secondary_root or [])])
     agent = make_agent(cfg, current, workdir, secondary_roots=ctx.secondary)
     commands = build_commands(agent, ctx.roots)
