@@ -147,7 +147,8 @@ async def test_web_always_allow_matches_session_scope_no_prompt(tmp_path):
         provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path
     )
     broker = ApprovalBroker()
-    sess = Session(id="s1", title="t", created_at="now", model_alias="fake-a", agent=agent)
+    agent.model_alias = "fake-a"  # the agent owns the alias; Session only reads it
+    sess = Session(id="s1", title="t", created_at="now", agent=agent)
     parent = str(outside.parent).rstrip("/")
     sess.always_allow.append(f"write_file:{parent}/*")
 
@@ -196,7 +197,8 @@ async def test_web_approval_log_records_decision(tmp_path):
             return fut
 
     broker = AutoBroker()
-    sess = Session(id="s1", title="t", created_at="now", model_alias="fake-a", agent=agent)
+    agent.model_alias = "fake-a"  # the agent owns the alias; Session only reads it
+    sess = Session(id="s1", title="t", created_at="now", agent=agent)
     async for _kind, _payload in stream_chat_with_approval(agent, "go", broker, session=sess):
         pass
 

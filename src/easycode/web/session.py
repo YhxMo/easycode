@@ -78,7 +78,6 @@ class Session:
     id: str
     title: str
     created_at: str
-    model_alias: str
     agent: Agent
     messages: list[dict] = field(default_factory=list)
     root: str | None = None  # project (primary workspace root); None = default project
@@ -100,6 +99,16 @@ class Session:
     def permission_mode(self) -> str:
         """The live agent owns the mode; the session only reads it for output."""
         return self.agent.permission_mode
+
+    @property
+    def model_alias(self) -> str | None:
+        """The live agent owns the alias; the session only reads it for output.
+
+        The store stamps the requested alias when it builds the agent and
+        rebinding goes through ``bind_agent``/``defer_binding``, so a session's
+        displayed and persisted alias cannot drift from the model it runs on.
+        """
+        return self.agent.model_alias
 
     @property
     def todos(self) -> list[dict]:
@@ -210,12 +219,14 @@ class SessionStore:
         if secondary:
             agent_kwargs["secondary_roots"] = [str(p) for p in secondary]
         agent = self.agent_factory(alias, **agent_kwargs)
+        # The agent owns the alias; the store stamps the one it asked for so a
+        # replaced agent factory cannot leave the session without one.
+        agent.model_alias = alias
         agent.permission_mode = permission_mode or self.cfg.permission_mode
         sess = Session(
             id=sid,
             title="新会话",
             created_at=_now(),
-            model_alias=alias,
             agent=agent,
             root=root,
             secondary_roots=[str(p) for p in secondary],
@@ -340,9 +351,9 @@ class SessionStore:
                     agent_kwargs["root"] = root
                 if secondary:
                     agent_kwargs["secondary_roots"] = secondary
-                agent = self.restore_factory(
-                    data.get("model_alias") or self.cfg.default_model, **agent_kwargs
-                )
+                alias = data.get("model_alias") or self.cfg.default_model
+                agent = self.restore_factory(alias, **agent_kwargs)
+                agent.model_alias = alias
                 agent.permission_mode = data.get("permission_mode") or self.cfg.permission_mode
                 # the task list lives on the agent, so restore it there
                 agent.todos = list(data.get("todos") or [])
@@ -355,7 +366,6 @@ class SessionStore:
                     id=data["id"],
                     title=data.get("title", "新会话"),
                     created_at=data.get("created_at", _now()),
-                    model_alias=data.get("model_alias", self.cfg.default_model),
                     agent=agent,
                     messages=messages,
                     root=root,

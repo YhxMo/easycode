@@ -800,6 +800,47 @@ def test_rename_clear_key_keeps_session_viewable_and_recovers(tmp_path):
     assert restored.model_alias == "renamed"
 
 
+def test_real_factory_session_alias_round_trips_through_disk(tmp_path):
+    """End-to-end with the REAL agent factory.
+
+    The session's alias is a view of the agent's, so the value the store asked
+    for, the value the factory bound, the value the API reports and the value a
+    restart restores must all be the same one.
+    """
+    save_credential(Credential(key_id="k-a", api_key="sk-test"))
+    save_credential(Credential(key_id="k-b", api_key="sk-test"))
+    (tmp_path / "easycode.config.json").write_text(
+        json.dumps(
+            {
+                "default_model": "fake-a",
+                "models": {
+                    "fake-a": {"model": "fake/a", "key_id": "k-a", "api_format": "openai_compatible"},
+                    "fake-b": {"model": "fake/b", "key_id": "k-b", "api_format": "openai_compatible"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    client = TestClient(create_app(cfg=cfg, static_dir=tmp_path / "no-dist"))
+    with client:
+        store = client.app.state.store
+        sess = store.create("fake-b")
+        assert sess.model_alias == "fake-b"
+        assert sess.agent.model_alias == "fake-b"
+        listed = {s["id"]: s["model_alias"] for s in client.get("/api/sessions").json()}
+        assert listed[sess.id] == "fake-b"
+        sid = sess.id
+
+    cfg2 = Config.load(start=tmp_path)
+    cfg2.root = tmp_path
+    with TestClient(create_app(cfg=cfg2, static_dir=tmp_path / "no-dist")) as client2:
+        detail = client2.get(f"/api/sessions/{sid}")
+        assert detail.status_code == 200
+        assert detail.json()["model_alias"] == "fake-b"
+
+
 def test_delete_model_invalidates_live_session_binding(tmp_path):
     """Deleting a model that a live session uses makes the next send a clear
     422 instead of silently calling the removed alias."""

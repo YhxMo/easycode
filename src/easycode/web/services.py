@@ -111,9 +111,9 @@ def _bind_session(cfg: Config, store: SessionStore, sess: Session, alias: str) -
 
     A binding failure (the alias was deleted or has no usable credential) falls
     back to the deferred provider: the history stays viewable and the next send
-    reports a clear 422 instead of hiding the session.
+    reports a clear 422 instead of hiding the session. Both bindings write the
+    alias onto the agent, which is the session's only source for it.
     """
-    sess.model_alias = alias
     try:
         bind_agent(sess.agent, cfg, alias)
     except ValueError:
