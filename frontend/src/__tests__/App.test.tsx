@@ -986,3 +986,30 @@ it("移除项目期间切换会话后保留新视图", async () => {
   await act(async () => deleted.resolve({ deleted_sessions: 1, projects: [] }));
   expect(screen.getByText("B content")).toBeTruthy();
 });
+
+describe("App · 项目显示名称", () => {
+  it("目录卡片用项目自定义名称，路径作为副标题", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([
+      { ...session("s1", "会话A"), root: "/p/proj" },
+    ]);
+    m.fetchSession.mockResolvedValue({ ...detail("s1", "会话A", []), root: "/p/proj" });
+    m.fetchWorkspaces.mockResolvedValue({
+      default: "/p/default",
+      projects: [{ root: "/p/proj", secondary: [], name: "自定义项目名" }],
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+
+    // 侧栏分组与目录卡片必须是同一个名字
+    const card = await waitFor(() => {
+      const name = document.querySelector(".project-picker .dir-card-main strong");
+      if (!name) throw new Error("目录卡片还没渲染");
+      return name;
+    });
+    expect(card.textContent).toBe("自定义项目名");
+    expect(document.querySelector(".project-picker .dir-copy small")?.textContent).toBe("/p/proj");
+  });
+});

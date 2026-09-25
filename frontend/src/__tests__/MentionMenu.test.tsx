@@ -60,13 +60,23 @@ describe("App · @ 文件引用", () => {
 
   it("回车插入当前高亮的文件", async () => {
     const { user, box } = await openSession();
-    await user.type(box, "@");
+    await user.type(box, "@src");
     await screen.findByText("routes.py");
 
     await user.keyboard("{Enter}");
     expect(box.value).toBe("@/p/src/app.ts ");
     // the menu closes once a path is picked
     expect(screen.queryByText("routes.py")).toBeNull();
+  });
+
+  it("空查询只提示输入文件名，不列出整个工作区", async () => {
+    const { box } = await openSession();
+
+    await userEvent.type(box, "@");
+
+    expect(screen.getByText("输入文件名搜索")).toBeTruthy();
+    expect(m.fetchFiles).not.toHaveBeenCalled();
+    expect(screen.queryByText("app.ts")).toBeNull();
   });
 
   it("查询未完成时显示查找中，回车不发送整条消息", async () => {
@@ -166,8 +176,8 @@ describe("App · @ 文件引用", () => {
     render(<App />);
     const box = composerField();
 
-    await user.type(box, "@");
+    await user.type(box, "@a");
     await screen.findByText("app.ts");
-    expect(m.fetchFiles).toHaveBeenCalledWith(null, { root: null, secondary: [] }, "");
+    expect(m.fetchFiles).toHaveBeenCalledWith(null, { root: null, secondary: [] }, "a");
   });
 });

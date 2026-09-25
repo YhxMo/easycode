@@ -11,9 +11,11 @@ export const MENTION_OPTION_PREFIX = "composer-mention-option-";
 /**
  * A file query for one (scope, query) pair. The states are distinct on purpose:
  * "still looking" and "nothing matched" must not look the same, and a failure
- * must not read as an empty workspace.
+ * must not read as an empty workspace. A token with nothing typed yet asks
+ * instead of listing, so a bare `@` never dumps the whole tree at the reader.
  */
 export type MentionState =
+  | { status: "prompt"; scope: string; query: string }
   | { status: "loading"; scope: string; query: string }
   | { status: "error"; scope: string; query: string; message: string }
   | { status: "ready"; scope: string; query: string; files: FileEntry[]; total: number };
@@ -94,6 +96,9 @@ export function MentionMenu({
                 </div>
               </button>
             ))}
+            {state?.status === "prompt" && (
+              <div className="command-empty">输入文件名搜索</div>
+            )}
             {state?.status === "loading" && (
               <div className="command-empty" role="status">
                 正在查找文件…
@@ -108,9 +113,7 @@ export function MentionMenu({
               </div>
             )}
             {state?.status === "ready" && files.length === 0 && (
-              <div className="command-empty">
-                {query ? `没有匹配「${query}」的文件` : "工作区中没有可引用的文件"}
-              </div>
+              <div className="command-empty">没有匹配「{query}」的文件</div>
             )}
           </div>
         </div>

@@ -66,6 +66,12 @@ import { SecondaryEditor } from "./SecondaryEditor";
 
 const EMPTY_MODELS: ModelsInfo = { default: "", models: {}, providers: {}, limits: {} };
 
+/**
+ * Chat width at which the pane covers the stream instead of sharing the row.
+ * Mirrors the `@container` rule for `.right-pane` in styles.css: keeping the
+ * conversation at least 560px wide is what both numbers express.
+ */
+const NARROW_CHAT_PX = 950;
 
 /** Offered after a turn the server ended on purpose; filled in, never sent. */
 const CONTINUE_PROMPT =
@@ -385,8 +391,12 @@ export default function App() {
   );
   const mentionScope = JSON.stringify([currentId, chosenRoot, secondary]);
   const mentionQuery = mentionInfo?.query ?? null;
+  // A bare `@` asks for a file name instead of listing the tree, so the menu
+  // never opens with noise the reader did not ask for (hidden files stay
+  // findable by typing).
+  const mentionSearching = mentionQuery !== null && mentionQuery.trim() !== "";
   useEffect(() => {
-    if (mentionQuery === null) return;
+    if (!mentionSearching) return;
     const draft = currentId === null ? { root: chosenRoot, secondary } : undefined;
     const scope = mentionScope;
     const query = mentionQuery;
@@ -413,19 +423,22 @@ export default function App() {
       live = false;
       window.clearTimeout(timer);
     };
-  }, [mentionQuery, mentionScope, currentId, chosenRoot, secondary, mentionRetry]);
+  }, [mentionSearching, mentionQuery, mentionScope, currentId, chosenRoot, secondary, mentionRetry]);
 
   const mentionOpen = Boolean(mentionInfo) && !mentionOff && !cmdOpen;
   // A reply only counts while it still answers the token under the caret; a
-  // token without one is being looked up.
+  // token without one is either asking for a query or still being looked up.
   const mentionCurrent: MentionState | null = useMemo(() => {
     if (!mentionInfo) return null;
+    if (!mentionSearching) {
+      return { status: "prompt", scope: mentionScope, query: mentionInfo.query };
+    }
     const answered = mentionAnswer;
     if (answered && answered.scope === mentionScope && answered.query === mentionInfo.query) {
       return { ...answered.answer, scope: answered.scope, query: answered.query };
     }
     return { status: "loading", scope: mentionScope, query: mentionInfo.query };
-  }, [mentionInfo, mentionAnswer, mentionScope]);
+  }, [mentionInfo, mentionSearching, mentionAnswer, mentionScope]);
   const mentionMatches = useMemo(
     () => (mentionCurrent?.status === "ready" ? mentionCurrent.files : []),
     [mentionCurrent],
@@ -870,9 +883,29 @@ export default function App() {
   // turn that actually ran here counts — a restored list never describes now.
   const listIsStale = todos.length > 0 && !(turnTodos && liveTurn);
   const hasArtifacts = pane.context.length > 0 || pane.changes.length > 0 || turnTodos;
+  // The pane covers the stream once the chat area gets narrow. Measured from
+  // the element the CSS container query measures, so the two agree; a narrow
+  // pane must not open on its own, since it would hide the reply it describes.
+  const chatRef = useRef<HTMLElement>(null);
+  const paneToggleRef = useRef<HTMLButtonElement>(null);
+  const [chatNarrow, setChatNarrow] = useState(false);
+  useEffect(() => {
+    const el = chatRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setChatNarrow(el.clientWidth < NARROW_CHAT_PX);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const paneSelf = paneState[draftKey];
+  // An explicit choice holds for the turn it was made in; otherwise the pane
+  // opens itself only where it can sit beside the conversation.
   const paneOpen =
-    paneSelf?.turn === turnNo && paneSelf.open !== null ? paneSelf.open : liveTurn && hasArtifacts;
+    paneSelf?.turn === turnNo && paneSelf.open !== null
+      ? paneSelf.open
+      : !chatNarrow && liveTurn && hasArtifacts;
   const paneSection =
     paneSelf?.turn === turnNo && paneSelf.section
       ? paneSelf.section
@@ -902,6 +935,26 @@ export default function App() {
     (path: string | null) => patchPaneState(draftKey, { preview: path }),
     [patchPaneState, draftKey],
   );
+
+  const closePane = useCallback(() => {
+    setPane(false);
+    // A drawer that vanishes hands the keyboard back to what opened it.
+    if (chatNarrow) paneToggleRef.current?.focus();
+  }, [setPane, chatNarrow]);
+
+  // Escape closes the drawer, the way it closes a modal. The composer keeps its
+  // own Escape (its menus use it), so events coming from there are left alone.
+  useEffect(() => {
+    if (!chatNarrow || !paneOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if ((e.target as HTMLElement | null)?.closest(".composer")) return;
+      closePane();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chatNarrow, paneOpen, closePane]);
+
   // The centred first-run stage replaces the stream until a conversation has
   // something to show; a load in progress is never masked by it.
   const isEmptyStage = items.length === 0 && sessionLoad === null;
@@ -1164,7 +1217,7 @@ export default function App() {
           aria-hidden="true"
         />
       )}
-      <main className="chat">
+      <main className="chat" ref={chatRef}>
         <div className="chat-card">
           <div className="chat-top">
             <TabBar
@@ -1202,7 +1255,8 @@ export default function App() {
                 aria-label={paneOpen ? "收起面板" : "展开面板"}
                 aria-pressed={paneOpen}
                 title={paneOpen ? "收起面板" : "展开面板"}
-                onClick={() => setPane(!paneOpen)}
+                ref={paneToggleRef}
+                onClick={() => (paneOpen ? closePane() : setPane(true))}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -1285,10 +1339,11 @@ export default function App() {
         </div>
         <RightPane
           open={paneOpen}
+          overlay={chatNarrow}
           sections={PANE_SECTIONS}
           active={paneSection}
           onSelect={chooseSection}
-          onClose={() => setPane(false)}
+          onClose={closePane}
         >
           {paneSection === "tasks" && <TaskRows todos={todos} stale={listIsStale} />}
           {paneSection === "context" && (

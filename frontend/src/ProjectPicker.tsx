@@ -93,9 +93,13 @@ export function ProjectPicker({
   const projects = (workspaces.projects ?? [])
     .map((p) => p.root)
     .filter((r): r is string => Boolean(r));
+  /** The name the sidebar shows: the project's own, else the folder name. */
+  const displayName = (r: string | null) =>
+    (r ? (workspaces.projects ?? []).find((p) => p.root === r)?.name : "") ||
+    (r ? basename(r) : DEFAULT_PROJECT);
   const defaultPath = workspaces.default;
   const currentPath = root ?? defaultPath;
-  const currentName = root ? basename(root) : DEFAULT_PROJECT;
+  const currentName = displayName(root);
   const detail = currentPath ?? (loaded ? "路径未知" : "正在加载…");
 
   const selectRoot = (nextRoot: string | null) => {
@@ -145,7 +149,7 @@ export function ProjectPicker({
               >
                 <span className="project-option-mark" aria-hidden="true">{project === root ? "✓" : ""}</span>
                 <span className="project-option-copy">
-                  <strong>{basename(project)}</strong>
+                  <strong>{displayName(project)}</strong>
                   <small>{project}</small>
                 </span>
               </button>

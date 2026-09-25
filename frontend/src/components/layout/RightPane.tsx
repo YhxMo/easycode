@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 export interface PaneSection {
   id: string;
@@ -11,10 +11,27 @@ interface Props {
   active: string;
   onSelect: (id: string) => void;
   onClose: () => void;
+  /** True when the pane covers the conversation instead of sitting beside it. */
+  overlay?: boolean;
   children?: ReactNode;
 }
 
-export function RightPane({ open, sections, active, onSelect, onClose, children }: Props) {
+export function RightPane({
+  open,
+  sections,
+  active,
+  onSelect,
+  onClose,
+  overlay = false,
+  children,
+}: Props) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  // A drawer hides the conversation behind it, so the keyboard has to follow:
+  // opening it puts focus on its own first control.
+  useEffect(() => {
+    if (open && overlay) closeRef.current?.focus();
+  }, [open, overlay]);
+
   if (!open) return null;
   return (
     <aside className="right-pane" aria-label="任务面板">
@@ -39,6 +56,7 @@ export function RightPane({ open, sections, active, onSelect, onClose, children 
             className="icon-btn"
             aria-label="关闭面板"
             title="关闭面板"
+            ref={closeRef}
             onClick={onClose}
           >
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">

@@ -21,10 +21,14 @@
 
 /* The conversation card and the task pane are siblings on the page. */
 .chat {
+  position: relative;
   display: flex;
   flex: 1;
   gap: 10px;
   min-width: 0;
+  /* Measured by the rule below and by App's own ResizeObserver, which needs to
+     know when the pane is covering the stream instead of sitting beside it. */
+  container-type: inline-size;
 }
 
 .chat-card {
@@ -275,6 +279,20 @@
   background: var(--canvas);
   box-shadow: var(--shadow-hairline);
   overflow: hidden;
+}
+
+/* Below this the side-by-side pane would leave the conversation under 560px
+   (chat = viewport − sidebar − page padding − pane − gaps), which is too narrow
+   to read or type in. The pane covers the stream instead of squeezing it, and
+   App reads the same width to stop opening it by itself. */
+@container (max-width: 950px) {
+  .right-pane {
+    position: absolute;
+    inset: 0;
+    z-index: 200;
+    width: 100%;
+    box-shadow: var(--shadow-card);
+  }
 }
 
 .pane-head {
