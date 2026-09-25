@@ -44,11 +44,10 @@ describe("App · 模型切换失败反馈", () => {
     expect(trigger).toBeTruthy();
     await user.click(trigger);
 
-    // Choose the beta model from the menu.
-    await waitFor(() => {
-      expect(screen.getByText("m-beta")).toBeTruthy();
-    });
-    fireEvent.click(screen.getByText("m-beta"));
+    // Choose the beta model from the menu. Rows are labelled by alias — the
+    // name every operation keys on — not by the model id.
+    const beta = await screen.findByRole("button", { name: "beta" });
+    fireEvent.click(beta);
 
     // The failure surfaces on the App toast with the err.message.
     await waitFor(() => {
@@ -131,7 +130,7 @@ describe("App · 模型范围与并发", () => {
     await user.click(document.querySelector(".model-trigger") as HTMLElement);
     await screen.findByText("有会话正在运行，结束后才能切换");
 
-    const beta = screen.getByText("m-beta").closest("button") as HTMLButtonElement;
+    const beta = screen.getByRole("button", { name: "beta" }) as HTMLButtonElement;
     expect(beta.disabled).toBe(true);
     fireEvent.click(beta);
     expect(m.switchModel).not.toHaveBeenCalled();
@@ -153,8 +152,7 @@ describe("App · 模型范围与并发", () => {
     const before = m.fetchSessions.mock.calls.length;
 
     await user.click(document.querySelector(".model-trigger") as HTMLElement);
-    await screen.findByText("m-beta");
-    fireEvent.click(screen.getByText("m-beta"));
+    fireEvent.click(await screen.findByRole("button", { name: "beta" }));
 
     await waitFor(() => expect(m.switchModel).toHaveBeenCalledWith("beta"));
     await waitFor(() => expect(m.fetchSessions.mock.calls.length).toBeGreaterThan(before));

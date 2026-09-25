@@ -55,7 +55,7 @@ describe("模型编辑 · 密钥接口", () => {
     const user = userEvent.setup();
     await openEdit(user);
 
-    const clear = screen.getByRole("button", { name: "清除密钥" }) as HTMLButtonElement;
+    const clear = screen.getByRole("button", { name: "清除连接凭据" }) as HTMLButtonElement;
     expect(clear.disabled).toBe(false);
     expect((screen.getByLabelText("API Key") as HTMLInputElement).value).toBe("");
 
@@ -82,8 +82,8 @@ describe("模型编辑 · 密钥接口", () => {
     const user = userEvent.setup();
     await openEdit(user);
 
-    await user.click(screen.getByRole("button", { name: "清除密钥" }));
-    expect(screen.getByText("保存后将删除该模型凭据")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "清除连接凭据" }));
+    expect(screen.getByText("保存后删除该模型的 API Key 与 Base URL")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(m.updateModel).toHaveBeenCalledTimes(1));
     const body = lastUpdateBody();
