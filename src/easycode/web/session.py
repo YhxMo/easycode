@@ -87,6 +87,10 @@ class Session:
     always_allow: list[str] = field(default_factory=list)  # approval_key() scopes, persists
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
+    #: Terminal errors the server produced, keyed by the user turn that raised
+    #: them (``{"time", "message", "code"}``). A user stop and a dropped browser
+    #: connection are not failures and never land here.
+    turn_failures: list[dict] = field(default_factory=list)
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
     pinned: bool = False  # kept at the top of the sidebar
     pinned_at: str | None = None  # when it was pinned, for ordering
@@ -109,6 +113,21 @@ class Session:
             return False
         evt.set()
         return True
+
+    def record_turn_failure(self, message: str, code: str | None) -> None:
+        """Attach a server-produced terminal error to the current user turn.
+
+        The turn is identified by its user-message timestamp, which is also what
+        the transcript uses to put the failure back where it happened.
+        """
+        if not self.user_times:
+            return
+        entry = {"time": self.user_times[-1], "message": message}
+        if code:
+            entry["code"] = code
+        if entry in self.turn_failures:
+            return
+        self.turn_failures.append(entry)
 
     @property
     def summary(self) -> dict:
@@ -344,6 +363,7 @@ class SessionStore:
                     always_allow=list(data.get("always_allow") or []),
                     approval_log=list(data.get("approval_log") or []),
                     user_times=list(data.get("user_times") or []),
+                    turn_failures=list(data.get("turn_failures") or []),
                     archived=bool(data.get("archived")),
                     pinned=bool(data.get("pinned")),
                     pinned_at=data.get("pinned_at"),
@@ -360,6 +380,10 @@ class SessionStore:
         n_user = sum(1 for m in session.messages if m.get("role") == "user")
         if len(session.user_times) > n_user:
             session.user_times = list(session.user_times[-n_user:]) if n_user else []
+        # A failure is only reachable while its turn is still in the transcript:
+        # once compaction drops that turn, the record has nothing to attach to.
+        known = set(session.user_times)
+        session.turn_failures = [f for f in session.turn_failures if f.get("time") in known]
         self._flush(session)
 
     def _flush(self, session: Session) -> None:
@@ -382,6 +406,9 @@ class SessionStore:
         if session.pinned:
             payload["pinned"] = True
             payload["pinned_at"] = session.pinned_at
+        # Omitted while empty so a session that never failed keeps its old shape.
+        if session.turn_failures:
+            payload["turn_failures"] = list(session.turn_failures)
         if session.root:
             payload["root"] = session.root
         if session.secondary_roots:

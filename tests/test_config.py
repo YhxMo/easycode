@@ -122,3 +122,41 @@ def test_path_context_relative_paths_use_load_time_base(tmp_path, monkeypatch):
     ctx = cfg.path_context()
     assert ctx.extra_safe_dirs == [(tmp_path / "extra").resolve()]
     assert cfg.base_dir() == cfg.root
+
+
+def test_max_tool_iterations_is_optional_and_strict(tmp_path, monkeypatch):
+    """An absent ceiling means "let the model finish"; a set one is validated
+    rather than silently ignored."""
+    cfg_file = tmp_path / "easycode.config.json"
+    monkeypatch.chdir(tmp_path)
+
+    cfg_file.write_text(json.dumps({"model": "x"}), encoding="utf-8")
+    assert Config.load().max_tool_iterations is None
+
+    cfg_file.write_text(json.dumps({"max_tool_iterations": None}), encoding="utf-8")
+    assert Config.load().max_tool_iterations is None
+
+    cfg_file.write_text(json.dumps({"max_tool_iterations": 25}), encoding="utf-8")
+    assert Config.load().max_tool_iterations == 25
+
+    for bad in (0, -1, True, False, 1.5, "12"):
+        cfg_file.write_text(json.dumps({"max_tool_iterations": bad}), encoding="utf-8")
+        with pytest.raises(ValueError, match="invalid max_tool_iterations"):
+            Config.load()
+
+
+def test_max_tool_iterations_survives_other_saves_only_when_set(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    cfg = Config.load()
+    cfg.save()
+    # An unset ceiling stays absent: saving other settings must not turn
+    # "unlimited" into a number.
+    assert "max_tool_iterations" not in json.loads(cfg_file.read_text(encoding="utf-8"))
+
+    cfg.max_tool_iterations = 40
+    cfg.save()
+    assert json.loads(cfg_file.read_text(encoding="utf-8"))["max_tool_iterations"] == 40
+    assert Config.load().max_tool_iterations == 40

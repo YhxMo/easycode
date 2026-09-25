@@ -48,6 +48,25 @@ def _skills_enabled(raw: dict[str, Any]) -> bool:
     return True
 
 
+def _max_tool_iterations(raw: dict[str, Any]) -> int | None:
+    """Optional per-message model round-trip ceiling.
+
+    Absent or ``null`` means unlimited (the model ends the turn). Anything else
+    must be a real positive integer: a bool, zero, a negative or a non-integer
+    is an error, not a silent fallback to the most permissive reading.
+    """
+    value = raw.get("max_tool_iterations")
+    if value is None:
+        return None
+    # `bool` is an `int` subclass, so an exact type check rejects `true`/`false`
+    # along with floats and strings.
+    if type(value) is not int or value <= 0:
+        raise ValueError(
+            f"invalid max_tool_iterations: {value!r} (expected a positive integer or null)"
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     """Canonical model entry: model name, supplier, protocol, and credential reference."""
@@ -140,6 +159,9 @@ class Config:
     model_limits_cache: dict[str, dict[str, int] | None] = field(default_factory=dict, repr=False)
     workspace_projects: list[dict[str, Any]] = field(default_factory=list)  # [{root, secondary}]
     skills_enabled: bool = True
+    #: Optional ceiling on model round-trips per user message; ``None`` lets the
+    #: model end the turn itself.
+    max_tool_iterations: int | None = None
 
     @classmethod
     def load(cls, start: Path | None = None) -> Config:
@@ -178,6 +200,7 @@ class Config:
             max_context_tokens=int(raw.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
             compaction={**COMPACTION_DEFAULTS, **(raw.get("compaction") or {})},
             skills_enabled=_skills_enabled(raw),
+            max_tool_iterations=_max_tool_iterations(raw),
         )
 
     def resolve_model(self, alias_or_model: str) -> str:
@@ -285,6 +308,10 @@ class Config:
             payload["compaction"] = self.compaction
         if not self.skills_enabled:
             payload["skills"] = {"enabled": False}
+        # An unset ceiling is left out entirely: re-saving other settings must
+        # not turn "unlimited" into an explicit number, or vice versa.
+        if self.max_tool_iterations is not None:
+            payload["max_tool_iterations"] = self.max_tool_iterations
         self.config_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )

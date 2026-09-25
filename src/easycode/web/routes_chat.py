@@ -264,6 +264,11 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                             approval_id, tc, reason, scope = payload
                             yield approval_required_sse(approval_id, tc, reason, scope)
                         else:
+                            # A terminal error the server produced belongs to the
+                            # turn that raised it, so a reload can put it back.
+                            # A user stop or a dropped connection is not recorded.
+                            if payload.kind == "error" and payload.error:
+                                sess.record_turn_failure(payload.error, payload.code)
                             yield event_to_sse(payload)
             finally:
                 # Persistence failures must not keep the session lock: release

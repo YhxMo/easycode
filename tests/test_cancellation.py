@@ -73,6 +73,8 @@ def test_web_cancel_endpoint(repo: Path) -> None:
                 "role": "user",
                 "content": "hi",
             }
+            # A user stop is not a server failure: nothing to replay on reload.
+            assert sess.turn_failures == []
 
     asyncio.run(scenario())
 

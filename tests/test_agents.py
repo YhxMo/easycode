@@ -506,3 +506,39 @@ async def test_task_tool_rejects_primary_agent(tmp_path):
 
     assert result["status"] == "error"
     assert "not delegatable" in result["message"]
+
+
+def test_make_agent_carries_the_configured_iteration_limit_to_subagents(tmp_path, monkeypatch):
+    """CLI, Web and delegated subagents are built by the same assembly path, so
+    a ceiling configured once governs every one of them."""
+    from easycode.agent.builtin_tools import make_subagent
+    from easycode.agentfactory import make_agent
+    from easycode.agents import AgentRegistry, AgentSpec
+    from easycode.config import Config
+    from easycode.credentials import Credential, save_credential
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "easycode.config.json").write_text(
+        json.dumps(
+            {
+                "default_model": "only",
+                "max_tool_iterations": 7,
+                "models": {"only": {"model": "only-model", "key_id": "only-key"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    creds_path = tmp_path / "home" / ".easycode" / "credentials.json"
+    save_credential(Credential(key_id="only-key", api_key="sk-only"), path=creds_path)
+
+    cfg = Config.load(start=proj)
+    parent = make_agent(cfg, "only", proj)
+    assert parent.max_tool_iterations == 7
+
+    parent.agents = AgentRegistry(
+        {"writer": AgentSpec(name="writer", description="writes", permission="ask")}
+    )
+    child = make_subagent(parent, parent.agents.get("writer"))
+    assert child.max_tool_iterations == 7

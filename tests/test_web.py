@@ -742,3 +742,61 @@ async def test_project_archive_and_delete_do_not_resurrect_session(tmp_path, mon
     assert store.get(sess.id) is None
     assert store.get(other.id) is not None
     assert store._path(other.id) not in writes  # only the target project's sessions are saved
+
+
+def _app_with_provider(tmp_path: Path, provider) -> tuple[TestClient, SessionStore]:
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str, **agent_kwargs):
+        root = agent_kwargs.get("root") or tmp_path
+        return Agent(
+            provider=provider, registry=build_registry(8000), root=Path(root)
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    return client, store
+
+
+def test_turn_failure_is_recorded_with_its_turn_and_restored(tmp_path):
+    """A server-produced terminal error belongs to the turn that raised it, so a
+    reload can put it back — and a hard failure is never a finished turn."""
+    client, store = _app_with_provider(tmp_path, FakeProvider(script=[{"error": "boom"}]))
+    with client:
+        assert client.post("/api/chat", json={"message": "hi"}).status_code == 200
+        sid = client.get("/api/sessions").json()[0]["id"]
+        detail = client.get(f"/api/sessions/{sid}").json()
+
+    assert len(detail["turn_failures"]) == 1
+    failure = detail["turn_failures"][0]
+    assert "boom" in failure["message"]
+    assert failure["time"] == detail["user_times"][-1]
+
+    # Persisted, so a restart restores the same association.
+    saved = json.loads((store.dir / f"{sid}.json").read_text(encoding="utf-8"))
+    assert saved["turn_failures"] == detail["turn_failures"]
+
+    restored = SessionStore(store.cfg, tmp_path, store.agent_factory)
+    restored.load_all()
+    assert restored.get(sid).turn_failures == detail["turn_failures"]
+
+
+def test_iteration_limit_failure_carries_its_code_to_the_client(tmp_path):
+    """The stream marks an explicit ceiling with a code, and the record keeps it
+    so the restored turn can offer to continue."""
+    provider = FakeProvider(script=[{"tool_calls": [("c1", "glob", {"pattern": "*"})]}])
+    client, store = _app_with_provider(tmp_path, provider)
+    with client:
+        sess = store.create()
+        sess.agent.max_tool_iterations = 1
+        body = client.post(
+            "/api/chat", json={"message": "loop", "session_id": sess.id}
+        ).text
+
+    assert '"code": "tool_iteration_limit"' in body
+    detail = client.get(f"/api/sessions/{sess.id}").json()
+    assert [f["code"] for f in detail["turn_failures"]] == ["tool_iteration_limit"]
+    assert detail["turn_failures"][0]["time"] == detail["user_times"][-1]

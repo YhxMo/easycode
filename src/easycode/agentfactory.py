@@ -176,6 +176,7 @@ def make_agent(
         compaction=dict(cfg.compaction),
         agents=agents,
         skills=skills,
+        max_tool_iterations=cfg.max_tool_iterations,
     )
     try:
         bind_agent(agent, cfg, model_alias)

@@ -47,9 +47,6 @@ if TYPE_CHECKING:
     from easycode.mcp import MCPSessionManager
     from easycode.skills import SkillRegistry
 
-MAX_TOOL_ITERATIONS = 12
-
-
 @dataclass
 class AgentEvent:
     """Event yielded to the UI as a turn progresses."""
@@ -59,6 +56,9 @@ class AgentEvent:
     tool_call: ToolCall | None = None
     tool_result: str | None = None
     error: str | None = None
+    #: Machine-readable reason for an ``error`` event, when there is one (e.g.
+    #: ``tool_iteration_limit``); the text stays the human-facing statement.
+    code: str | None = None
 
 
 def file_change(name: str, result: str) -> dict | None:
@@ -124,6 +124,11 @@ class Agent:
     max_context_tokens: int = 32_000
     compaction: dict[str, Any] = field(default_factory=dict)
     model_limits: dict[str, int] | None = None
+    #: Optional ceiling on model round-trips inside one user message. ``None``
+    #: (the default) means the model decides when the turn is over; a configured
+    #: value ends the turn with an explicit ``tool_iteration_limit`` error rather
+    #: than silently reporting a finished task.
+    max_tool_iterations: int | None = None
     agents: AgentRegistry | None = None
     skills: SkillRegistry | None = None
     system_override: str | None = None
@@ -293,7 +298,24 @@ class Agent:
             raise
 
     async def _turn(self) -> AsyncIterator[AgentEvent]:
-        for _ in range(MAX_TOOL_ITERATIONS):
+        limit = self.max_tool_iterations
+        iteration = 0
+        while True:
+            # Counted per model round-trip (one call plus the tools it asked
+            # for), not per tool: a batch of ten calls is still one round.
+            if limit is not None and iteration >= limit:
+                yield AgentEvent(
+                    kind="error",
+                    error=(
+                        f"已达到本轮的模型调用轮数上限（max_tool_iterations={limit}），"
+                        "任务可能尚未完成。已执行的操作、工具结果和任务清单都已保留；"
+                        "请核对工作区现状后再继续。"
+                    ),
+                    code="tool_iteration_limit",
+                )
+                yield AgentEvent(kind="done")
+                return
+            iteration += 1
             schemas = self.tool_schemas()
             allowed = self.available_tool_names()
             await self.compactor.prepare(
@@ -359,9 +381,6 @@ class Agent:
                 for content in self._pending_system:
                     self.history.add({"role": "system", "content": content})
                 self._pending_system.clear()
-        yield AgentEvent(kind="error", error=f"hit max tool iterations ({MAX_TOOL_ITERATIONS})")
-        yield AgentEvent(kind="done")
-
     async def _execute_tool(
         self, tc: ToolCall, allowed: set[str]
     ) -> AsyncIterator[AgentEvent]:

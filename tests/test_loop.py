@@ -210,13 +210,41 @@ async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_pat
     assert agent.history.summary is None
 
 
-async def test_max_iterations_guard(tmp_path):
-    agent, _ = make_agent(tmp_path, [])
-    agent.provider.script = [
-        {"tool_calls": [("c", "glob", {"pattern": "*"})], "text": ""}
-    ] * 15
-    events = [ev async for ev in agent.respond("loop")]
-    assert any(e.kind == "error" and e.error and "max tool iterations" in e.error for e in events)
+async def test_model_can_finish_after_more_than_twelve_tool_rounds(tmp_path):
+    script = [
+        {"tool_calls": [(f"c{i}", "glob", {"pattern": "*"})]}
+        for i in range(15)
+    ] + [{"text": "finished"}]
+    agent, provider = make_agent(tmp_path, script)
+
+    events = await collect(agent, "loop")
+
+    assert len(provider.calls) == 16
+    assert sum(event.kind == "tool_result" for event in events) == 15
+    assert [event.content for event in events if event.kind == "text"] == list("finished")
+    assert not any(event.kind == "error" for event in events)
+    assert events[-1].kind == "done"
+
+
+async def test_explicit_iteration_limit_ends_the_turn_with_a_coded_error(tmp_path):
+    """A configured ceiling stops the turn itself — it is never reported as a
+    finished task, and the work already done stays in history."""
+    script = [{"tool_calls": [(f"c{i}", "glob", {"pattern": "*"})]} for i in range(5)]
+    script.append({"text": "never reached"})
+    agent, provider = make_agent(tmp_path, script)
+    agent.max_tool_iterations = 3
+
+    events = await collect(agent, "loop")
+
+    assert len(provider.calls) == 3
+    errors = [e for e in events if e.kind == "error"]
+    assert [e.code for e in errors] == ["tool_iteration_limit"]
+    assert "max_tool_iterations=3" in (errors[0].error or "")
+    assert events[-1].kind == "done"
+    assert not any(e.kind == "text" for e in events)
+    # the ceiling cancels nothing: every executed call keeps its result.
+    assert sum(e.kind == "tool_result" for e in events) == 3
+    assert_valid_tool_protocol(agent.history.messages)
 
 
 async def test_approved_tool_result_tells_the_model_it_was_approved(tmp_path):

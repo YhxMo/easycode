@@ -43,6 +43,8 @@ def _event_payload(ev: AgentEvent) -> dict:
         payload["result"] = ev.tool_result
     elif ev.kind == "error" and ev.error:
         payload["error"] = ev.error
+        if ev.code:
+            payload["code"] = ev.code
     elif ev.kind == "review" and ev.content:
         payload["content"] = ev.content
     elif ev.kind == "todo" and ev.content:

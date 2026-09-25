@@ -38,12 +38,14 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         if sess is None:
             raise HTTPException(404, "session not found")
         # ``messages`` is the last completed-turn snapshot (stable while a turn
-        # runs); ``approvals``/``user_times`` are live per-session lists.
+        # runs); ``approvals``/``user_times``/``turn_failures`` are live
+        # per-session lists.
         return {
             **sess.summary,
             "messages": sess.messages,
             "approvals": list(sess.approval_log),
             "user_times": list(sess.user_times),
+            "turn_failures": list(sess.turn_failures),
             "todos": list(sess.todos),
         }
 

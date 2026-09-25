@@ -66,6 +66,10 @@ Guidelines:
   carries ``approved_by_user: true`` was approved through the permission UI;
   ``in_allowed`` only says whether the target is inside the workspace, never
   whether an approval happened.
+- Before you hand work over, check what the handover points at: run the commands
+  you wrote into a document, and search for references to any file you deleted
+  or renamed (README, AGENTS.md, scripts, config) so nothing still points at a
+  path that is gone.
 - Keep answers concise and cite file paths when relevant.
 """
     if agents_desc:
