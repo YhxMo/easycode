@@ -1605,10 +1605,14 @@
   width: min(340px, calc(100vw - 24px));
   max-width: none;
   /* The menu opens upward from the composer and the card clips: cap it so a
-   * long model list scrolls instead of running off the top of the window. */
+   * long model list scrolls instead of running off the top of the window.
+   * The height and left offset are narrowed further at open time from the room
+   * actually available above the trigger. */
   max-height: min(60vh, 460px);
   padding: 6px;
-  overflow: hidden;
+  /* Not clipped: the hover detail sits beside the menu, and the list scrolls
+     on its own rather than relying on the parent. */
+  overflow: visible;
 }
 
 .model-menu-list {
@@ -1698,16 +1702,26 @@
   cursor: not-allowed;
 }
 
+/* Sits beside the menu, on whichever side has room for it; the side is chosen
+   when the menu is placed, and the width never exceeds the window. */
 .model-menu-detail {
   position: absolute;
-  left: calc(100% + 8px);
-  width: 320px;
+  /* the width is set from the room beside the menu when it is placed */
+  width: min(320px, calc(100vw - 24px));
   padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--shadow-overlay);
   color: var(--ink);
+}
+
+.model-menu-detail.side-right {
+  left: calc(100% + 8px);
+}
+
+.model-menu-detail.side-left {
+  right: calc(100% + 8px);
 }
 
 .model-menu-detail dl {

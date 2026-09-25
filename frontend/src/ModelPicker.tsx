@@ -10,6 +10,10 @@ import { addModel, deleteModel, fetchModel, fetchModels, switchModel, updateMode
 const MENU_MAX_HEIGHT = 460;
 //: Clearance kept between the menu and the window edges.
 const MENU_MARGIN = 12;
+//: Mirrors `.model-menu-detail`: the hover card is this wide at most.
+const DETAIL_WIDTH = 320;
+//: Below this the card would be too narrow to read, so it is not shown.
+const DETAIL_MIN_WIDTH = 200;
 
 const PROVIDERS = ["bailian", "deepseek", "openox", "rightcode", "openai", "anthropic", "openrouter", "custom"];
 
@@ -206,8 +210,13 @@ export function ModelPicker({
   const [hasStoredKey, setHasStoredKey] = useState(false);
   const [hovered, setHovered] = useState<{ alias: string; top: number } | null>(null);
   // Where the menu fits: it is anchored to the trigger, which sits wherever the
-  // composer happens to be, so the room actually available decides its size.
-  const [placement, setPlacement] = useState<{ maxHeight: number; left: number } | null>(null);
+  // composer happens to be, so the room actually available decides its size —
+  // and which side the hover detail can open on.
+  const [placement, setPlacement] = useState<{
+    maxHeight: number;
+    left: number;
+    detail: { side: "left" | "right"; width: number } | null;
+  } | null>(null);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuPanelRef = useRef<HTMLDivElement>(null);
@@ -242,7 +251,18 @@ export function ModelPicker({
       MENU_MARGIN,
       Math.min(anchor.left, window.innerWidth - MENU_MARGIN - width),
     );
-    setPlacement({ maxHeight, left: left - anchor.left });
+    // The hover detail opens beside the menu, on the roomier side and no wider
+    // than that gap; with neither side usable it stays hidden rather than
+    // spilling past the window.
+    const roomRight = window.innerWidth - MENU_MARGIN - (left + width) - 8;
+    const roomLeft = left - MENU_MARGIN - 8;
+    const side = roomRight >= roomLeft ? "right" : "left";
+    const room = Math.max(roomRight, roomLeft);
+    setPlacement({
+      maxHeight,
+      left: left - anchor.left,
+      detail: room >= DETAIL_MIN_WIDTH ? { side, width: Math.min(DETAIL_WIDTH, room) } : null,
+    });
   }, []);
 
   // Before paint, so the first frame the reader sees is already in place.
@@ -407,8 +427,14 @@ export function ModelPicker({
 
   const hoverModel = (alias: string, el: HTMLElement) => {
     if (hoverTimer.current !== null) window.clearTimeout(hoverTimer.current);
-    const maxTop = Math.max(4, (menuPanelRef.current?.offsetHeight ?? 380) - 190);
-    setHovered({ alias, top: Math.max(4, Math.min(el.offsetTop - 6, maxTop)) });
+    const panel = menuPanelRef.current;
+    if (!panel) return;
+    const panelRect = panel.getBoundingClientRect();
+    // Measured against the panel, not `offsetTop`: the list scrolls inside it,
+    // and the card must follow the row the reader is actually pointing at.
+    const relative = el.getBoundingClientRect().top - panelRect.top - 6;
+    const maxTop = Math.max(4, panelRect.height - 190);
+    setHovered({ alias, top: Math.max(4, Math.min(relative, maxTop)) });
   };
 
   const clearHover = () => {
@@ -523,11 +549,11 @@ export function ModelPicker({
                 <span aria-hidden="true">＋</span> 添加模型
               </button>
             </div>
-            {previewAlias && previewEntry && (
+            {previewAlias && previewEntry && placement?.detail && (
               <aside
-                className="model-menu-detail"
+                className={`model-menu-detail side-${placement.detail.side}`}
                 aria-label={`${previewAlias} 模型详情`}
-                style={{ top: hovered?.top ?? 4 }}
+                style={{ top: hovered?.top ?? 4, width: placement.detail.width }}
               >
                 <dl>
                   <div>
