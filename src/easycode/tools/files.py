@@ -31,8 +31,11 @@ DEFAULT_READ_LIMIT = 2000
 def _write_denied(scope: PathContext, p: Path, raw: str, grant: ToolGrant | None) -> str | None:
     """Error JSON when a file write target is denied, else ``None``.
 
-    Shared by write_file and edit_file: the credential hard-deny first, then
-    the allowed/granted authorization check.
+    Shared by write_file and edit_file: the credential hard-deny first, then the
+    permanent write boundaries, then the allowed/granted authorization check.
+    The protected boundaries are checked before ``in_allowed`` on purpose —
+    ``danger-full-access`` makes everything else writable, but it is not an
+    approval and must never open a protected path.
     """
     if scope.is_protected(p):
         return json_out(
@@ -40,6 +43,18 @@ def _write_denied(scope: PathContext, p: Path, raw: str, grant: ToolGrant | None
             {
                 "message": f"path is protected (credentials): {raw}",
                 "in_allowed": False,
+                "class": scope.classify(p),
+            },
+        )
+    if scope.is_protected_path(p):
+        return json_out(
+            "error",
+            {
+                "message": (
+                    f"path is permanently protected (.git/.easycode/project config): {raw}"
+                ),
+                "in_allowed": False,
+                "protected": True,
                 "class": scope.classify(p),
             },
         )

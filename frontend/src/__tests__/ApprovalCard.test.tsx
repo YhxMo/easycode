@@ -56,7 +56,7 @@ describe("ApprovalCard", () => {
 
   it("已决策后折叠为结论行，不再提供按钮", () => {
     render(<ApprovalCard item={item("denied")} position={1} total={1} onDecide={() => {}} />);
-    expect(screen.getByText("已拒绝")).toBeTruthy();
+    expect(screen.getByText("已拒绝请求")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "允许一次" })).toBeNull();
     expect(screen.queryByText("需要批准")).toBeNull();
   });

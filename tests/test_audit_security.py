@@ -342,6 +342,27 @@ def test_normal_shell_commands_are_not_in_destructive_denylist(tmp_path):
     assert destructive_command_reason("pytest tests/test_permissions.py -q") is None
 
 
+def test_file_tools_keep_protected_paths_closed_under_allow_all(tmp_path):
+    """`danger-full-access` is not an approval: it opens the sandbox, never the
+    permanent write boundaries."""
+    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+    from easycode.workspace import CONFIG_FILENAME
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".easycode").mkdir()
+    ctx = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
+    registry = build_registry(8000)
+
+    for rel in (".git/config", ".easycode/blocked.txt", CONFIG_FILENAME):
+        target = tmp_path / rel
+        result = json.loads(
+            registry.execute("write_file", {"path": str(target), "content": "x"}, tmp_path, ctx)
+        )
+        assert result["status"] == "error", rel
+        assert result["protected"] is True, rel
+        assert not target.exists(), rel
+
+
 def test_sandbox_command_grant_fails_closed_non_macos(monkeypatch, tmp_path):
     import easycode.sandbox.macos as macos
 

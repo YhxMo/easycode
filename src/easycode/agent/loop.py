@@ -455,7 +455,11 @@ class Agent:
         if self.permission_mode == PERM_AUTO_REVIEW:
             self._collect_review(tc, result)
         todo_event = self._todos_event(tc.name, result)
-        self.history.add_tool(tc.id, tc.name, self._model_view(tc.name, result))
+        self.history.add_tool(
+            tc.id,
+            tc.name,
+            self._model_view(tc.name, result, approved_by_user=requires_approval and approved),
+        )
         yield AgentEvent(kind="tool_result", tool_call=tc, tool_result=result)
         # The list is already committed in ``self.todos``; this only tells the
         # UI. It goes out after this call's own result, so the stream never
@@ -504,27 +508,37 @@ class Agent:
             self._consecutive_review_denials += 1
         return self._consecutive_review_denials >= 3 or self._review_decisions.count(False) >= 10
 
-    def _model_view(self, name: str, result: str) -> str:
+    def _model_view(self, name: str, result: str, *, approved_by_user: bool = False) -> str:
         """Compact model-facing view of a tool result.
 
         The full result (including the diff) still streams to the UI and the
         review channel, but the model does not need to re-read the diff
         it just produced — align with opencode where edit/write return a short
         confirmation and keep the diff out of the LLM-visible output.
+
+        ``approved_by_user`` states a fact the result itself does not carry:
+        ``in_allowed`` only says whether the target sits inside the workspace, so
+        an approved external read looks like an unapproved one without it.
         """
-        if name not in ("write_file", "edit_file"):
-            return result
+        data: dict[str, Any] | None = None
         try:
-            data = json.loads(result)
+            parsed = json.loads(result)
         except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            data = parsed
+        if name in ("write_file", "edit_file") and data is not None and data.get("status") == "ok":
+            compact: dict[str, Any] = {"status": "ok", "path": data.get("path")}
+            if data.get("dry_run"):
+                compact["dry_run"] = True
+                compact["message"] = "preview only, file unchanged"
+            data = compact
+        elif data is None or not approved_by_user:
+            # Nothing to add: hand back exactly what the tool produced.
             return result
-        if not isinstance(data, dict) or data.get("status") != "ok":
-            return result
-        compact: dict[str, Any] = {"status": "ok", "path": data.get("path")}
-        if data.get("dry_run"):
-            compact["dry_run"] = True
-            compact["message"] = "preview only, file unchanged"
-        return json.dumps(compact, ensure_ascii=False)
+        if approved_by_user:
+            data["approved_by_user"] = True
+        return json.dumps(data, ensure_ascii=False)
 
     async def run_task(self, prompt: str) -> str:
         """Run a standalone subtask with a fresh history; return the final text.

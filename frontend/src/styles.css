@@ -1992,6 +1992,14 @@
   overflow-y: auto;
 }
 
+/* Rows are the scroll content, never the scroll's competitors: a column flex
+   container shrinks its items by default, and a card with `overflow: hidden`
+   (the approval card) has `min-height: auto` = 0, so a long history squeezed
+   its buttons out of the layout entirely. The pane scrolls instead. */
+.chat-main > * {
+  flex: none;
+}
+
 /* with the composer floating over it, the stream needs room to scroll past;
    the height comes from the composer itself, so a grown input still clears the
    last reply */

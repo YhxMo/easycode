@@ -302,16 +302,24 @@ def destructive_command_reason(command: str) -> str | None:
 def definitive_deny_reason(tc: ToolCall, ctx: PathContext) -> str | None:
     """Categorical denial for a tool call.
 
-    Only ``execute_shell`` is in scope; anything else (file tools, MCP,
-    builtins) is handled by the existing approval policy. Returning a reason
-    means the call must be rejected without running — even when an approval
-    handler is missing or a reviewer would have approved it.
+    A file write into a permanent protected boundary (``.git``/``.easycode``/
+    ``easycode.config.json`` of any authorization root, plus the credential
+    files) is refused here so no approval is ever offered for a call that could
+    not succeed: those boundaries are hard protection, and asking the user to
+    approve one only produces a decision that the file tool must ignore.
 
-    Under ``danger-full-access`` (the ``allow-all`` preset) the denylist is
-    off, matching Codex's ``danger-full-access`` semantics: the sandbox and
-    approvals are already gone, so no in-process denylist remains. Selective
-    limits under allow-all are the job of ``permission_rules``.
+    ``execute_shell`` is denied for clearly destructive commands. Under
+    ``danger-full-access`` (the ``allow-all`` preset) that denylist is off,
+    matching Codex's ``danger-full-access`` semantics: the sandbox and approvals
+    are already gone, so no in-process denylist remains. Selective limits under
+    allow-all are the job of ``permission_rules``. File-tool protection is not
+    part of that preset — protected paths stay denied in every mode.
     """
+    if tc.name in FILE_EDIT_TOOLS:
+        path = str(tc.arguments.get("path", "")).strip()
+        if path and ctx.is_protected_path(ctx.resolve(path)):
+            return f"受保护路径不可写（.git/.easycode/项目配置/凭据）: {path}"
+        return None
     if ctx.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
         return None
     if tc.name != "execute_shell":

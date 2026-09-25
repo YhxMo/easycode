@@ -62,7 +62,10 @@ Guidelines:
   a concise justification. Never let the sandbox infer writable paths from the
   command string; if a path is not in both the command and writable_roots it
   will be denied.
-- Tool JSON results may be truncated; rely on the status field.
+- Tool JSON results may be truncated; rely on the status field. A result that
+  carries ``approved_by_user: true`` was approved through the permission UI;
+  ``in_allowed`` only says whether the target is inside the workspace, never
+  whether an approval happened.
 - Keep answers concise and cite file paths when relevant.
 """
     if agents_desc:

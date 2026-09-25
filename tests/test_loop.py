@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -216,6 +217,72 @@ async def test_max_iterations_guard(tmp_path):
     ] * 15
     events = [ev async for ev in agent.respond("loop")]
     assert any(e.kind == "error" and e.error and "max tool iterations" in e.error for e in events)
+
+
+async def test_approved_tool_result_tells_the_model_it_was_approved(tmp_path):
+    """`in_allowed: false` means "outside the workspace", not "no approval": the
+    model-visible result must carry the approval fact separately."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "note.txt"
+    target.write_text("external\n", encoding="utf-8")
+    inside = root / "inside.txt"
+    inside.write_text("internal\n", encoding="utf-8")
+    script = [
+        {"tool_calls": [("c1", "read_file", {"path": str(target)})]},
+        {"tool_calls": [("c2", "read_file", {"path": str(inside)})]},
+        {"text": "done"},
+    ]
+    agent, _ = make_agent(root, script)
+    # An explicit rule, so the prompt does not depend on how the platform
+    # classifies a path that happens to live under the OS temp dir (which is
+    # where pytest puts tmp_path).
+    agent.permission_rules = {"read_file": {f"{outside}/*": "ask"}}
+    asked: list[str] = []
+
+    async def approve(tc: ToolCall, reason: str, identity: str) -> bool:
+        asked.append(tc.name)
+        return True
+
+    agent.approval_handler = approve
+    await collect(agent, "read both")
+
+    assert asked == ["read_file"]
+    tool_messages = [m for m in agent.history.messages if m["role"] == "tool"]
+    approved = json.loads(tool_messages[0]["content"])
+    assert approved["approved_by_user"] is True
+    assert approved["status"] == "ok" and "external" in approved["content"]
+    # An in-workspace call nobody approved must not claim an approval.
+    assert "approved_by_user" not in json.loads(tool_messages[1]["content"])
+
+
+async def test_protected_write_is_rejected_without_offering_an_approval(tmp_path):
+    """A hard-protected target can never be written, so the turn must not ask
+    the user to approve it — the decision would be unenforceable."""
+    (tmp_path / ".easycode").mkdir()
+    target = tmp_path / ".easycode" / "blocked.txt"
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "x"})]},
+        {"text": "stopped"},
+    ]
+    agent, _ = make_agent(tmp_path, script)
+    asked: list[str] = []
+
+    async def approve(tc: ToolCall, reason: str, identity: str) -> bool:
+        asked.append(tc.name)
+        return True
+
+    agent.approval_handler = approve
+    events = await collect(agent, "write it")
+
+    assert asked == []
+    result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
+    assert result["status"] == "error"
+    assert result["rejected"] is True
+    assert "受保护路径" in result["reason"]
+    assert not target.exists()
 
 
 async def test_concurrent_turns_isolated(tmp_path):

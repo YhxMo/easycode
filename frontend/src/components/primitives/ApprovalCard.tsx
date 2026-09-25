@@ -3,10 +3,13 @@ import { toolStep } from "../../lib/trace";
 
 type ApprovalItem = Extract<Item, { kind: "approval" }>;
 
+// The decision this card records is the *request's* outcome. Whether the call
+// then succeeded is a separate fact, and it belongs to the tool row below — an
+// approval the tool still had to refuse must not read as "allowed".
 const DECIDED: Record<string, string> = {
-  approved: "已允许",
-  denied: "已拒绝",
-  expired: "已失效",
+  approved: "已批准执行请求",
+  denied: "已拒绝请求",
+  expired: "未响应，请求已失效",
 };
 
 interface Props {

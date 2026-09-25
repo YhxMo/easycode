@@ -412,7 +412,7 @@ describe("App", () => {
 
     // Answering the first collapses it to a verdict; the second stays pending.
     await user.click(screen.getAllByRole("button", { name: "拒绝" })[0]);
-    await screen.findByText("已拒绝");
+    await screen.findByText("已拒绝请求");
     expect(screen.getByText("2/2")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "允许一次" })).toHaveLength(1);
   });
