@@ -132,10 +132,7 @@ export function ProjectPicker({
               onClick={() => selectRoot(null)}
             >
               <span className="project-option-mark" aria-hidden="true">{!root ? "✓" : ""}</span>
-              <span className="project-option-copy">
-                <strong>{DEFAULT_PROJECT}</strong>
-                <small>{defaultPath ?? "未配置"}</small>
-              </span>
+              {DEFAULT_PROJECT}
             </button>
             {projects.map((project) => (
               <button
@@ -148,10 +145,7 @@ export function ProjectPicker({
                 onClick={() => selectRoot(project)}
               >
                 <span className="project-option-mark" aria-hidden="true">{project === root ? "✓" : ""}</span>
-                <span className="project-option-copy">
-                  <strong>{displayName(project)}</strong>
-                  <small>{project}</small>
-                </span>
+                {displayName(project)}
               </button>
             ))}
           </div>
@@ -162,10 +156,7 @@ export function ProjectPicker({
             onClick={() => pickPrimaryViaFinder()}
           >
             <span className="project-option-mark" aria-hidden="true">＋</span>
-            <span className="project-option-copy">
-              <strong>选择其他目录…</strong>
-              <small>用访达挑一个工作目录</small>
-            </span>
+            选择其他目录…
           </button>
         </div>
       )}
@@ -182,10 +173,7 @@ export function ProjectPicker({
             onClick={() => currentPath && copyPath(currentPath)}
           >
             <span className="project-option-mark" aria-hidden="true">⧉</span>
-            <span className="project-option-copy">
-              <strong>复制路径</strong>
-              <small>粘贴到终端或编辑器</small>
-            </span>
+            复制路径
           </button>
           <button
             type="button"
@@ -196,10 +184,7 @@ export function ProjectPicker({
             }}
           >
             <span className="project-option-mark" aria-hidden="true">＋</span>
-            <span className="project-option-copy">
-              <strong>在此目录新建会话</strong>
-              <small>{currentName}</small>
-            </span>
+            在此目录新建会话
           </button>
           <p className="project-detail-note">已有会话的工作目录不可修改。</p>
         </div>
