@@ -24,6 +24,10 @@ interface Props {
   onChange: (value: string, caret: number) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSelectionChange: (caret: number) => void;
+  /** An IME (Chinese/Japanese input) took over the field, or handed it back. */
+  onComposingChange: (composing: boolean) => void;
+  /** The IME committed: the field's real text and caret, for one sync. */
+  onCompositionEnd: (value: string, caret: number) => void;
   onSend: () => void;
   onStop: () => void;
   /** Lets the app put the caret back in the field (mention pick, quoting). */
@@ -53,6 +57,8 @@ export function ComposerBar({
   onChange,
   onKeyDown,
   onSelectionChange,
+  onComposingChange,
+  onCompositionEnd,
   onSend,
   onStop,
   fieldRef,
@@ -112,6 +118,13 @@ export function ComposerBar({
           onChange={(e) => onChange(e.target.value, e.target.selectionStart ?? 0)}
           onKeyDown={onKeyDown}
           onSelect={(e) => onSelectionChange(e.currentTarget.selectionStart ?? 0)}
+          // The IME owns the candidate window and the caret while it composes;
+          // the field is only read back once the candidate has landed.
+          onCompositionStart={() => onComposingChange(true)}
+          onCompositionEnd={(e) => {
+            onComposingChange(false);
+            onCompositionEnd(e.currentTarget.value, e.currentTarget.selectionStart ?? 0);
+          }}
         />
       </div>
       <div className="composer-toolbar">

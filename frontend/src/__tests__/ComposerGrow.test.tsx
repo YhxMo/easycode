@@ -19,6 +19,8 @@ function fieldProps(value: string, fieldRef: RefObject<HTMLTextAreaElement | nul
     onChange: () => {},
     onKeyDown: () => {},
     onSelectionChange: () => {},
+    onComposingChange: () => {},
+    onCompositionEnd: () => {},
     onSend: () => {},
     onStop: () => {},
     fieldRef,

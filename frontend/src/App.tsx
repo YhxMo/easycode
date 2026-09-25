@@ -255,6 +255,25 @@ export default function App() {
     [drafts, draftKey],
   );
 
+  // IME composition (Chinese/Japanese input) owns the field while it runs. The
+  // ref guards the caret restore below — writing a selection into the field
+  // mid-composition is what turns a pinyin buffer into stray latin text — and
+  // the state gates everything derived from the token under the caret.
+  const composingRef = useRef(false);
+  const [composing, setComposing] = useState(false);
+  /** The field's new text and caret, once the user (not the IME) is done editing. */
+  const syncComposer = useCallback(
+    (value: string, nextCaret: number) => {
+      setInput(value);
+      setCaret(nextCaret);
+      setCmdOpen(value.startsWith("/"));
+      setCmdIndex(0);
+      setMentionIndex(0);
+      setMentionOff(false);
+    },
+    [setCaret, setInput],
+  );
+
   const {
     send,
     stop,
@@ -355,7 +374,10 @@ export default function App() {
   // `@` references: fetch the listing for the token under the caret, debounced
   // so typing does not fire a request per keystroke. A reply is used only while
   // it still matches the scope and the query it was fetched for.
-  const mentionInfo = useMemo(() => mentionToken(input, caret), [input, caret]);
+  const mentionInfo = useMemo(
+    () => (composing ? null : mentionToken(input, caret)),
+    [input, caret, composing],
+  );
   const mentionScope = JSON.stringify([currentId, chosenRoot, secondary]);
   const mentionQuery = mentionInfo?.query ?? null;
   useEffect(() => {
@@ -523,9 +545,11 @@ export default function App() {
 
   // Restore the caret a conversation was left at. The field keeps the focus it
   // has: this only puts the insertion point where the user stopped typing.
+  // Never while an IME is composing — the selection belongs to it until the
+  // candidate lands.
   useEffect(() => {
     const field = fieldRef.current;
-    if (!field) return;
+    if (!field || composingRef.current) return;
     const pos = Math.min(drafts.get(draftKey).caret, field.value.length);
     if (field.selectionStart !== pos || field.selectionEnd !== pos) {
       field.setSelectionRange(pos, pos);
@@ -995,15 +1019,22 @@ export default function App() {
       permissionDisabled={busy || sendBlocked}
       onPermission={changePermission}
       onChange={(v, nextCaret) => {
-        setInput(v);
-        setCaret(nextCaret);
-        setCmdOpen(v.startsWith("/"));
-        setCmdIndex(0);
-        setMentionIndex(0);
-        setMentionOff(false);
+        if (composingRef.current) {
+          // The controlled value still has to follow the field — React would
+          // otherwise write the stale text back over the IME's buffer — but
+          // nothing else moves until the candidate lands.
+          setInput(v);
+          return;
+        }
+        syncComposer(v, nextCaret);
       }}
       onKeyDown={onComposerKeyDown}
       onSelectionChange={setCaret}
+      onComposingChange={(next) => {
+        composingRef.current = next;
+        setComposing(next);
+      }}
+      onCompositionEnd={(v, nextCaret) => syncComposer(v, nextCaret)}
       fieldRef={fieldRef}
       menuOpen={mentionOpen || commandMatches.length > 0}
       menuId={mentionOpen ? MENTION_LIST_ID : COMMAND_LIST_ID}
