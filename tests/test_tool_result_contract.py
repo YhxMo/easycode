@@ -26,6 +26,7 @@ FIXTURES = (
 
 
 def _workspace(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.ts").write_text(
         "export const a = 1;\nexport const b = 2;\n", encoding="utf-8"
@@ -39,13 +40,19 @@ def _run(root: Path, name: str, args: dict) -> dict:
 
 
 def test_result_shapes_match_the_frontend_fixture(tmp_path):
-    root = _workspace(tmp_path)
+    root = _workspace(tmp_path / "ws")
+    # A file the session may read but does not own: its display path stays
+    # absolute, which is how the pane knows no preview link can be opened.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.txt").write_text("external note\n", encoding="utf-8")
     fixture = json.loads(FIXTURES.read_text(encoding="utf-8"))
 
     produced = {
         "read_file": {
             "ok": _run(root, "read_file", {"path": "src/app.ts"}),
             "error": _run(root, "read_file", {"path": "src/nope.ts"}),
+            "outside": _run(root, "read_file", {"path": str(outside / "note.txt")}),
         },
         "grep": {
             "ok": _run(root, "grep", {"pattern": "export", "include": "*.ts"}),

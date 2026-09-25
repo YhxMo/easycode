@@ -113,7 +113,10 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
     case "done":
       return finishDone(prev);
     case "error":
-      return [...interruptPending(prev), { kind: "error", text: ev.error ?? "error" }];
+      return [
+        ...interruptPending(prev),
+        { kind: "error", text: ev.error ?? "error", code: ev.code },
+      ];
     case "approval_required":
       return [
         ...prev,

@@ -45,6 +45,7 @@ export function ContextCards({ cards, onOpen }: Props) {
           <article key={card.id} className={`ctx-card ${card.status}`}>
             <header className="ctx-head">
               <span className="ctx-title">{card.title}</span>
+              {card.rootLabel && <span className="ctx-root">{card.rootLabel}</span>}
               <span className="ctx-meta tabular">{card.meta}</span>
             </header>
             {card.kind === "search" && card.sourceLabel && (
@@ -69,6 +70,7 @@ export function ContextCards({ cards, onOpen }: Props) {
                       {hit.label}
                       {hit.line ? `:${hit.line}` : ""}
                     </span>
+                    {hit.rootLabel && <span className="ctx-root">{hit.rootLabel}</span>}
                     <span className="ctx-arrow" aria-hidden="true">
                       ↗
                     </span>
@@ -83,7 +85,7 @@ export function ContextCards({ cards, onOpen }: Props) {
               <button
                 type="button"
                 className="ctx-source"
-                title={`预览 ${card.previewTarget}`}
+                title={`预览 ${card.sourceLabel}`}
                 onClick={() => onOpen(card.previewTarget as string)}
               >
                 <SourceIcon />
@@ -92,6 +94,11 @@ export function ContextCards({ cards, onOpen }: Props) {
                   ↗
                 </span>
               </button>
+            )}
+            {/* A link that can only be refused is worse than none: the excerpt
+                above is what this turn actually read. */}
+            {!hits.length && card.previewBlocked && (
+              <p className="ctx-blocked">{card.previewBlocked}</p>
             )}
           </article>
         );

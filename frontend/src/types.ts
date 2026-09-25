@@ -38,4 +38,6 @@ export type Item =
   | { kind: "todo"; todos: TodoItem[] }
   | { kind: "review"; text: string }
   | { kind: "notice"; text: string }
-  | { kind: "error"; text: string };
+  /** A terminal error. `code` marks one the server produced deliberately (e.g. a
+   *  configured iteration ceiling), which is a turn that can be continued. */
+  | { kind: "error"; text: string; code?: string };

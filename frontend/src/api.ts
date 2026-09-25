@@ -12,7 +12,7 @@ export type ChatEvent =
   | { type: "text"; content?: string }
   | { type: "tool_start"; tool_call: ToolCall }
   | { type: "tool_result"; tool_call: ToolCall; result?: string }
-  | { type: "error"; error?: string }
+  | { type: "error"; error?: string; code?: string }
   | { type: "done" }
   | { type: "cancelled" }
   | { type: "approval_required"; approval_id: string; tool_call: ToolCall; reason?: string; scope?: string }
@@ -42,10 +42,19 @@ export interface ApprovalRecord {
   decision: ApprovalDecision;
 }
 
+/** A terminal error the server produced, tied to the user turn it ended. */
+export interface TurnFailure {
+  /** Timestamp of that turn's user message; a reload uses it to place the error. */
+  time?: string;
+  message: string;
+  code?: string;
+}
+
 export interface SessionDetail extends SessionSummary {
   messages: HistoryMessage[];
   approvals?: ApprovalRecord[];
   user_times?: string[];
+  turn_failures?: TurnFailure[];
   todos?: TodoItem[];
 }
 

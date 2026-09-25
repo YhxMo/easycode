@@ -16,6 +16,19 @@
     "error": {
       "status": "error",
       "message": "not a file: src/nope.ts"
+    },
+    "outside": {
+      "status": "ok",
+      "path": "/tmp/other/note.txt",
+      "absolute_path": "/tmp/other/note.txt",
+      "in_allowed": false,
+      "start_line": 1,
+      "end_line": 1,
+      "total_lines": 1,
+      "truncated": false,
+      "lines": 1,
+      "chars": 44,
+      "content": "1: external note\n\n(End of file - total 1 lines)"
     }
   },
   "grep": {

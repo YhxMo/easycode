@@ -259,6 +259,29 @@ describe("App", () => {
     expect(await screen.findByText("任务清单")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /任务清单/ }));
     expect(await screen.findByText("遗留步骤")).toBeTruthy();
+    // 恢复出来的清单不是“当前进度”
+    expect(screen.getByText("上次清单")).toBeTruthy();
+  });
+
+  it("本轮更新过清单就不标为上次清单", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
+    const stream = captureStream();
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await user.type(composerField(), "go");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => {
+      stream.get()?.({ type: "todo", todos: [{ text: "本轮步骤", status: "in_progress" }] });
+    });
+
+    await screen.findByText("本轮步骤");
+    expect(screen.queryByText("上次清单")).toBeNull();
   });
 
   it("置顶会话后出现在置顶分区", async () => {

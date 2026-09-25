@@ -32,12 +32,15 @@ export function ChatMessages({
   currentModelName,
   onDecide,
   onOpenTasks,
+  onContinue,
 }: {
   items: Item[];
   busy: boolean;
   currentModelName: string;
   onDecide: (item: ApprovalItem, approve: boolean, always: boolean) => void;
   onOpenTasks: () => void;
+  /** Fill the composer with a continuation prompt; never sends on its own. */
+  onContinue: () => void;
 }) {
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null);
   const copyMessage = useCallback((text: string, index: number) => {
@@ -162,7 +165,20 @@ export function ChatMessages({
     }
     rows.push(
       <div key={i} className="msg error">
-        {it.text}
+        <span>{it.text}</span>
+        {/* A turn the server ended on purpose (a configured ceiling, say) is
+            unfinished business: offering to pick it up is not the same as
+            resending it, so this only fills the composer. */}
+        {it.code && (
+          <button
+            type="button"
+            className="msg-continue"
+            title="把继续提示填入输入框（不会自动发送）；发送前先核对工作区现状"
+            onClick={onContinue}
+          >
+            继续未完成任务
+          </button>
+        )}
       </div>,
     );
   });

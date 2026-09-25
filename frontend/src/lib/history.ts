@@ -53,10 +53,18 @@ export interface HistoryMessage {
   [key: string]: unknown;
 }
 
+/** A server-produced terminal error, tied to the user turn it ended. */
+export interface TurnFailure {
+  time?: string;
+  message: string;
+  code?: string;
+}
+
 export function historyToItems(
   messages: HistoryMessage[],
   approvals: ApprovalRecord[] = [],
   userTimes: string[] = [],
+  failures: TurnFailure[] = [],
 ): Item[] {
   const items: Item[] = [];
   const toolResults = new Map<string, string>();
@@ -65,10 +73,22 @@ export function historyToItems(
   }
   const approvalByCall = new Map<string, ApprovalRecord>();
   for (const a of approvals) approvalByCall.set(String(a.tool_call_id), a);
+  const failureByTime = new Map<string, TurnFailure>();
+  for (const f of failures) if (f.time) failureByTime.set(f.time, f);
   let userIndex = 0;
+  // The error ended its turn, so it belongs at the end of that turn — not
+  // beside the prompt that started it.
+  let pending: TurnFailure | null = null;
+  const flushFailure = () => {
+    if (pending) items.push({ kind: "error", text: pending.message, code: pending.code });
+    pending = null;
+  };
   for (const m of messages) {
     if (m.role === "user") {
-      items.push({ kind: "user", text: String(m.content ?? ""), time: userTimes[userIndex] });
+      flushFailure();
+      const time = userTimes[userIndex];
+      pending = (time && failureByTime.get(time)) || null;
+      items.push({ kind: "user", text: String(m.content ?? ""), time });
       userIndex += 1;
     } else if (m.role === "assistant") {
       if (m.content) items.push({ kind: "assistant", text: String(m.content) });
@@ -101,5 +121,6 @@ export function historyToItems(
       }
     }
   }
+  flushFailure();
   return items;
 }

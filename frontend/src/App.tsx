@@ -66,6 +66,11 @@ import { SecondaryEditor } from "./SecondaryEditor";
 
 const EMPTY_MODELS: ModelsInfo = { default: "", models: {}, providers: {}, limits: {} };
 
+
+/** Offered after a turn the server ended on purpose; filled in, never sent. */
+const CONTINUE_PROMPT =
+  "继续完成上一轮未完成的任务。先核对工作区里已经发生的改动和任务清单，再决定下一步。";
+
 /** Right-hand pane sections; phase 4 fills their bodies. */
 const PANE_SECTIONS: PaneSection[] = [
   { id: "tasks", label: "任务" },
@@ -512,7 +517,12 @@ export default function App() {
           // A live turn owns its conversation's items: the disk snapshot lags
           // behind it and would drop the streamed reply and its pending approval.
           if (!isStreaming(id)) {
-            const restored = historyToItems(detail.messages, detail.approvals, detail.user_times);
+            const restored = historyToItems(
+              detail.messages,
+              detail.approvals,
+              detail.user_times,
+              detail.turn_failures,
+            );
             // The task list is session state, not a message: it rides at the end
             // of the stream so a reopened session still shows it.
             if (detail.todos?.length) restored.push({ kind: "todo", todos: detail.todos });
@@ -855,6 +865,10 @@ export default function App() {
   // history must not pop it open on load.
   const liveTurn =
     busy || turn.some((it) => it.kind === "assistant" && typeof it.durationMs === "number");
+  // The pane keeps the newest list on screen after its turn ends, so a list
+  // written earlier reads as the current progress unless it is labelled. Only a
+  // turn that actually ran here counts — a restored list never describes now.
+  const listIsStale = todos.length > 0 && !(turnTodos && liveTurn);
   const hasArtifacts = pane.context.length > 0 || pane.changes.length > 0 || turnTodos;
   const paneSelf = paneState[draftKey];
   const paneOpen =
@@ -1004,6 +1018,18 @@ export default function App() {
       pickMention,
     ],
   );
+
+  /**
+   * A continuation the user has to agree to: the prompt goes into the composer
+   * and nothing is sent. What the interrupted turn already did is still on
+   * disk, so the message tells the model to look before it acts.
+   */
+  const continueUnfinished = useCallback(() => {
+    // Never overwrite what the user is writing: the draft is theirs.
+    if (!drafts.get(draftKey).text.trim()) setInput(CONTINUE_PROMPT);
+    fieldRef.current?.focus();
+    sticky.stick();
+  }, [drafts, draftKey, setInput, sticky]);
 
   // One composer, two placements: the centred first-run card, or docked over
   // the message stream. Only one of them is mounted at a time.
@@ -1225,6 +1251,7 @@ export default function App() {
                   busy={busy}
                   currentModelName={currentModelName}
                   onDecide={decideApproval}
+                  onContinue={continueUnfinished}
                   onOpenTasks={() => {
                     chooseSection("tasks");
                     setPane(true);
@@ -1263,7 +1290,7 @@ export default function App() {
           onSelect={chooseSection}
           onClose={() => setPane(false)}
         >
-          {paneSection === "tasks" && <TaskRows todos={todos} />}
+          {paneSection === "tasks" && <TaskRows todos={todos} stale={listIsStale} />}
           {paneSection === "context" && (
             <ContextCards
               cards={pane.context}

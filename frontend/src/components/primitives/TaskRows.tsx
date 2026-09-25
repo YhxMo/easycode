@@ -33,7 +33,7 @@ function counts(todos: TodoItem[]) {
 }
 
 /** The task list the model maintains, for the pane's 任务 section. */
-export function TaskRows({ todos }: { todos: TodoItem[] }) {
+export function TaskRows({ todos, stale = false }: { todos: TodoItem[]; stale?: boolean }) {
   if (!todos.length) {
     return <p className="pane-empty">这一轮还没有任务清单。多步任务会在这里列出来。</p>;
   }
@@ -42,6 +42,9 @@ export function TaskRows({ todos }: { todos: TodoItem[] }) {
     <div className="task-list">
       <div className="pane-group-title">
         任务清单
+        {/* The list outlives the turn that wrote it; without this the pane reads
+            as if it were the progress of whatever is running now. */}
+        {stale && <span className="task-stale">上次清单</span>}
         <span className="pane-count tabular">
           {done}/{total} 完成
         </span>
