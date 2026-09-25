@@ -1,9 +1,9 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { detail, primeApiMock, session, sidebarRow } from "./helpers";
+import { composerField, detail, primeApiMock, session, sidebarRow } from "./helpers";
 
 // Concurrency contract: a turn owns its own conversation slot. Switching the
 // foreground away neither interrupts it nor lets its output leak into another
@@ -48,7 +48,7 @@ describe("App · 并发流", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "first");
+    await user.type(composerField(), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
 
@@ -74,13 +74,13 @@ describe("App · 并发流", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "first");
+    await user.type(composerField(), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
 
     // A second conversation starts its own turn while the first is still open.
     await user.click(sidebarRow("会话B"));
-    await user.type(screen.getByRole("textbox"), "second");
+    await user.type(composerField(), "second");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(2));
 
@@ -100,12 +100,12 @@ describe("App · 并发流", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "first");
+    await user.type(composerField(), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
 
     await user.click(sidebarRow("会话B"));
-    await user.type(screen.getByRole("textbox"), "second");
+    await user.type(composerField(), "second");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(2));
 
@@ -116,5 +116,60 @@ describe("App · 并发流", () => {
 
     await act(async () => streams[0].resolve());
     await waitFor(() => expect(screen.getByRole("button", { name: /发送消息/ })).toBeTruthy());
+  });
+});
+
+/** The sidebar block of one working directory, by its display name. */
+function projectGroup(name: string): HTMLElement {
+  const group = [...document.querySelectorAll<HTMLElement>(".project-group")].find(
+    (el) => el.querySelector(".project-group-name")?.textContent === name,
+  );
+  if (!group) throw new Error(`没有找到项目分组: ${name}`);
+  return group;
+}
+
+describe("App · 并发与新建会话", () => {
+  it("A 正在输出时，仍能在项目 B 新建会话并发送", async () => {
+    const user = userEvent.setup();
+    const streams = captureStreams();
+    m.fetchSessions.mockResolvedValue([
+      { ...session("A", "会话A"), root: "/repoA" },
+      { ...session("B", "会话B"), root: "/repoB" },
+    ]);
+    m.fetchWorkspaces.mockResolvedValue({
+      projects: [
+        { root: "/repoA", secondary: [] },
+        { root: "/repoB", secondary: ["/shared"] },
+      ],
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await user.type(composerField(), "a turn");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(streams.length).toBe(1));
+
+    // A's turn neither disables nor redirects B's entry point.
+    const newInB = within(projectGroup("repoB")).getByRole("button", {
+      name: "在此项目下新建会话",
+    }) as HTMLButtonElement;
+    expect(newInB.disabled).toBe(false);
+    await user.click(newInB);
+
+    await user.type(composerField(), "b turn");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(streams.length).toBe(2));
+    expect(m.streamChat).toHaveBeenLastCalledWith(
+      null,
+      "b turn",
+      expect.any(Function),
+      expect.objectContaining({ root: "/repoB", secondary_roots: ["/shared"] }),
+    );
+    // A keeps running: nothing was cancelled on its behalf.
+    expect(m.cancelSessionChat).not.toHaveBeenCalled();
+    await act(async () => streams[0].onEvent({ type: "text", content: "A 仍在输出" }));
+    await user.click(sidebarRow("会话A"));
+    await screen.findByText("A 仍在输出");
   });
 });

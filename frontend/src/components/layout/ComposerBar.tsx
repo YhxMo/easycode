@@ -1,5 +1,9 @@
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { PermissionPicker } from "../../PermissionPicker";
+import { FIELD_MIN_HEIGHT, useAutoGrow } from "../../lib/useAutoGrow";
+
+/** `.composer-tall .composer-field` starts taller than the docked field. */
+const TALL_MIN_HEIGHT = 72;
 
 interface Props {
   /** `tall` is the centred first-run card; `docked` floats over the message stream. */
@@ -25,6 +29,10 @@ interface Props {
   voice?: { supported: boolean; listening: boolean; toggle: () => void };
   /** Command or mention menu, anchored above the field. */
   menu?: ReactNode;
+  /** Combobox wiring for that menu, so the field announces its candidates. */
+  menuOpen?: boolean;
+  menuId?: string;
+  activeOptionId?: string;
   hint?: string;
 }
 
@@ -48,7 +56,14 @@ export function ComposerBar({
   voice,
   menu,
   hint,
+  menuOpen = false,
+  menuId,
+  activeOptionId,
 }: Props) {
+  // The centred first-run field starts taller but shares the growth logic; the
+  // heights mirror `.composer-field` / `.composer-tall .composer-field`.
+  useAutoGrow(fieldRef, value, variant === "tall" ? TALL_MIN_HEIGHT : FIELD_MIN_HEIGHT);
+
   return (
     <div className={`composer composer-${variant}`}>
       <div className="cmd-wrap">
@@ -59,7 +74,12 @@ export function ComposerBar({
           value={value}
           aria-label={ariaLabel}
           placeholder={placeholder}
-          rows={variant === "tall" ? 3 : 1}
+          rows={1}
+          role="combobox"
+          aria-expanded={menuOpen}
+          aria-controls={menuId}
+          aria-activedescendant={activeOptionId}
+          aria-autocomplete="list"
           onChange={(e) => onChange(e.target.value, e.target.selectionStart ?? 0)}
           onKeyDown={onKeyDown}
           onSelect={(e) => onSelectionChange(e.currentTarget.selectionStart ?? 0)}

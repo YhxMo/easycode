@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
+import { Modal } from "./components/Modal";
 import { useDismiss } from "./lib/useDismiss";
 import type { AddModelBody, ModelsInfo, UpdateModelBody } from "./api";
 import { addModel, deleteModel, fetchModel, fetchModels, switchModel, updateModel } from "./api";
@@ -174,11 +175,18 @@ function EyeOffIcon() {
 export function ModelPicker({
   models,
   current,
+  sessionAlias,
+  switchingBlocked,
   onChange,
   onError,
 }: {
   models: ModelsInfo;
+  /** Alias the global default points at: the checkmark and the no-op check. */
   current: string;
+  /** Alias the conversation on screen really runs on, when it has one. */
+  sessionAlias: string | null;
+  /** A turn is running somewhere on this page: switching has to wait. */
+  switchingBlocked: boolean;
   onChange: (m: ModelsInfo) => void;
   onError?: (msg: string) => void;
 }) {
@@ -233,8 +241,8 @@ export function ModelPicker({
   };
 
   const handleSwitch = async (alias: string) => {
+    if (switchingBlocked || alias === current) return;
     setOpen(false);
-    if (alias === current) return;
     setBusy(true);
     try {
       onChange(await switchModel(alias));
@@ -338,6 +346,9 @@ export function ModelPicker({
   };
 
   const activeModel = models.models[current] !== undefined ? current : Object.keys(models.models)[0] || "";
+  // The field belongs to the conversation in front of it, so it names that
+  // conversation's model — never the global default masquerading as one.
+  const triggerAlias = sessionAlias ?? activeModel;
   const displayNameFor = (alias: string) => models.models[alias]?.model || alias;
   const providerFor = (alias: string) => models.providers[alias] ?? "custom";
   const providerGroups = Object.keys(models.models)
@@ -385,8 +396,11 @@ export function ModelPicker({
             setOpen(!open);
           }}
         >
-          <span className="dropdown-value" title={displayNameFor(activeModel)}>
-            {activeModel ? displayNameFor(activeModel) : "选择模型"}
+          <span
+            className="dropdown-value"
+            title={triggerAlias ? `${triggerAlias} · ${displayNameFor(triggerAlias)}` : undefined}
+          >
+            {triggerAlias ? displayNameFor(triggerAlias) : "选择模型"}
           </span>
           <span className="dropdown-caret" aria-hidden="true">
             ⌄
@@ -396,7 +410,14 @@ export function ModelPicker({
         {open && (
           <div className="custom-dropdown-menu model-menu" ref={menuPanelRef}>
             <div className="model-menu-list">
-              <div className="dropdown-menu-header">切换模型</div>
+              <div className="dropdown-menu-header">
+                <span>切换模型</span>
+                <small>
+                  {switchingBlocked
+                    ? "有会话正在运行，结束后才能切换"
+                    : "切换会影响所有已有会话及新会话"}
+                </small>
+              </div>
               {orderedProviders.map((provider) => (
                 <div className="model-provider-group" key={provider}>
                   <div className="model-provider-label">{providerLabel(provider)}</div>
@@ -410,6 +431,7 @@ export function ModelPicker({
                       <button
                         type="button"
                         className="custom-dropdown-item model-choice"
+                        disabled={switchingBlocked}
                         onClick={() => handleSwitch(alias)}
                       >
                         <span className="dropdown-item-check" aria-hidden="true">
@@ -485,101 +507,105 @@ export function ModelPicker({
         )}
       </div>
 
-      {showAdd && (
-        <div className="modal-overlay" onClick={() => setShowAdd(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>添加模型</h3>
-            <ModelFields
-              form={form}
-              setForm={setForm}
-              formatRef={formatRef}
-              formatOpen={formatOpen}
-              setFormatOpen={setFormatOpen}
-            />
-            <label>
-              API Key
-              <input
-                type="password"
-                value={form.api_key}
-                placeholder="输入该模型专用 API Key"
-                onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-              />
-            </label>
-            <div className="modal-actions">
-              <button type="button" onClick={() => setShowAdd(false)}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={submitAdd}
-                disabled={busy || !form.alias.trim() || !form.model.trim()}
-              >
-                {busy ? "…" : "添加"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal
+        open={showAdd}
+        onClose={() => setShowAdd(false)}
+        title="添加模型"
+        variant="model-form-modal"
+        actions={
+          <>
+            <button type="button" className="modal-cancel" onClick={() => setShowAdd(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={submitAdd}
+              disabled={busy || !form.alias.trim() || !form.model.trim()}
+            >
+              {busy ? "…" : "添加"}
+            </button>
+          </>
+        }
+      >
+        <ModelFields
+          form={form}
+          setForm={setForm}
+          formatRef={formatRef}
+          formatOpen={formatOpen}
+          setFormatOpen={setFormatOpen}
+        />
+        <label>
+          API Key
+          <input
+            type="password"
+            value={form.api_key}
+            placeholder="输入该模型专用 API Key"
+            onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+          />
+        </label>
+      </Modal>
 
-      {showEdit && (
-        <div className="modal-overlay" onClick={() => setShowEdit(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>编辑模型</h3>
-            <ModelFields
-              form={form}
-              setForm={setForm}
-              formatRef={formatRef}
-              formatOpen={formatOpen}
-              setFormatOpen={setFormatOpen}
+      <Modal
+        open={showEdit}
+        onClose={() => setShowEdit(false)}
+        title="编辑模型"
+        variant="model-form-modal"
+        actions={
+          <>
+            <button type="button" className="modal-cancel" onClick={() => setShowEdit(false)}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={submitEdit}
+              disabled={busy || !form.alias.trim() || !form.model.trim()}
+            >
+              {busy ? "…" : "保存"}
+            </button>
+          </>
+        }
+      >
+        <ModelFields
+          form={form}
+          setForm={setForm}
+          formatRef={formatRef}
+          formatOpen={formatOpen}
+          setFormatOpen={setFormatOpen}
+        />
+        <label>
+          API Key
+          <span className="secret-input-row">
+            <input
+              type={revealKey ? "text" : "password"}
+              value={form.api_key}
+              placeholder="输入该模型专用 API Key"
+              onChange={(e) => setForm({ ...form, api_key: e.target.value, clear_key: false })}
             />
-            <label>
-              API Key
-              <span className="secret-input-row">
-                <input
-                  type={revealKey ? "text" : "password"}
-                  value={form.api_key}
-                  placeholder="输入该模型专用 API Key"
-                  onChange={(e) => setForm({ ...form, api_key: e.target.value, clear_key: false })}
-                />
-                <button
-                  type="button"
-                  className="secret-toggle"
-                  title={revealKey ? "隐藏 API Key" : "显示 API Key"}
-                  aria-label={revealKey ? "隐藏 API Key" : "显示 API Key"}
-                  onClick={() => setRevealKey(!revealKey)}
-                >
-                  {revealKey ? <EyeOffIcon /> : <EyeIcon />}
-                </button>
-              </span>
-            </label>
-            <div className="modal-inline-actions">
-              <button
-                type="button"
-                className="clear-key"
-                disabled={busy || (!hasStoredKey && !form.api_key)}
-                onClick={() => setForm({ ...form, api_key: "", clear_key: true })}
-              >
-                清除密钥
-              </button>
-              {form.clear_key && <span>保存后将删除该模型凭据</span>}
-            </div>
-            <div className="modal-actions">
-              <button type="button" onClick={() => setShowEdit(false)}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={submitEdit}
-                disabled={busy || !form.alias.trim() || !form.model.trim()}
-              >
-                {busy ? "…" : "保存"}
-              </button>
-            </div>
-          </div>
+            <button
+              type="button"
+              className="secret-toggle"
+              title={revealKey ? "隐藏 API Key" : "显示 API Key"}
+              aria-label={revealKey ? "隐藏 API Key" : "显示 API Key"}
+              onClick={() => setRevealKey(!revealKey)}
+            >
+              {revealKey ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          </span>
+        </label>
+        <div className="modal-inline-actions">
+          <button
+            type="button"
+            className="clear-key"
+            disabled={busy || (!hasStoredKey && !form.api_key)}
+            onClick={() => setForm({ ...form, api_key: "", clear_key: true })}
+          >
+            清除密钥
+          </button>
+          {form.clear_key && <span>保存后将删除该模型凭据</span>}
         </div>
-      )}
+      </Modal>
     </div>
   );
 }

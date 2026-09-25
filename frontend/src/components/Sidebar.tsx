@@ -5,7 +5,6 @@ import type { StreamActivityMap } from "../useChatStream";
 import { ProjectMenu, type ProjectAction } from "../ProjectMenu";
 import { ProjectPicker } from "../ProjectPicker";
 import { SecondaryEditor } from "../SecondaryEditor";
-import { basename, DEFAULT_PROJECT } from "../lib/paths";
 import type { ProjectGroup, SessionGroups } from "../lib/sessionGroups";
 
 /** Working directories listed before the project list spills. */
@@ -55,6 +54,8 @@ export interface SidebarProps {
   /** Current view version, for dropping superseded secondary-root saves. */
   viewToken: RefObject<number>;
   workspaces: WorkspacesInfo;
+  /** False until the workspace list has been fetched once (loading card state). */
+  workspacesLoaded: boolean;
   chosenRoot: string | null;
   currentRoot: string | null;
   /** Secondary roots of the draft (new session) or open session. */
@@ -88,6 +89,7 @@ export function Sidebar({
   sessionBlocked,
   viewToken,
   workspaces,
+  workspacesLoaded,
   chosenRoot,
   currentRoot,
   secondary,
@@ -108,48 +110,53 @@ export function Sidebar({
 }: SidebarProps) {
   const [showAllProjects, setShowAllProjects] = useState(false);
 
-  /** One conversation row: runs/awaits-approval state plus open/delete. */
+  /** One conversation row: open it, or act on it from its own buttons. */
   const sessionRow = (s: SessionSummary) => {
     const act = activity[s.id];
     return (
       <div
         key={s.id}
         className={`session-item${s.id === currentId ? " active" : ""}${act?.busy ? " running" : ""}`}
-        onClick={() => onOpenSession(s.id)}
       >
-        <span className="session-title" title={s.title}>
-          {s.title}
-        </span>
-        {act?.busy && <span className="session-run" title="正在运行" aria-label="正在运行" />}
         <button
           type="button"
-          className={`session-pin${s.pinned ? " on" : ""}`}
-          title={s.pinned ? "取消置顶" : "置顶会话"}
-          aria-label={s.pinned ? "取消置顶" : "置顶会话"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin(s);
-          }}
+          className="session-open"
+          title={s.title}
+          aria-current={s.id === currentId ? "page" : undefined}
+          onClick={() => onOpenSession(s.id)}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M9.5 4h5l-.7 5.2 2.7 2.6v1.7H7.5v-1.7l2.7-2.6z" />
-            <path d="M12 13.5V20" />
-          </svg>
+          <span className="session-title">{s.title}</span>
+          {act?.busy && <span className="session-run" aria-label="正在运行" />}
         </button>
         {act?.approvals ? (
           <span className="session-ask" title={`${act.approvals} 个待批准`}>
             待批准
           </span>
         ) : null}
-        <span
-          className="session-del"
-          title="删除"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDeleteSession(s);
-          }}
-        >
-          ✕
+        <span className="session-actions">
+          <button
+            type="button"
+            className={`session-pin${s.pinned ? " on" : ""}`}
+            title={s.pinned ? "取消置顶" : "置顶会话"}
+            aria-label={s.pinned ? `取消置顶 ${s.title}` : `置顶会话 ${s.title}`}
+            onClick={() => onTogglePin(s)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M9.5 4h5l-.7 5.2 2.7 2.6v1.7H7.5v-1.7l2.7-2.6z" />
+              <path d="M12 13.5V20" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="session-del"
+            title="删除"
+            aria-label={`删除会话 ${s.title}`}
+            onClick={() => onDeleteSession(s)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
         </span>
       </div>
     );
@@ -184,7 +191,6 @@ export function Sidebar({
               className="group-new-btn"
               title="在此项目下新建会话"
               aria-label="在此项目下新建会话"
-              disabled={busy}
               onClick={(e) => {
                 e.stopPropagation();
                 onNewChatInProject(g.root);
@@ -194,7 +200,7 @@ export function Sidebar({
             </button>
             <ProjectMenu
               pinned={g.pinned}
-              disabled={busy}
+              running={g.sessions.some((s) => activity[s.id]?.busy)}
               onAction={(action) => onProjectAction(g.root, action)}
             />
           </div>
@@ -241,26 +247,22 @@ export function Sidebar({
           "sec:dirs",
           "目录",
           <>
-            {currentId === null ? (
+            <div className="dir-area">
               <ProjectPicker
                 workspaces={workspaces}
-                root={chosenRoot}
-                secondary={secondary}
+                loaded={workspacesLoaded}
+                root={currentId === null ? chosenRoot : currentRoot}
+                editable={currentId === null}
                 disabled={busy}
                 viewToken={viewToken}
                 onRoot={onSetChosenRoot}
                 onSecondary={onSetSecondary}
                 onProjects={onProjects}
+                onNewChatHere={onNewChatInProject}
                 onError={onError}
               />
-            ) : (
-              <div className="project-tag" title={currentRoot ?? DEFAULT_PROJECT}>
-                {currentRoot ? basename(currentRoot) : DEFAULT_PROJECT}
-              </div>
-            )}
-            {currentId !== null && (
               <SecondaryEditor
-                root={currentRoot}
+                root={currentId === null ? chosenRoot : currentRoot}
                 secondary={secondary}
                 sessionId={currentId}
                 disabled={busy || sessionBlocked}
@@ -269,9 +271,15 @@ export function Sidebar({
                 onProjects={onProjects}
                 onError={onError}
               />
-            )}
-            <button className="new-btn" type="button" onClick={onNewSession}>
+            </div>
+            <button
+              className="new-btn"
+              type="button"
+              title="在默认工作区新建会话"
+              onClick={onNewSession}
+            >
               <span aria-hidden="true">＋</span> 新会话
+              <small className="new-btn-hint">默认工作区</small>
             </button>
           </>,
         )}
@@ -293,7 +301,9 @@ export function Sidebar({
                 {showAllProjects ? "收起" : "展开显示"}
               </button>
             )}
-            {groups.projects.length === 0 && <div className="session-empty">新会话会保存在这里</div>}
+            {groups.projects.length === 0 && (
+              <div className="session-empty">添加项目以组织会话</div>
+            )}
           </>,
           groups.projects.length || undefined,
         )}
@@ -304,7 +314,7 @@ export function Sidebar({
           groups.recents.length ? (
             groups.recents.map(sessionRow)
           ) : (
-            <div className="session-empty">没有工作目录的会话会显示在这里</div>
+            <div className="session-empty">默认工作区的会话显示在这里</div>
           ),
         )}
 

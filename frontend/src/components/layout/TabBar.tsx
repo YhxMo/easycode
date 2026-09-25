@@ -59,7 +59,13 @@ export function TabBar({ tabs, currentId, activity, onSelect, onClose, onNew }: 
           );
         })}
       </div>
-      <button type="button" className="tab-new" aria-label="新建会话" title="新建会话" onClick={onNew}>
+      <button
+        type="button"
+        className="tab-new"
+        aria-label="新建会话"
+        title="在默认工作区新建会话"
+        onClick={onNew}
+      >
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path d="M12 5v14M5 12h14" />
         </svg>

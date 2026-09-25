@@ -1,5 +1,6 @@
 // Aggregate a turn's tool calls into an expandable trace.
 import type { Item } from "../types";
+import { parseResult, resultStatus } from "./toolResult";
 
 export type StepStatus = "running" | "done" | "error";
 
@@ -11,8 +12,8 @@ export interface TraceStep {
   /** Path, pattern or command the step acted on. */
   detail: string;
   status: StepStatus;
-  /** Raw tool result, pretty-printed when it is JSON. */
-  result?: string;
+  /** Raw tool result, exactly as the backend sent it. */
+  raw?: string;
 }
 
 export interface Trace {
@@ -45,25 +46,17 @@ function detailOf(args: Record<string, unknown>): string {
   return "";
 }
 
-function pretty(result: string | undefined): string | undefined {
-  if (!result) return undefined;
-  try {
-    return JSON.stringify(JSON.parse(result), null, 2);
-  } catch {
-    return result;
-  }
-}
-
 function statusOf(item: Extract<Item, { kind: "tool" }>): StepStatus {
   if (!item.done) return "running";
   if (!item.result) return "done";
-  try {
-    return (JSON.parse(item.result) as { status?: string }).status === "error" ? "error" : "done";
-  } catch {
-    return "done";
-  }
+  return resultStatus(parseResult(item.result)) === "error" ? "error" : "done";
 }
 
+/**
+ * The result is kept exactly as it arrived: formatting every payload while
+ * aggregating a trace was work done for steps the reader never expands. The
+ * one place that needs pretty JSON is the expanded detail itself.
+ */
 export function toolStep(item: Extract<Item, { kind: "tool" }>): TraceStep {
   return {
     id: item.id,
@@ -71,7 +64,7 @@ export function toolStep(item: Extract<Item, { kind: "tool" }>): TraceStep {
     label: LABELS[item.name] ?? item.name,
     detail: detailOf(item.args),
     status: statusOf(item),
-    result: pretty(item.result),
+    raw: item.result,
   };
 }
 

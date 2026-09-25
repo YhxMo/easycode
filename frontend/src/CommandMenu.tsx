@@ -1,6 +1,10 @@
 import { filterCommands, clampCommandIndex } from "./lib/commands";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import type { CommandInfo } from "./api";
+import { useRevealActive } from "./lib/useRevealActive";
+
+/** Id of the listbox the composer field points at with aria-controls. */
+export const COMMAND_LIST_ID = "composer-command-list";
 
 function SkillIcon() {
   return (
@@ -37,9 +41,11 @@ export function CommandMenu({
   onClose: () => void;
 }) {
   const filtered = useMemo(() => filterCommands(commands, query), [commands, query]);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const idx = clampCommandIndex(filtered, index);
+  useRevealActive(boxRef, ".command-item.active", `${idx}:${filtered.length}`);
 
   if (!open || filtered.length === 0) return null;
-  const idx = clampCommandIndex(filtered, index);
 
   // filterCommands returns the list grouped by kind (skill → template →
   // builtin), which is exactly the section order below; the cursor index
@@ -60,7 +66,10 @@ export function CommandMenu({
             const isActive = itemIdx === idx;
             const sourceLabel = c.source === "user" ? "个人" : c.source === "project" ? "项目" : "";
             return (
-              <div
+              <button
+                type="button"
+                role="option"
+                aria-selected={isActive}
                 key={c.name}
                 className={`command-item ${isActive ? "active" : ""}`}
                 onMouseDown={(e) => {
@@ -77,7 +86,7 @@ export function CommandMenu({
                   </span>
                 </div>
                 {sourceLabel && <div className="command-source">{sourceLabel}</div>}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -87,7 +96,7 @@ export function CommandMenu({
 
   return (
     <div className="command-menu">
-      <div className="command-menu-scroll">
+      <div className="command-menu-scroll" ref={boxRef} id={COMMAND_LIST_ID} role="listbox" aria-label="可用命令">
         {renderSection("技能", skills)}
         {renderSection("命令", templates)}
       </div>

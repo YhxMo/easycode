@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { activeTitle, primeApiMock, session, sidebarRow } from "./helpers";
+import { activeTitle, composerField, primeApiMock, session, sidebarRow } from "./helpers";
 
 // New streams are identified by their SSE session event. Navigation abandons old events.
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
@@ -54,7 +54,7 @@ describe("App · 会话归属", () => {
 
     // Send from the new session (sessionId = null); stream stays in flight and
     // crucially has NOT emitted a "session" event yet.
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -82,7 +82,7 @@ describe("App · 会话归属", () => {
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
     await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
 
-    await user.type(screen.getByRole("textbox"), "first");
+    await user.type(composerField(), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -92,7 +92,7 @@ describe("App · 会话归属", () => {
     // The created session inherits the draft's permission selection.
     await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
 
-    await user.type(screen.getByRole("textbox"), "second");
+    await user.type(composerField(), "second");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
     await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(2));
@@ -115,9 +115,9 @@ describe("App · 会话归属", () => {
     render(<App />);
     await screen.findByText("旧会话");
     await user.click(screen.getByRole("button", { name: "在此项目下新建会话" }));
-    expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 2 个目录");
+    expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 2 个目录");
 
-    await user.type(screen.getByRole("textbox"), "go");
+    await user.type(composerField(), "go");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -125,7 +125,7 @@ describe("App · 会话归属", () => {
     await stream.finish();
 
     await waitFor(() =>
-      expect(document.querySelector(".sec-toggle small")?.textContent).toContain(
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain(
         "已连接 2 个目录",
       ),
     );
@@ -139,7 +139,7 @@ describe("App · 会话归属", () => {
     await screen.findByText("会话A");
     expect(activeTitle()).toBe("新会话");
 
-    await user.type(screen.getByRole("textbox"), "bye");
+    await user.type(composerField(), "bye");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -170,13 +170,13 @@ describe("App · 会话归属", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "first");
+    await user.type(composerField(), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(pending.length).toBe(1));
 
     // Switch to B and start a second stream before the first settles.
     await user.click(sidebarRow("会话B"));
-    await user.type(screen.getByRole("textbox"), "second");
+    await user.type(composerField(), "second");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(pending.length).toBe(2));
 

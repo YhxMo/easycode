@@ -1,74 +1,156 @@
 import { describe, expect, it } from "vitest";
-import { paneData } from "../lib/pane";
+import { MAX_HITS, paneData } from "../lib/pane";
 import type { Item } from "../types";
+import fixtures from "./fixtures/toolResults.json";
 
-const tool = (id: string, name: string, args: Record<string, unknown>, result?: string): Item => ({
-  kind: "tool",
-  id,
-  name,
-  args,
-  result,
-  done: true,
-});
+// The samples come from the real Python tools; tests/test_tool_result_contract.py
+// regenerates them and fails when the shapes drift, so these cards assert
+// against structures the backend actually produces.
+const readOk = JSON.stringify(fixtures.read_file.ok);
+const readError = JSON.stringify(fixtures.read_file.error);
+const grepOk = JSON.stringify(fixtures.grep.ok);
+const grepSecondary = JSON.stringify(fixtures.grep.secondary);
+const grepEmpty = JSON.stringify(fixtures.grep.empty);
+const globOk = JSON.stringify(fixtures.glob.ok);
+const globSecondary = JSON.stringify(fixtures.glob.secondary);
+const globEmpty = JSON.stringify(fixtures.glob.empty);
+const editApplied = JSON.stringify(fixtures.edit_file.applied);
+const editDryRun = JSON.stringify(fixtures.edit_file.dry_run);
+const editError = JSON.stringify(fixtures.edit_file.error);
 
-const json = (value: unknown) => JSON.stringify(value);
+const tool = (
+  id: string,
+  name: string,
+  args: Record<string, unknown>,
+  result?: string,
+  done = true,
+): Item => ({ kind: "tool", id, name, args, result, done });
 
-describe("paneData", () => {
-  it("读取文件生成上下文卡片，带字符数", () => {
-    const pane = paneData([
-      tool("1", "read_file", { path: "src/app.ts" }, json({ status: "ok", path: "src/app.ts", chars: 42, content: "export const a = 1;" })),
-    ]);
+describe("paneData · 读取", () => {
+  it("文件卡片读取真实结果，并带上唯一目标", () => {
+    const pane = paneData([tool("1", "read_file", { path: "src/app.ts" }, readOk)]);
     expect(pane.context).toHaveLength(1);
-    expect(pane.context[0].source).toBe("src/app.ts");
-    expect(pane.context[0].title).toBe("app.ts");
-    expect(pane.context[0].meta).toBe("42 字符");
-    expect(pane.context[0].excerpt).toBe("export const a = 1;");
+    const card = pane.context[0];
+    expect(card.title).toBe("app.ts");
+    expect(card.meta).toBe("76 字符");
+    expect(card.status).toBe("ok");
+    // the preview target is the explicit file, not the root-relative display path
+    expect(card.previewTarget).toBe("/tmp/ws/src/app.ts");
   });
 
-  it("缺少 chars 时按内容长度展示", () => {
-    const pane = paneData([
-      tool("1", "read_file", { path: "a.ts" }, json({ status: "ok", path: "a.ts", content: "abcd" })),
-    ]);
-    expect(pane.context[0].meta).toBe("4 字符");
+  it("没有 absolute_path 的历史结果回退到绝对工具参数", () => {
+    const result = JSON.stringify({ status: "ok", path: "src/app.ts", chars: 3, content: "abc" });
+    const pane = paneData([tool("1", "read_file", { path: "/ws/src/app.ts" }, result)]);
+    expect(pane.context[0].previewTarget).toBe("/ws/src/app.ts");
   });
 
-  it("grep 生成搜索卡片，展示匹配数与首条命中", () => {
-    const pane = paneData([
-      tool(
-        "1",
-        "grep",
-        { pattern: "flush" },
-        json({ status: "ok", matches: [{ path: "src/bridge.py", line: 225, text: "flush()" }] }),
-      ),
-    ]);
-    expect(pane.context[0].kind).toBe("search");
-    expect(pane.context[0].source).toBe("flush");
-    expect(pane.context[0].meta).toBe("1 处匹配");
-    expect(pane.context[0].excerpt).toBe("src/bridge.py:225 flush()");
+  it("失败结果标记为错误，并且不提供可能打开错文件的入口", () => {
+    const pane = paneData([tool("1", "read_file", { path: "src/nope.ts" }, readError)]);
+    const card = pane.context[0];
+    expect(card.status).toBe("error");
+    expect(card.meta).toBe("失败");
+    expect(card.excerpt).toBe("not a file: src/nope.ts");
   });
 
-  it("编辑生成变更卡片，没有 diff 的编辑不进入变更", () => {
-    const pane = paneData([
-      tool("1", "edit_file", { path: "a.ts" }, json({ status: "ok", path: "a.ts", diff: "@@ -1 +1 @@" })),
-      tool("2", "write_file", { path: "b.ts" }, json({ status: "error", message: "nope" })),
-    ]);
-    expect(pane.changes).toHaveLength(1);
-    expect(pane.changes[0].path).toBe("a.ts");
-  });
-
-  it("只统计本回合（最后一个用户消息之后）", () => {
-    const items: Item[] = [
-      tool("old", "read_file", { path: "old.ts" }, json({ status: "ok", path: "old.ts" })),
-      { kind: "user", text: "again" },
-      tool("new", "read_file", { path: "new.ts" }, json({ status: "ok", path: "new.ts" })),
-    ];
-    const pane = paneData(items.slice(items.findIndex((it) => it.kind === "user")));
-    expect(pane.context.map((c) => c.source)).toEqual(["new.ts"]);
+  it("还没返回结果的调用不算已获得上下文", () => {
+    const pane = paneData([tool("1", "read_file", { path: "src/app.ts" }, undefined, false)]);
+    expect(pane.context).toHaveLength(0);
   });
 
   it("结果不是 JSON 时不影响其他卡片", () => {
     const pane = paneData([tool("1", "read_file", { path: "a.ts" }, "not json")]);
     expect(pane.context).toHaveLength(1);
     expect(pane.context[0].meta).toBe("0 字符");
+    expect(pane.context[0].status).toBe("empty");
+  });
+});
+
+describe("paneData · 搜索", () => {
+  it("grep 按真实命中生成片段，每行指向它自己的文件", () => {
+    const pane = paneData([tool("1", "grep", { pattern: "export" }, grepOk)]);
+    const card = pane.context[0];
+    expect(card.kind).toBe("search");
+    // the pattern is a label, never the preview target
+    expect(card.sourceLabel).toBe("export");
+    expect(card.previewTarget).toBeUndefined();
+    expect(card.meta).toBe("2 处匹配");
+    expect(card.hits).toEqual([
+      { target: "src/app.ts", label: "src/app.ts", text: "export const a = 1;", line: 1 },
+      { target: "src/app.ts", label: "src/app.ts", text: "export const b = 2;", line: 2 },
+    ]);
+  });
+
+  it("次目录命中用 root 拼出绝对目标", () => {
+    const pane = paneData([tool("1", "grep", { pattern: "hello" }, grepSecondary)]);
+    expect(pane.context[0].hits?.[0].target).toBe("/tmp/extra/note.md");
+  });
+
+  it("没有命中显示空结果，而不是搜索模式本身", () => {
+    const pane = paneData([tool("1", "grep", { pattern: "nothing-here" }, grepEmpty)]);
+    const card = pane.context[0];
+    expect(card.status).toBe("empty");
+    expect(card.meta).toBe("0 处匹配");
+    expect(card.hits).toEqual([]);
+    expect(card.previewTarget).toBeUndefined();
+  });
+
+  it("命中过多时只列出一部分", () => {
+    const matches = Array.from({ length: MAX_HITS + 3 }, (_, i) => ({
+      file: "src/app.ts",
+      line: i + 1,
+      text: `line ${i + 1}`,
+    }));
+    const pane = paneData([
+      tool("1", "grep", { pattern: "x" }, JSON.stringify({ status: "ok", matches })),
+    ]);
+    expect(pane.context[0].hits).toHaveLength(MAX_HITS + 3);
+    expect(pane.context[0].meta).toBe(`${MAX_HITS + 3} 处匹配`);
+  });
+});
+
+describe("paneData · 文件列表", () => {
+  it("glob 字符串结果属于主目录", () => {
+    const pane = paneData([tool("1", "glob", { pattern: "*.md" }, globOk)]);
+    const card = pane.context[0];
+    expect(card.title).toBe("文件列表");
+    expect(card.meta).toBe("2 个文件");
+    expect(card.hits?.map((h) => h.target)).toEqual(["README.md", "src/app.ts"]);
+  });
+
+  it("glob 对象结果带上自己的 root", () => {
+    const pane = paneData([tool("1", "glob", { pattern: "*.md" }, globSecondary)]);
+    expect(pane.context[0].hits?.map((h) => h.target)).toEqual([
+      "README.md",
+      "/tmp/extra/note.md",
+    ]);
+  });
+
+  it("没有匹配的文件列表是空结果", () => {
+    const pane = paneData([tool("1", "glob", { pattern: "*.rs" }, globEmpty)]);
+    expect(pane.context[0].status).toBe("empty");
+    expect(pane.context[0].meta).toBe("0 个文件");
+  });
+});
+
+describe("paneData · 变更", () => {
+  it("已应用的编辑进入变更", () => {
+    const pane = paneData([tool("1", "edit_file", { path: "src/app.ts" }, editApplied)]);
+    expect(pane.changes).toHaveLength(1);
+    expect(pane.changes[0].applied).toBe(true);
+  });
+
+  it("dry_run 只是补丁预览，标注为未应用", () => {
+    const pane = paneData([tool("1", "edit_file", { path: "src/app.ts" }, editDryRun)]);
+    expect(pane.changes).toHaveLength(1);
+    expect(pane.changes[0].applied).toBe(false);
+  });
+
+  it("失败的编辑不显示成成功变更", () => {
+    const pane = paneData([tool("1", "edit_file", { path: "src/app.ts" }, editError)]);
+    expect(pane.changes).toHaveLength(0);
+    const write = paneData([
+      tool("2", "write_file", { path: "b.ts" }, JSON.stringify({ status: "error", message: "x" })),
+    ]);
+    expect(write.changes).toHaveLength(0);
   });
 });

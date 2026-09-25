@@ -1,10 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useRef, useState } from "react";
 import App from "../App";
 import * as api from "../api";
-import { activeTitle, session, sidebarRow } from "./helpers";
+import { activeTitle, composerField, session, sidebarRow } from "./helpers";
 import { Modal } from "../components/Modal";
+import { useDismiss } from "../lib/useDismiss";
 
 // The three inline project/session modals previously used a
 // bare `.modal-backdrop` div with no WAI-ARIA Dialog semantics, no Escape
@@ -134,7 +136,7 @@ describe("App · 删除会话模态框", () => {
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
-    await user.type(screen.getByRole("textbox"), "long task");
+    await user.type(composerField(), "long task");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -153,7 +155,7 @@ describe("App · 删除会话模态框", () => {
     expect(screen.queryByText("late-text")).toBeNull();
 
     // The aborted request settles and the app returns to idle.
-    await waitFor(() => expect(screen.getByText("已连接")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("就绪")).toBeTruthy());
   });
 
   it("删除等待期间切换到其他会话，成功回调不清空新视图", async () => {
@@ -218,5 +220,43 @@ describe("App · 删除会话模态框", () => {
     // not present itself as success.
     expect(document.querySelector(".session-item.active")?.textContent).toContain("会话A");
     expect(screen.getByText("hi")).toBeTruthy();
+  });
+});
+
+// A popover opened inside a dialog owns Escape while it is up: one key press
+// must never close two layers at once.
+function LayeredDialog() {
+  const [modal, setModal] = useState(true);
+  const [popover, setPopover] = useState(true);
+  const ref = useRef<HTMLDivElement>(null);
+  useDismiss(ref, () => setPopover(false), popover);
+  return (
+    <Modal open={modal} onClose={() => setModal(false)} title="层叠">
+      {popover && (
+        <div ref={ref}>
+          <button type="button">选项</button>
+        </div>
+      )}
+      <button type="button" onClick={() => setModal(false)}>
+        关闭
+      </button>
+    </Modal>
+  );
+}
+
+describe("Modal · 分层 Escape", () => {
+  it("Escape 先关闭弹窗里的浮层，再关闭弹窗", async () => {
+    const user = userEvent.setup();
+    render(<LayeredDialog />);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "选项" })).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    // the popover is gone, the dialog is still up
+    expect(screen.queryByRole("button", { name: "选项" })).toBeNull();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

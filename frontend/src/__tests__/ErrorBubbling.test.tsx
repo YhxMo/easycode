@@ -28,11 +28,11 @@ describe("App · 访达选择失败冒泡", () => {
     m.chooseWorkspace.mockRejectedValue(new Error("访达引擎不可用"));
 
     render(<App />);
-    // Foreground is a blank new session (currentId === null), so the sidebar
-    // shows the ProjectPicker with its "用访达添加主目录" button.
-    await screen.findByRole("button", { name: "用访达添加主目录" });
+    // Foreground is a blank new session (currentId === null), so the sidebar's
+    // directory card opens the picker that offers the Finder entry.
+    await user.click(document.querySelector(".project-picker .dir-card-main")!);
 
-    await user.click(screen.getByRole("button", { name: "用访达添加主目录" }));
+    await user.click(screen.getByRole("button", { name: /选择其他目录/ }));
 
     // The error must bubble through ProjectPicker.onError to the app toast
     // instead of living only in the local .picker-error.

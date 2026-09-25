@@ -34,10 +34,15 @@ function SuggestionIcon({ name }: { name: string }) {
 
 interface Props {
   onPick: (text: string) => void;
+  /**
+   * Where the next conversation will run. When a workspace is already in play
+   * the note names it instead of asking for one that is already chosen.
+   */
+  context?: string | null;
   children?: ReactNode;
 }
 
-export function EmptyState({ onPick, children }: Props) {
+export function EmptyState({ onPick, context, children }: Props) {
   const [offset, setOffset] = useState(0);
   const shown = Array.from({ length: VISIBLE }, (_, i) => SUGGESTIONS[(offset + i) % SUGGESTIONS.length]);
 
@@ -58,7 +63,9 @@ export function EmptyState({ onPick, children }: Props) {
           ))}
         </ul>
         <div className="hint-foot">
-          <span className="hint-note">在左侧选择工作区，获得更准确的上下文</span>
+          <span className="hint-note">
+            {context ? `本次会话的上下文：${context}` : "在左侧选择工作区，获得更准确的上下文"}
+          </span>
           <button
             type="button"
             className="hint-shuffle"

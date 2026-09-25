@@ -133,13 +133,12 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
     case "todo": {
       // The task list is session state that the model rewrites wholesale, so it
       // replaces the previous list in place instead of stacking up in history.
+      // Only a summary from *this* turn is rewritten: a restored history's one
+      // belongs to a turn that is already over.
       const todos = ev.todos ?? [];
       let at = -1;
-      for (let i = prev.length - 1; i >= 0; i -= 1) {
-        if (prev[i].kind === "todo") {
-          at = i;
-          break;
-        }
+      for (let i = currentTurnStart(prev) + 1; i < prev.length; i += 1) {
+        if (prev[i].kind === "todo") at = i;
       }
       if (at === -1) return [...prev, { kind: "todo", todos }];
       return prev.map((it, i) => (i === at ? { kind: "todo" as const, todos } : it));

@@ -28,10 +28,15 @@ export interface UseChatStreamParams {
    */
   getViewToken: () => number;
   refreshSessions: () => void;
-  setInput: (v: string) => void;
+  /** Delete exactly the draft a send consumed (never the foreground's). */
+  clearDraft: (key: string) => void;
+  /** Hand the draft of a request that was started as a draft to its session. */
+  moveDraft: (from: string, to: string) => void;
   setCurrentId: (v: string | null) => void;
   /** Called when an approval_required event arrives for the foreground session. */
   onApprovalRequired: () => void;
+  /** A backend-assigned session id, for the tab list. */
+  onSessionNamed: (id: string) => void;
 }
 
 /**
@@ -127,7 +132,9 @@ export function useChatStream(params: UseChatStreamParams) {
     const key = c.currentId ?? DRAFT_KEY;
     if (entries.get(key)?.request) return;
     const viewToken = c.getViewToken();
-    c.setInput("");
+    // Clear exactly the draft this send consumed: text typed in another
+    // conversation (or into the next draft while this one streams) stays.
+    c.clearDraft(key);
     const turnStartedAt = Date.now();
     const modelAtSend = c.currentModelName;
     const request: ActiveRequest = {
@@ -177,6 +184,10 @@ export function useChatStream(params: UseChatStreamParams) {
               next.set(id, entry);
               return next;
             });
+            // An unsent draft belongs to the conversation it was being typed
+            // into, so it follows the id this request claimed.
+            if (from === DRAFT_KEY) c.moveDraft(from, id);
+            c.onSessionNamed(id);
             // Only follow the new session if the user is still on the view that
             // started this turn; otherwise it joins the list in the background.
             if (viewToken === latest.current.getViewToken()) c.setCurrentId(id);

@@ -1,6 +1,7 @@
 // Shared front-end test utilities: the ./api mock surface plus small builders
 // reused by the App-level test files.
 import { vi } from "vitest";
+import { screen } from "@testing-library/react";
 import type { SessionDetail, SessionSummary } from "../api";
 import type { HistoryMessage } from "../lib/history";
 
@@ -12,6 +13,7 @@ export const apiMock = {
   fetchWorkspaces: vi.fn(),
   fetchModels: vi.fn(),
   fetchCommands: vi.fn(),
+  fetchFileContent: vi.fn(),
   setSessionPermission: vi.fn(),
   streamChat: vi.fn(),
   submitApproval: vi.fn(),
@@ -42,6 +44,13 @@ export function primeApiMock(m: typeof apiMock) {
   m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.fetchFiles.mockResolvedValue({ files: [], total: 0 });
+  m.fetchFileContent.mockResolvedValue({
+    path: "",
+    text: "",
+    start_line: 1,
+    total_lines: 0,
+    truncated: false,
+  });
   m.streamChat.mockResolvedValue(undefined);
   m.setSessionPermission.mockImplementation(async (id: string, mode: string) => ({
     id,
@@ -76,8 +85,19 @@ export function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-/** The sidebar row for a conversation — the tab strip shows the same title. */
+/**
+ * The control that opens a conversation from the sidebar — the tab strip shows
+ * the same title. Acting on a row (pin, delete) goes through `sessionRow`.
+ */
 export function sidebarRow(title: string): HTMLElement {
+  const row = sessionRow(title);
+  const open = row.querySelector<HTMLElement>(".session-open");
+  if (!open) throw new Error(`会话行没有打开按钮: ${title}`);
+  return open;
+}
+
+/** The whole row, for the actions that live beside the open button. */
+export function sessionRow(title: string): HTMLElement {
   const row = [...document.querySelectorAll<HTMLElement>(".session-item")].find(
     (el) => el.querySelector(".session-title")?.textContent === title,
   );
@@ -88,4 +108,9 @@ export function sidebarRow(title: string): HTMLElement {
 /** The conversation currently on screen, as named by its active tab. */
 export function activeTitle(): string {
   return document.querySelector(".tab.active .tab-title")?.textContent ?? "";
+}
+
+/** The composer's field: it carries the combobox role while a menu may open. */
+export function composerField(): HTMLTextAreaElement {
+  return screen.getByRole("combobox") as HTMLTextAreaElement;
 }

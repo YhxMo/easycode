@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Trace, TraceStep } from "../../lib/trace";
+import { parseResult, str } from "../../lib/toolResult";
 import { DiffView } from "./DiffView";
 import { ToolChips } from "./ToolChips";
 
@@ -19,32 +20,27 @@ function StatusIcon({ status }: { status: TraceStep["status"] }) {
   );
 }
 
-function parseJsonObject(raw: string | undefined): Record<string, unknown> | null {
-  if (!raw) return null;
-  try {
-    const value: unknown = JSON.parse(raw);
-    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
 /** A tool result, rendered as a patch, a payload body, or plain text. */
 function StepResult({ step }: { step: TraceStep }) {
-  const parsed = parseJsonObject(step.result);
-  const diff = typeof parsed?.diff === "string" ? parsed.diff : null;
+  // Parsed and indented only while expanded: a collapsed step never pays for it.
+  const raw = step.raw ?? "";
+  const parsed = useMemo(() => parseResult(raw), [raw]);
+  const pretty = useMemo(
+    () => (parsed ? JSON.stringify(parsed, null, 2) : raw),
+    [parsed, raw],
+  );
+  const diff = str(parsed?.diff);
   if (diff) {
-    const path = typeof parsed?.path === "string" ? parsed.path : undefined;
-    return <DiffView path={path} diff={diff} />;
+    return <DiffView path={str(parsed?.path) || undefined} diff={diff} />;
   }
-  const message = typeof parsed?.message === "string" && !parsed?.content ? parsed.message : null;
+  const message = str(parsed?.message) && !parsed?.content ? str(parsed?.message) : "";
   if (message) return <pre className="step-result">{message}</pre>;
-  return <pre className="step-result">{step.result}</pre>;
+  return <pre className="step-result">{pretty}</pre>;
 }
 
 function StepRow({ step }: { step: TraceStep }) {
   const [open, setOpen] = useState(false);
-  const expandable = Boolean(step.result);
+  const expandable = Boolean(step.raw);
   return (
     <li className={`trace-step ${step.status}`}>
       <button
@@ -62,7 +58,7 @@ function StepRow({ step }: { step: TraceStep }) {
           </span>
         )}
       </button>
-      {open && step.result && <StepResult step={step} />}
+      {open && step.raw && <StepResult step={step} />}
     </li>
   );
 }

@@ -23,14 +23,18 @@ export function useDismiss(
     const onDoc = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) callback.current();
     };
+    // Capture phase, so a popover inside a dialog sees Escape before the
+    // dialog's own (bubble) listener: the innermost thing closes first.
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") callback.current();
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      callback.current();
     };
     document.addEventListener("mousedown", onDoc);
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     return () => {
       document.removeEventListener("mousedown", onDoc);
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     };
   }, [ref, active]);
 }

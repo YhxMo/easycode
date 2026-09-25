@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { activeTitle, deferred, detail, primeApiMock, session, sidebarRow } from "./helpers";
+import { activeTitle, composerField, deferred, detail, primeApiMock, session, sidebarRow } from "./helpers";
 
 // The App is exercised purely against a mocked ./api. No real backend, no
 // network, no ~/.easycode data (easycode-audit rule 3). SSE is driven by
@@ -44,7 +44,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
     await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
 
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
     await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
@@ -103,7 +103,7 @@ describe("App", () => {
     // Open s1 and start a stream that stays in-flight.
     await user.click(sidebarRow("会话A"));
     await screen.findByText("A-初始");
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -131,7 +131,7 @@ describe("App", () => {
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await screen.findByText("hi");
-    await user.type(screen.getByRole("textbox"), "do it");
+    await user.type(composerField(), "do it");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -181,7 +181,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "new task");
+    await user.type(composerField(), "new task");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -217,7 +217,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "go");
+    await user.type(composerField(), "go");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -272,7 +272,7 @@ describe("App", () => {
 
     // the server is the source of truth: the list comes back pinned
     m.fetchSessions.mockResolvedValue([{ ...session("s1", "会话A"), pinned: true, pinned_at: "2026-02-01T00:00:00Z" }]);
-    await user.click(screen.getByRole("button", { name: "置顶会话" }));
+    await user.click(screen.getByRole("button", { name: /置顶会话/ }));
 
     await waitFor(() => expect(m.pinSession).toHaveBeenCalledWith("s1", true));
     expect(await screen.findByText("置顶")).toBeTruthy();
@@ -289,7 +289,7 @@ describe("App", () => {
     });
 
     render(<App />);
-    const box = await screen.findByRole("textbox");
+    const box = await composerField();
     await user.type(box, "/");
     fireEvent.keyDown(box, { key: "ArrowDown" });
     fireEvent.keyDown(box, { key: "Enter" });
@@ -307,7 +307,7 @@ describe("App", () => {
       render(<App />);
       await screen.findByText("会话A");
       await user.click(sidebarRow("会话A"));
-      await user.type(screen.getByRole("textbox"), "hi");
+      await user.type(composerField(), "hi");
       await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
       const timeEl = await waitFor(() => {
@@ -321,7 +321,7 @@ describe("App", () => {
         vi.advanceTimersByTime(120_000);
       });
       // A re-render (state change) must keep the stamped send time.
-      fireEvent.change(screen.getByRole("textbox"), { target: { value: "x" } });
+      fireEvent.change(composerField(), { target: { value: "x" } });
 
       expect(document.querySelector(".msg-row.user time")?.textContent).toBe(before);
     } finally {
@@ -341,7 +341,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "run");
+    await user.type(composerField(), "run");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
     await screen.findByText("net");
@@ -365,7 +365,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "run");
+    await user.type(composerField(), "run");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
     await screen.findByText("provider exploded");
@@ -384,7 +384,7 @@ describe("App", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(screen.getByRole("textbox"), "do it");
+    await user.type(composerField(), "do it");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
@@ -468,7 +468,7 @@ describe("App", () => {
       });
     });
 
-    await user.type(screen.getByRole("textbox"), "/");
+    await user.type(composerField(), "/");
     await screen.findByText("/only-b");
     expect(screen.queryByText("/only-a")).toBeNull();
   });
@@ -478,7 +478,7 @@ describe("App", () => {
 
     render(<App />);
     await screen.findByRole("button", { name: /请求批准/ });
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
 
     await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
@@ -583,7 +583,7 @@ describe("App", () => {
     // The late A response must not flip B to allow-all.
     await waitFor(() => expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy());
 
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
     expect(m.streamChat).toHaveBeenCalledWith(
@@ -613,7 +613,7 @@ describe("App", () => {
     // The view still shows the confirmed mode and sending is blocked until the
     // server confirms: a turn must not write the old mode back.
     expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy();
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     const sendBtn = screen.getByRole("button", { name: /发送消息/ }) as HTMLButtonElement;
     expect(sendBtn.disabled).toBe(true);
     await user.click(sendBtn);
@@ -674,7 +674,7 @@ describe("App", () => {
     await user.click(sidebarRow("会话B"));
     await screen.findByText("正在加载会话…");
 
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     const sendBtn = screen.getByRole("button", { name: /发送消息/ }) as HTMLButtonElement;
     expect(sendBtn.disabled).toBe(true);
     await user.click(sendBtn);
@@ -708,12 +708,12 @@ describe("App", () => {
     await user.click(sidebarRow("会话A"));
 
     await screen.findByText(/会话加载失败/);
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     expect(m.streamChat).not.toHaveBeenCalled();
 
-    // Retry by clicking the same session again.
-    await user.click(document.querySelector(".session-item") as HTMLElement);
+    // The failure carries its own retry: no guessing which click retries.
+    await user.click(screen.getByRole("button", { name: "重试" }));
     await screen.findByText("A-内容");
 
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
@@ -740,7 +740,7 @@ describe("App", () => {
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await waitFor(() =>
-      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录"),
     );
 
     await user.click(screen.getByRole("button", { name: /次目录/ }));
@@ -749,7 +749,7 @@ describe("App", () => {
     // Switch to B while A's save is in flight.
     await user.click(sidebarRow("会话B"));
     await waitFor(() =>
-      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录"),
     );
 
     await act(async () => {
@@ -757,7 +757,7 @@ describe("App", () => {
     });
 
     // A's stale save result must not blank B's secondary list.
-    expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录");
+    expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录");
   });
 
   it("会话加载期间次目录移除按钮不可用，不会调用保存", async () => {
@@ -777,7 +777,7 @@ describe("App", () => {
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await waitFor(() =>
-      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录"),
     );
     await user.click(screen.getByRole("button", { name: /次目录/ }));
 
@@ -812,7 +812,7 @@ describe("App", () => {
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await waitFor(() =>
-      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录"),
     );
     await user.click(screen.getByRole("button", { name: /次目录/ }));
     await user.click(screen.getByRole("button", { name: "移除次目录 s1a" }));
@@ -823,11 +823,11 @@ describe("App", () => {
     // matches the current view again.
     await user.click(sidebarRow("会话B"));
     await waitFor(() =>
-      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录"),
     );
     await user.click(sidebarRow("会话A"));
     await waitFor(() =>
-      expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录"),
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录"),
     );
 
     await act(async () => {
@@ -835,7 +835,7 @@ describe("App", () => {
     });
 
     // A's freshly reloaded list stays intact.
-    expect(document.querySelector(".sec-toggle small")?.textContent).toContain("已连接 1 个目录");
+    expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 1 个目录");
   });
 
   it("移除当前会话所属项目后清空会话视图", async () => {
@@ -908,16 +908,16 @@ it("草稿切换项目后丢弃旧次目录保存结果", async () => {
   m.saveProject.mockReturnValue(save.promise);
   render(<App />);
   await waitFor(() => expect(m.fetchWorkspaces).toHaveBeenCalled());
-  await user.click(document.querySelector(".project-select")!);
+  await user.click(document.querySelector(".project-picker .dir-card-main")!);
   await user.click(await screen.findByRole("option", { name: /A/ }));
   await user.click(screen.getByRole("button", { name: /次目录/ }));
   await user.click(await screen.findByRole("button", { name: "移除次目录 alpha" }));
-  await user.click(document.querySelector(".project-select")!);
+  await user.click(document.querySelector(".project-picker .dir-card-main")!);
   await user.click(screen.getByRole("option", { name: /B/ }));
   await screen.findByRole("button", { name: "移除次目录 beta" });
   await act(async () => save.resolve({ root: "/A", secondary: [], projects }));
   expect(screen.getByRole("button", { name: "移除次目录 beta" })).toBeTruthy();
-  await user.type(screen.getByRole("textbox"), "hi");
+  await user.type(composerField(), "hi");
   await user.click(screen.getByRole("button", { name: "发送消息" }));
   expect(m.streamChat).toHaveBeenCalledWith(null, "hi", expect.any(Function),
     expect.objectContaining({ root: "/B", secondary_roots: ["/beta"] }));

@@ -54,7 +54,9 @@ export function Modal({
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        onCloseRef.current();
+        // A popover inside the dialog closes first and claims the key, so one
+        // Escape never closes two layers at once.
+        if (!e.defaultPrevented) onCloseRef.current();
         return;
       }
       if (e.key !== "Tab") return;

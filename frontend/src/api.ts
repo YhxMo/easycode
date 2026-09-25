@@ -70,6 +70,8 @@ export interface WorkspaceProject {
 }
 
 export interface WorkspacesInfo {
+  /** Absolute path of the default workspace; undefined until the list loads. */
+  default?: string;
   projects: WorkspaceProject[];
 }
 
@@ -206,11 +208,16 @@ export function fetchWorkspaces(): Promise<WorkspacesInfo> {
 }
 
 export interface FileEntry {
-  /** Path relative to the workspace root it came from. */
+  /** Path relative to the workspace root it came from, for display. */
   path: string;
   name: string;
   dir: string;
   root: string;
+  /**
+   * Canonical target file. Display paths collide across roots, so references
+   * and previews always use this one.
+   */
+  absolute_path: string;
 }
 
 /** Workspace files offered by the composer's @-mention menu. */

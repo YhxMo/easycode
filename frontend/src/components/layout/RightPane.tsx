@@ -16,14 +16,6 @@ interface Props {
 
 export function RightPane({ open, sections, active, onSelect, onClose, children }: Props) {
   if (!open) return null;
-  const index = Math.max(
-    0,
-    sections.findIndex((s) => s.id === active),
-  );
-  const step = (delta: number) => {
-    const next = sections[(index + delta + sections.length) % sections.length];
-    if (next) onSelect(next.id);
-  };
   return (
     <aside className="right-pane" aria-label="任务面板">
       <header className="pane-head">
@@ -42,28 +34,6 @@ export function RightPane({ open, sections, active, onSelect, onClose, children 
           ))}
         </div>
         <div className="pane-actions">
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="上一个分区"
-            title="上一个分区"
-            onClick={() => step(-1)}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M14.5 5.5 8 12l6.5 6.5" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="下一个分区"
-            title="下一个分区"
-            onClick={() => step(1)}
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M9.5 5.5 16 12l-6.5 6.5" />
-            </svg>
-          </button>
           <button
             type="button"
             className="icon-btn"

@@ -1,4 +1,27 @@
+import { useRef } from "react";
 import type { FileEntry } from "./api";
+import { basename } from "./lib/paths";
+import { useRevealActive } from "./lib/useRevealActive";
+
+/** Id of the listbox the composer field points at with aria-controls. */
+export const MENTION_LIST_ID = "composer-mention-list";
+/** Prefix of each option's id, for the field's aria-activedescendant. */
+export const MENTION_OPTION_PREFIX = "composer-mention-option-";
+
+/**
+ * A file query for one (scope, query) pair. The states are distinct on purpose:
+ * "still looking" and "nothing matched" must not look the same, and a failure
+ * must not read as an empty workspace.
+ */
+export type MentionState =
+  | { status: "loading"; scope: string; query: string }
+  | { status: "error"; scope: string; query: string; message: string }
+  | { status: "ready"; scope: string; query: string; files: FileEntry[]; total: number };
+
+/** The answer for one (scope, query) pair, without the "still looking" case. */
+export type MentionAnswer =
+  | { status: "error"; message: string }
+  | { status: "ready"; files: FileEntry[]; total: number };
 
 function FileIcon() {
   return (
@@ -17,37 +40,44 @@ function FileIcon() {
 }
 
 export function MentionMenu({
-  files,
-  open,
+  state,
   query,
   index,
-  total,
   onPick,
   onClose,
+  onRetry,
 }: {
-  files: FileEntry[];
-  open: boolean;
+  /** The result for the token under the caret, or null while it is stale. */
+  state: MentionState | null;
   query: string;
   index: number;
-  total: number;
   onPick: (file: FileEntry) => void;
   onClose: () => void;
+  onRetry: () => void;
 }) {
-  if (!open) return null;
+  const boxRef = useRef<HTMLDivElement>(null);
+  const files = state?.status === "ready" ? state.files : [];
   const active = files.length ? Math.min(index, files.length - 1) : -1;
+  useRevealActive(boxRef, ".command-item.active", `${index}:${files.length}`);
 
   return (
     <div className="command-menu">
-      <div className="command-menu-scroll">
+      <div className="command-menu-scroll" ref={boxRef} id={MENTION_LIST_ID} role="listbox" aria-label="工作区文件">
         <div className="command-section">
           <div className="command-section-title">
             文件
-            {total > files.length && <span className="mention-more">显示前 {files.length} 个</span>}
+            {state?.status === "ready" && state.total > files.length && (
+              <span className="mention-more">显示前 {files.length} 个</span>
+            )}
           </div>
           <div className="command-section-items">
             {files.map((file, i) => (
-              <div
-                key={`${file.root}/${file.path}`}
+              <button
+                type="button"
+                role="option"
+                id={`${MENTION_OPTION_PREFIX}${i}`}
+                aria-selected={i === active}
+                key={file.absolute_path}
                 className={`command-item ${i === active ? "active" : ""}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
@@ -59,9 +89,25 @@ export function MentionMenu({
                   <span className="command-name">{file.name}</span>
                   {file.dir && <span className="command-desc">{file.dir}</span>}
                 </div>
-              </div>
+                <div className="command-source" title={file.root}>
+                  {basename(file.root)}
+                </div>
+              </button>
             ))}
-            {files.length === 0 && (
+            {state?.status === "loading" && (
+              <div className="command-empty" role="status">
+                正在查找文件…
+              </div>
+            )}
+            {state?.status === "error" && (
+              <div className="command-empty error" role="alert">
+                <span>查找文件失败：{state.message}</span>
+                <button type="button" className="command-retry" onMouseDown={(e) => e.preventDefault()} onClick={onRetry}>
+                  重试
+                </button>
+              </div>
+            )}
+            {state?.status === "ready" && files.length === 0 && (
               <div className="command-empty">
                 {query ? `没有匹配「${query}」的文件` : "工作区中没有可引用的文件"}
               </div>

@@ -643,42 +643,51 @@
   font-size: 15px;
 }
 
+/* The global entry creates in the default workspace, never in whatever
+   project happens to be in view: say so instead of leaving it implicit. */
+.new-btn-hint {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
 .new-btn:disabled {
   opacity: 0.45;
   cursor: default;
 }
 
-/* --------------------------------------------------------- project picker */
+/* --------------------------------------------------------- directory area */
 
-.project-picker {
-  position: relative;
-  margin: 2px 0 10px;
-}
-
-.project-picker-block {
+.dir-area {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin: 2px 0 10px;
 }
 
-.picker-label {
-  font-size: 11px;
-  color: var(--ink-3);
+.project-picker,
+.secondary-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
-.picker-row {
+/* One card shell for the main directory (draft or open session) and for the
+   secondary list, so the directory block keeps its geometry in every state. */
+.dir-card {
   display: flex;
   align-items: stretch;
   gap: 6px;
+  min-height: 46px;
 }
 
-.project-select {
+.dir-card-main {
   display: flex;
   flex: 1;
   align-items: center;
   gap: 9px;
   min-width: 0;
-  min-height: 46px;
   padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -686,21 +695,23 @@
   color: var(--ink);
   cursor: pointer;
   text-align: left;
-  transition: border-color 120ms, background 120ms;
+  transition:
+    border-color 120ms,
+    background 120ms;
 }
 
-.project-select:hover:not(:disabled),
-.project-select.open {
+.dir-card-main:hover:not(:disabled),
+.dir-card.open .dir-card-main {
   border-color: var(--line-strong);
   background: var(--hover);
 }
 
-.project-select:disabled {
+.dir-card-main:disabled {
   opacity: 0.5;
   cursor: default;
 }
 
-.project-select-icon {
+.dir-icon {
   display: grid;
   flex: none;
   place-items: center;
@@ -714,8 +725,7 @@
   line-height: 1;
 }
 
-.project-select-copy,
-.project-option-copy {
+.dir-copy {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -724,8 +734,7 @@
   overflow: hidden;
 }
 
-.project-select-copy strong,
-.project-option-copy strong {
+.dir-copy strong {
   overflow: hidden;
   color: var(--ink);
   font-size: 13px;
@@ -734,8 +743,7 @@
   white-space: nowrap;
 }
 
-.project-select-copy small,
-.project-option-copy small {
+.dir-copy small {
   overflow: hidden;
   color: var(--ink-3);
   font-size: 10px;
@@ -743,7 +751,7 @@
   white-space: nowrap;
 }
 
-.project-select-caret {
+.dir-caret {
   flex: none;
   color: var(--ink-3);
   font-size: 13px;
@@ -751,78 +759,40 @@
   transition: transform 120ms;
 }
 
-.project-select.open .project-select-caret {
+.dir-card.open .dir-caret {
   transform: rotate(180deg);
 }
 
-.project-add-btn {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 46px;
-  min-width: 46px;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--inset);
-  color: var(--ink-2);
-  font-size: 18px;
-  cursor: pointer;
-  transition: border-color 120ms, background 120ms;
-}
-
-.project-add-btn:hover:not(:disabled) {
-  border-color: var(--line-strong);
-  background: var(--hover);
-  color: var(--ink);
-}
-
-.project-add-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.project-add-btn.primary-folder-add {
-  align-self: stretch;
-  height: auto;
-}
-
-.project-tag {
+.dir-actions {
   display: flex;
-  align-items: center;
-  min-height: 34px;
-  padding: 6px 9px;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-md);
-  background: var(--inset);
-  color: var(--ink-2);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: none;
+  align-items: stretch;
+  gap: 6px;
 }
 
-.project-tag.default {
-  color: var(--ink-3);
-}
-
-/* project listbox under the picker */
+/* project listbox under the main-directory card */
 .project-picker .project-menu {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  right: 52px;
+  right: 0;
   z-index: 40;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 240px;
+  max-height: 260px;
   overflow-y: auto;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: var(--shadow-overlay);
+}
+
+.project-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .project-menu-label {
@@ -849,13 +819,23 @@
   transition: background 100ms;
 }
 
-.project-option:hover,
+.project-option:hover:not(:disabled),
 .project-option.active {
   background: var(--hover);
 }
 
 .project-option.active {
   box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.project-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.project-option-add {
+  border-top: 1px solid var(--line-soft);
+  border-radius: 0 0 var(--r-md) var(--r-md);
 }
 
 .project-option-mark {
@@ -868,89 +848,24 @@
   font-weight: 700;
 }
 
-/* -------------------------------------------------------- secondary roots */
-
-.secondary-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-top: 2px;
-}
-
-.sec-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 42px;
-  padding: 6px 8px;
-  border: 1px solid var(--line-soft);
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-  transition: background 120ms, border-color 120ms;
-}
-
-.sec-toggle:hover {
-  background: var(--hover);
-  border-color: var(--line);
-}
-
-.sec-toggle.open {
-  border-color: var(--line-strong);
-  background: var(--inset);
-}
-
-.sec-toggle-icon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  box-shadow: var(--shadow-hairline);
+.project-detail-path {
+  margin: 0;
+  padding: 2px 8px 6px;
   color: var(--ink-2);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 15px;
+  overflow-wrap: anywhere;
 }
 
-.sec-toggle-copy {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 0;
-  min-width: 0;
-}
-
-.sec-toggle-copy strong {
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 16px;
-}
-
-.sec-toggle-copy small {
-  overflow: hidden;
+.project-detail-note {
+  margin: 0;
+  padding: 5px 8px 2px;
+  border-top: 1px solid var(--line-soft);
   color: var(--ink-3);
-  font-size: 10px;
-  line-height: 14px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 10.5px;
 }
 
-.sec-toggle-caret {
-  flex: none;
-  color: var(--ink-3);
-  font-size: 12px;
-  line-height: 1;
-  transition: transform 140ms;
-}
-
-.sec-toggle.open .sec-toggle-caret {
-  transform: rotate(180deg);
-}
+/* -------------------------------------------------------- secondary roots */
 
 .secondary-panel {
   display: flex;
@@ -1274,17 +1189,39 @@
 .session-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 6px;
   min-height: 34px;
   margin: 1px 0;
-  padding: 6px 8px 6px 10px;
+  padding: 3px 6px 3px 4px;
   border: 1px solid transparent;
   border-radius: var(--r-md);
   color: var(--ink-2);
   font-size: 13px;
-  cursor: pointer;
   transition: background 100ms, color 100ms;
+}
+
+/* the row itself is a container; opening it and acting on it are separate
+   controls, so nothing is a button inside a button */
+.session-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 2px 3px 6px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
 }
 
 .project-group .session-item {
@@ -1363,7 +1300,8 @@
 }
 
 .session-item:hover .session-pin,
-.session-item.active .session-pin {
+.session-item.active .session-pin,
+.session-item:focus-within .session-pin {
   opacity: 1;
 }
 
@@ -1377,20 +1315,33 @@
 }
 
 .session-del {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
   flex: none;
-  padding: 0 4px;
+  padding: 0;
   border: 0;
   border-radius: var(--r-xs);
   background: transparent;
   color: var(--ink-3);
-  font-size: 11px;
   cursor: pointer;
   opacity: 0;
   transition: opacity 100ms, color 100ms;
 }
 
+.session-del svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 2;
+}
+
 .session-item:hover .session-del,
-.session-item.active .session-del {
+.session-item.active .session-del,
+.session-item:focus-within .session-del {
   opacity: 1;
 }
 
@@ -1565,12 +1516,30 @@
 }
 
 .dropdown-menu-header {
-  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 6px;
   color: var(--ink-3);
   font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+/* The scope note under a menu title ("切换会影响…") is prose, not a label. */
+.dropdown-menu-header small {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 14px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.custom-dropdown-item:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .custom-dropdown-item {
@@ -2039,10 +2008,12 @@
   overflow-y: auto;
 }
 
-/* with the composer floating over it, the stream needs room to scroll past */
+/* with the composer floating over it, the stream needs room to scroll past;
+   the height comes from the composer itself, so a grown input still clears the
+   last reply */
 .chat-main.docked {
-  padding-bottom: 132px;
-  scroll-padding-bottom: 140px;
+  padding-bottom: calc(var(--composer-h, 132px) + 8px);
+  scroll-padding-bottom: calc(var(--composer-h, 132px) + 16px);
 }
 
 .session-loading,
@@ -2063,6 +2034,22 @@
   background: var(--red-tint);
   color: var(--red);
   text-align: left;
+}
+
+.retry-btn {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 4px 12px;
+  border: 1px solid oklch(66.6% 0.18 21.4 / 0.35);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--red);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.retry-btn:hover {
+  background: var(--red-tint);
 }
 
 .session-load-error strong {
@@ -2542,6 +2529,35 @@
   pointer-events: none;
 }
 
+/* Appears only while the reader is above the live edge; anchored to the
+   composer area so a growing input box moves it instead of hiding it. */
+.scroll-latest {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 120ms,
+    border-color 120ms;
+}
+
+.scroll-latest:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
 .composer {
   position: relative;
   display: flex;
@@ -2714,6 +2730,31 @@
   font-size: 12.5px;
 }
 
+/* A failed query is not an empty result: it says so and offers a retry. */
+.command-empty.error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--red);
+}
+
+.command-retry {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.command-retry:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
 .mention-more {
   margin-left: 8px;
   color: var(--ink-3);
@@ -2843,17 +2884,6 @@
 /* ------------------------------------------------------------------- modal */
 
 .modal-backdrop,
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: oklch(0% 0 0 / 0.55);
-  backdrop-filter: blur(4px);
-}
-
 .modal {
   display: flex;
   flex-direction: column;

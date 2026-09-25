@@ -28,18 +28,21 @@ interface Props {
   path?: string;
   diff: string;
   stats?: { added: number; removed: number };
+  /** False for a `dry_run` patch: the file was never touched. */
+  applied?: boolean;
 }
 
 /** Unified diff: file identity above, +/- coloured lines below. */
-export function DiffView({ path, diff, stats }: Props) {
+export function DiffView({ path, diff, stats, applied = true }: Props) {
   const counts = stats ?? diffStats(diff);
   const label = path ?? pathFromDiff(diff);
   return (
-    <div className="diff-view">
+    <div className={`diff-view${applied ? "" : " dry-run"}`}>
       <div className="diff-head">
         <span className="diff-path" title={label}>
           {label ?? "改动"}
         </span>
+        {!applied && <span className="diff-badge">未应用</span>}
         <span className="diff-stats tabular">
           <span className="add">+{counts.added}</span>
           <span className="del">−{counts.removed}</span>

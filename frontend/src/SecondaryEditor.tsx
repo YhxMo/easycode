@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { RefObject } from "react";
 import type { WorkspaceProject } from "./api";
 import { chooseWorkspace, saveProject } from "./api";
+import { DirectoryCard } from "./DirectoryCard";
 import { basename, DEFAULT_PROJECT } from "./lib/paths";
 
 export function SecondaryEditor({
@@ -77,19 +78,16 @@ export function SecondaryEditor({
 
   return (
     <div className="secondary-editor">
-      <button
-        type="button"
-        className={`sec-toggle ${open ? "open" : ""}`}
-        aria-expanded={open}
+      <DirectoryCard
+        icon="↳"
+        name="次目录"
+        detail={secondary.length ? `已连接 ${secondary.length} 个目录` : "添加辅助工作区"}
+        title={secondary.length ? secondary.join("\n") : "添加辅助工作区"}
+        expanded={open}
+        popup
+        disabled={disabled}
         onClick={() => setOpen(!open)}
-      >
-        <span className="sec-toggle-icon" aria-hidden="true">↳</span>
-        <span className="sec-toggle-copy">
-          <strong>次目录</strong>
-          <small>{secondary.length > 0 ? `已连接 ${secondary.length} 个目录` : "添加辅助工作区"}</small>
-        </span>
-        <span className="sec-toggle-caret" aria-hidden="true">⌄</span>
-      </button>
+      />
       {open && (
         <div className="secondary-panel">
           <div className="secondary-list">
