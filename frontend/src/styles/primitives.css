@@ -1,0 +1,668 @@
+/* Styles for the message-stream primitives: loader, tool trace, code blocks,
+ * diffs, approval cards and the selection bar.
+ * Imported by styles.css; tokens live in tokens.css.
+ */
+
+/* ---------------------------------------------------------- loading state */
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 2px 0;
+}
+
+.loading-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 4px);
+  gap: 1.5px;
+  flex: none;
+}
+
+.loading-grid > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 1px;
+  background: var(--ink);
+  opacity: 0.15;
+}
+
+.loading-label {
+  background-image: linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%);
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  animation: shimmer-text 1.4s linear infinite;
+}
+
+.loading-time {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* -------------------------------------------------------------- tool trace */
+
+.trace {
+  margin: 4px 0;
+}
+
+.trace-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 3px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.trace-head:hover {
+  background: var(--hover);
+}
+
+.chip {
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.trace-live {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  margin-left: 2px;
+  border-radius: var(--r-pill);
+  background: var(--green);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.trace-steps {
+  margin: 2px 0 4px 11px;
+  padding: 2px 0 2px 8px;
+  border-left: 1px solid var(--line-soft);
+  list-style: none;
+}
+
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.step-head:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.step-head:disabled {
+  cursor: default;
+}
+
+.step-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: var(--green);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+}
+
+.step-icon.error {
+  stroke: var(--red);
+}
+
+.step-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--orange);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.step-label {
+  flex: none;
+  color: var(--ink-3);
+}
+
+.step-detail {
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-result {
+  max-height: 260px;
+  margin: 2px 0 6px 26px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* -------------------------------------------------------------- code block */
+
+.code-block {
+  margin: 10px 0;
+  border-radius: var(--r-lg);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+  overflow: hidden;
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.code-lang {
+  flex: 1;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.code-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.code-switch {
+  display: flex;
+  gap: 1px;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.code-switch button {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--ink-3);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.code-switch button.on {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+
+.code-copy {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-3);
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background 120ms,
+    color 120ms;
+}
+
+.code-copy:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.code-body,
+.diff-body {
+  margin: 0;
+  padding: 8px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+.code-line {
+  display: flex;
+}
+
+.code-gutter {
+  flex: none;
+  width: 42px;
+  padding-right: 12px;
+  color: var(--ink-3);
+  text-align: right;
+  user-select: none;
+}
+
+.code-text {
+  color: var(--ink);
+  white-space: pre;
+}
+
+/* --------------------------------------------------------------- diff view */
+
+.diff-view {
+  margin: 6px 0;
+  border-radius: var(--r-lg);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+  overflow: hidden;
+}
+
+/* inside a code block the block itself is the card */
+.code-block .diff-view {
+  margin: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.diff-path {
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-stats {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.diff-stats .add {
+  color: var(--green);
+}
+
+.diff-stats .del {
+  color: var(--red);
+}
+
+.diff-line {
+  display: block;
+  padding: 0 10px;
+  white-space: pre;
+}
+
+.diff-line.add {
+  background: oklch(70.5% 0.154 153.8 / 0.1);
+}
+
+.diff-line.del {
+  background: oklch(66.6% 0.18 21.4 / 0.1);
+}
+
+.diff-line.hunk {
+  color: var(--accent-ink);
+}
+
+.diff-line.meta {
+  color: var(--ink-3);
+}
+
+.diff-line.ctx {
+  color: var(--ink-2);
+}
+
+/* ----------------------------------------------------------- approval card */
+
+.approval-card {
+  margin: 10px 0;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.approval-card.pending {
+  box-shadow:
+    0 0 0 1px oklch(74.6% 0.156 55.6 / 0.35),
+    var(--shadow-card);
+}
+
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 0;
+}
+
+.approval-title {
+  flex: 1;
+  color: var(--orange);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.approval-count {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.approval-body {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 12px 0;
+}
+
+.approval-what {
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.approval-detail {
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: var(--inset);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.approval-reason {
+  width: 100%;
+  margin: 4px 0 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.approval-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    background 120ms,
+    color 120ms,
+    border-color 120ms;
+}
+
+.approval-actions button:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.approval-actions .primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: oklch(99% 0 0);
+  box-shadow: var(--shadow-btn);
+}
+
+.approval-actions .primary:hover {
+  background: var(--accent);
+  opacity: 0.92;
+}
+
+.approval-actions .approval-deny:hover {
+  border-color: oklch(66.6% 0.18 21.4 / 0.4);
+  background: var(--red-tint);
+  color: var(--red);
+}
+
+.approval-actions .approval-always:hover {
+  border-color: oklch(70.5% 0.154 153.8 / 0.4);
+  background: var(--green-tint);
+  color: var(--green);
+}
+
+/* answered requests stay in place as a one-line record */
+.approval-card.decided {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 6px 12px;
+  background: none;
+  box-shadow: none;
+  border: 1px solid var(--line-soft);
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.approval-verdict {
+  font-weight: 600;
+}
+
+.approval-card.decided.approved .approval-verdict {
+  color: var(--green);
+}
+
+.approval-card.decided.denied .approval-verdict {
+  color: var(--red);
+}
+
+/* ------------------------------------------------------------- task list */
+
+.task-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-hairline);
+}
+
+.task-mark {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: var(--r-sm);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-mark.done {
+  fill: none;
+  stroke: var(--green);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+  background: var(--green-tint);
+}
+
+.task-mark.running {
+  background: var(--orange-tint);
+  color: var(--orange);
+  font-weight: 650;
+}
+
+.task-mark.pending {
+  background: var(--inset);
+  color: var(--ink-3);
+}
+
+.task-text {
+  flex: 1;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.task-row.completed .task-text {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-color: var(--ink-3);
+}
+
+.task-pill {
+  flex: none;
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.task-pill.completed {
+  background: var(--green-tint);
+  color: var(--green);
+}
+
+.task-pill.in_progress {
+  background: var(--orange-tint);
+  color: var(--orange);
+}
+
+.task-pill.pending {
+  background: var(--inset);
+  color: var(--ink-3);
+}
+
+/* the stream's compact pointer at the same list */
+.task-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.task-summary:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.task-summary-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+  color: var(--ink-3);
+}
+
+.task-summary-label {
+  flex: none;
+}
+
+.task-summary-bar {
+  width: 54px;
+  height: 3px;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.task-summary-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--green);
+  transition: width 200ms var(--ease-out-strong);
+}
+
+.task-summary-count {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+/* --------------------------------------------------------- selection bar */
+.selection-bar {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  transform: translateX(-50%);
+  border-radius: var(--r-md);
+  background: var(--tooltip-bg);
+  box-shadow: var(--shadow-overlay);
+  animation: pop-in 120ms var(--ease-out-strong) both;
+}
+
+.selection-bar button {
+  padding: 4px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--tooltip-fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.selection-bar button:hover {
+  background: oklch(100% 0 0 / 0.08);
+}

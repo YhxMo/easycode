@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useDismiss } from "./lib/useDismiss";
 
 const MODES = [
   {
@@ -36,13 +37,7 @@ export function PermissionPicker({
   const ref = useRef<HTMLDivElement>(null);
   const current = MODES.find((m) => m.value === value) ?? MODES[0];
 
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
+  useDismiss(ref, () => setOpen(false), open);
 
   return (
     <div

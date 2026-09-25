@@ -1,47 +1,49 @@
 import { useState } from "react";
-import type { WorkspacesInfo } from "./api";
+import type { RefObject } from "react";
+import type { WorkspaceProject } from "./api";
 import { chooseWorkspace, saveProject } from "./api";
-import { basename } from "./ProjectPicker";
-
-const DEFAULT_PROJECT = "default project";
+import { DirectoryCard } from "./DirectoryCard";
+import { basename, DEFAULT_PROJECT } from "./lib/paths";
 
 export function SecondaryEditor({
   root,
   secondary,
   sessionId,
   disabled,
+  viewToken,
   onSecondary,
-  onWorkspaces,
+  onProjects,
   onError,
 }: {
   root: string | null;
   secondary: string[];
   sessionId?: string | null;
   disabled: boolean;
+  /** Current view version; a save that started for a superseded view is dropped. */
+  viewToken: RefObject<number>;
   onSecondary: (r: string[]) => void;
-  onWorkspaces?: (w: WorkspacesInfo) => void;
+  onProjects?: (projects: WorkspaceProject[]) => void;
   onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
 
   const mutate = async (next: string[]) => {
+    if (disabled) return null;
+    const startView = viewToken.current;
     setBusy(true);
-    setError("");
     try {
       const { secondary: saved, projects } = await saveProject(
         root,
         next,
         sessionId ?? undefined,
       );
+      if (viewToken.current !== startView) return null;
       onSecondary(saved);
-      onWorkspaces?.({ projects } as WorkspacesInfo);
+      onProjects?.(projects);
       return saved;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      onError?.(msg);
+      if (viewToken.current === startView) onError?.(e instanceof Error ? e.message : String(e));
       return null;
     } finally {
       setBusy(false);
@@ -49,23 +51,22 @@ export function SecondaryEditor({
   };
 
   const pickViaFinder = async () => {
+    if (disabled || busy) return;
+    const startView = viewToken.current;
     setBusy(true);
-    setError("");
     try {
       const { paths, supported } = await chooseWorkspace(
         true,
         `为 ${root ? basename(root) : DEFAULT_PROJECT} 添加次目录（可多选）`,
       );
+      if (viewToken.current !== startView) return;
       if (!supported) {
-        setError("当前平台不支持访达选择");
         onError?.("当前平台不支持访达选择");
       } else if (paths.length) {
         await mutate([...new Set([...secondary, ...paths])]);
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      onError?.(msg);
+      if (viewToken.current === startView) onError?.(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -77,19 +78,16 @@ export function SecondaryEditor({
 
   return (
     <div className="secondary-editor">
-      <button
-        type="button"
-        className={`sec-toggle ${open ? "open" : ""}`}
-        aria-expanded={open}
+      <DirectoryCard
+        icon="↳"
+        name="次目录"
+        detail={secondary.length ? `已连接 ${secondary.length} 个目录` : "添加辅助工作区"}
+        title={secondary.length ? secondary.join("\n") : "添加辅助工作区"}
+        expanded={open}
+        popup
+        disabled={disabled}
         onClick={() => setOpen(!open)}
-      >
-        <span className="sec-toggle-icon" aria-hidden="true">↳</span>
-        <span className="sec-toggle-copy">
-          <strong>次目录</strong>
-          <small>{secondary.length > 0 ? `已连接 ${secondary.length} 个目录` : "添加辅助工作区"}</small>
-        </span>
-        <span className="sec-toggle-caret" aria-hidden="true">⌄</span>
-      </button>
+      />
       {open && (
         <div className="secondary-panel">
           <div className="secondary-list">
@@ -105,7 +103,7 @@ export function SecondaryEditor({
                   className="secondary-remove"
                   title={`移除 ${basename(p)}`}
                   aria-label={`移除次目录 ${basename(p)}`}
-                  disabled={busy}
+                  disabled={disabled || busy}
                   onClick={() => remove(p)}
                 >
                   ✕
@@ -128,7 +126,6 @@ export function SecondaryEditor({
           </button>
         </div>
       )}
-      {error && <div className="picker-error">{error}</div>}
     </div>
   );
 }

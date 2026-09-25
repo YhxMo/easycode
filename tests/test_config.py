@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from easycode.config import Config
 
 
@@ -38,7 +40,8 @@ def test_merges_file_over_defaults(tmp_path, monkeypatch):
     cfg = Config.load()
     assert cfg.default_model == "my-gpt"
     assert cfg.resolve_model("my-gpt") == "openai/x"
-    assert cfg.resolve_model("gpt5.6-terra") == "openai/gpt-5.6-terra"  # default preserved
+    # DEC-C3: an explicit `models` key replaces the built-in defaults
+    assert "gpt5.6-terra" not in cfg.models
     assert cfg.max_tool_result_chars == 100
 
 
@@ -74,23 +77,86 @@ def test_tools_enabled_map(tmp_path, monkeypatch):
     assert cfg.tools["read_file"] is True
 
 
-def test_permission_rules_roundtrip_without_changing_secondary_roots(tmp_path, monkeypatch):
+def test_permission_rules_roundtrip(tmp_path, monkeypatch):
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(
-        json.dumps(
-            {
-                "permissions": {"execute_shell": {"*": "ask", "git status*": "allow"}},
-                "workspace": {"secondary": ["shared"]},
-            }
-        ),
+        json.dumps({"permissions": {"execute_shell": {"*": "ask", "git status*": "allow"}}}),
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     cfg = Config.load()
     assert cfg.permission_rules["execute_shell"]["git status*"] == "allow"
-    assert cfg.secondary_roots == ["shared"]
 
     cfg.save()
     raw = json.loads(cfg_file.read_text(encoding="utf-8"))
     assert raw["permissions"] == cfg.permission_rules
-    assert raw["workspace"]["secondary"] == ["shared"]
+
+
+def test_config_permission_mode_valid_and_invalid(tmp_path, monkeypatch):
+    """DEC-C2: only the `permission` key is read; an invalid value is an error."""
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"permission": "auto-review"}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert Config.load().permission_mode == "auto-review"
+
+    cfg_file.write_text(json.dumps({"permission": "bogus"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid permission mode"):
+        Config.load()
+
+    # the legacy `permission_mode` key is no longer read
+    cfg_file.write_text(json.dumps({"permission_mode": "allow-all"}), encoding="utf-8")
+    assert Config.load().permission_mode == "ask"
+
+
+def test_path_context_relative_paths_use_load_time_base(tmp_path, monkeypatch):
+    """10D: relative workspace paths anchor at the same base as base_dir()
+    (config dir, else load-time root) — never a later CWD."""
+    (tmp_path / "extra").mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(tmp_path)
+    cfg = Config.load(start=tmp_path)  # no config file: root = load-time CWD
+    cfg.extra_safe_dirs = ["extra"]
+
+    monkeypatch.chdir(elsewhere)  # a later chdir must not move the anchor
+    ctx = cfg.path_context()
+    assert ctx.extra_safe_dirs == [(tmp_path / "extra").resolve()]
+    assert cfg.base_dir() == cfg.root
+
+
+def test_max_tool_iterations_is_optional_and_strict(tmp_path, monkeypatch):
+    """An absent ceiling means "let the model finish"; a set one is validated
+    rather than silently ignored."""
+    cfg_file = tmp_path / "easycode.config.json"
+    monkeypatch.chdir(tmp_path)
+
+    cfg_file.write_text(json.dumps({"model": "x"}), encoding="utf-8")
+    assert Config.load().max_tool_iterations is None
+
+    cfg_file.write_text(json.dumps({"max_tool_iterations": None}), encoding="utf-8")
+    assert Config.load().max_tool_iterations is None
+
+    cfg_file.write_text(json.dumps({"max_tool_iterations": 25}), encoding="utf-8")
+    assert Config.load().max_tool_iterations == 25
+
+    for bad in (0, -1, True, False, 1.5, "12"):
+        cfg_file.write_text(json.dumps({"max_tool_iterations": bad}), encoding="utf-8")
+        with pytest.raises(ValueError, match="invalid max_tool_iterations"):
+            Config.load()
+
+
+def test_max_tool_iterations_survives_other_saves_only_when_set(tmp_path, monkeypatch):
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    cfg = Config.load()
+    cfg.save()
+    # An unset ceiling stays absent: saving other settings must not turn
+    # "unlimited" into a number.
+    assert "max_tool_iterations" not in json.loads(cfg_file.read_text(encoding="utf-8"))
+
+    cfg.max_tool_iterations = 40
+    cfg.save()
+    assert json.loads(cfg_file.read_text(encoding="utf-8"))["max_tool_iterations"] == 40
+    assert Config.load().max_tool_iterations == 40

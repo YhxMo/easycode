@@ -1,85 +1,106 @@
 import { useEffect, useRef, useState } from "react";
-import type { WorkspacesInfo } from "./api";
+import type { RefObject } from "react";
+import { useDismiss } from "./lib/useDismiss";
+import type { WorkspaceProject, WorkspacesInfo } from "./api";
 import { chooseWorkspace } from "./api";
-import { SecondaryEditor } from "./SecondaryEditor";
+import { DirectoryCard } from "./DirectoryCard";
+import { basename, DEFAULT_PROJECT } from "./lib/paths";
 
-const DEFAULT_PROJECT = "default project";
-
-export const basename = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
-
+/**
+ * The main-directory row of the sidebar.
+ *
+ * One component, two modes: the draft's card opens a directory listbox (its
+ * root can still change before the session exists), an open session's card
+ * opens a read-only detail panel — a session's primary directory is fixed, and
+ * the only ways out are copying the path or starting a new conversation there.
+ */
 export function ProjectPicker({
   workspaces,
+  loaded,
   root,
-  secondary,
+  editable,
   disabled,
+  viewToken,
   onRoot,
   onSecondary,
-  onWorkspaces,
+  onProjects,
+  onNewChatHere,
   onError,
 }: {
   workspaces: WorkspacesInfo;
+  /** False until the workspace list has been fetched once. */
+  loaded: boolean;
   root: string | null;
-  secondary: string[];
+  /** Whether this card may change the main directory (the draft only). */
+  editable: boolean;
   disabled: boolean;
+  viewToken: RefObject<number>;
   onRoot: (r: string | null) => void;
   onSecondary: (r: string[]) => void;
-  onWorkspaces: (w: WorkspacesInfo) => void;
+  onProjects: (projects: WorkspaceProject[]) => void;
+  onNewChatHere: (root: string | null) => void;
   onError?: (msg: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, []);
+  useDismiss(pickerRef, () => setOpen(false), open);
 
   // switching the main root shows that project's bound secondary roots
   useEffect(() => {
+    if (!editable) return;
     const proj = (workspaces.projects ?? []).find((p) => p.root === root);
-    onSecondary((proj?.secondary ?? []).filter((x) => x !== undefined));
+    onSecondary(proj?.secondary ?? []);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
 
   const pickPrimaryViaFinder = async () => {
+    if (disabled || busy) return;
+    const startView = viewToken.current;
     setBusy(true);
-    setError("");
     try {
       const { paths, supported } = await chooseWorkspace(false, "选择主目录");
+      // A pick that started before the view changed belongs to that view only.
+      if (viewToken.current !== startView) return;
       if (!supported) {
-        setError("当前平台不支持访达选择，请用已有项目或重启后重试");
         onError?.("当前平台不支持访达选择，请用已有项目或重启后重试");
       } else if (paths[0]) {
         const chosen = paths[0];
+        setOpen(false);
         onRoot(chosen);
         // register in the local pool so the dropdown keeps showing it
         if (!(workspaces.projects ?? []).some((p) => p.root === chosen)) {
-          onWorkspaces({
-            ...workspaces,
-            projects: [...(workspaces.projects ?? []), { root: chosen, secondary: [] }],
-          });
+          onProjects([...(workspaces.projects ?? []), { root: chosen, secondary: [] }]);
         }
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      onError?.(msg);
+      if (viewToken.current === startView) onError?.(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const copyPath = async (path: string) => {
+    try {
+      await navigator.clipboard?.writeText(path);
+      setOpen(false);
+    } catch {
+      onError?.("无法写入剪贴板");
     }
   };
 
   const projects = (workspaces.projects ?? [])
     .map((p) => p.root)
     .filter((r): r is string => Boolean(r));
-  const currentName = root ? basename(root) : DEFAULT_PROJECT;
+  /** The name the sidebar shows: the project's own, else the folder name. */
+  const displayName = (r: string | null) =>
+    (r ? (workspaces.projects ?? []).find((p) => p.root === r)?.name : "") ||
+    (r ? basename(r) : DEFAULT_PROJECT);
+  const defaultPath = workspaces.default;
+  const currentPath = root ?? defaultPath;
+  const currentName = displayName(root);
+  const detail = currentPath ?? (loaded ? "路径未知" : "正在加载…");
 
   const selectRoot = (nextRoot: string | null) => {
     setOpen(false);
@@ -88,48 +109,30 @@ export function ProjectPicker({
 
   return (
     <div className="project-picker" ref={pickerRef}>
-      <div className="project-picker-block">
-        <div className="picker-row">
-          <button
-            type="button"
-            className={`project-select ${open ? "open" : ""}`}
-            disabled={disabled || busy}
-            aria-expanded={open}
-            aria-haspopup="listbox"
-            onClick={() => setOpen(!open)}
-          >
-            <span className="project-select-icon" aria-hidden="true">⌂</span>
-            <span className="project-select-copy">
-              <strong>{currentName}</strong>
-              <small>{root ?? "使用默认工作区"}</small>
-            </span>
-            <span className="project-select-caret" aria-hidden="true">⌄</span>
-          </button>
-          <button
-            className="project-add-btn primary-folder-add"
-            title="用访达选择主目录"
-            aria-label="用访达添加主目录"
-            disabled={disabled || busy}
-            onClick={() => pickPrimaryViaFinder()}
-          >
-            <span aria-hidden="true">＋</span>
-          </button>
-        </div>
-        {open && (
-          <div className="project-menu" role="listbox" aria-label="选择主项目目录">
-            <div className="project-menu-label">主项目目录</div>
+      <DirectoryCard
+        icon="⌂"
+        name={currentName}
+        detail={detail}
+        title={currentPath ?? detail}
+        expanded={open}
+        popup
+        disabled={editable && (disabled || busy)}
+        onClick={() => setOpen(!open)}
+      />
+      {open && editable && (
+        <div className="project-menu">
+          <div className="project-menu-label">主项目目录</div>
+          <div className="project-options" role="listbox" aria-label="选择主项目目录">
             <button
               type="button"
               role="option"
               aria-selected={!root}
               className={`project-option ${!root ? "active" : ""}`}
+              title={defaultPath}
               onClick={() => selectRoot(null)}
             >
               <span className="project-option-mark" aria-hidden="true">{!root ? "✓" : ""}</span>
-              <span className="project-option-copy">
-                <strong>{DEFAULT_PROJECT}</strong>
-                <small>不绑定本地目录</small>
-              </span>
+              {DEFAULT_PROJECT}
             </button>
             {projects.map((project) => (
               <button
@@ -142,24 +145,50 @@ export function ProjectPicker({
                 onClick={() => selectRoot(project)}
               >
                 <span className="project-option-mark" aria-hidden="true">{project === root ? "✓" : ""}</span>
-                <span className="project-option-copy">
-                  <strong>{basename(project)}</strong>
-                  <small>{project}</small>
-                </span>
+                {displayName(project)}
               </button>
             ))}
           </div>
-        )}
-        <SecondaryEditor
-          root={root}
-          secondary={secondary}
-          disabled={disabled}
-          onSecondary={onSecondary}
-          onWorkspaces={onWorkspaces}
-          onError={onError}
-        />
-        {error && <div className="picker-error">{error}</div>}
-      </div>
+          <button
+            type="button"
+            className="project-option project-option-add"
+            disabled={disabled || busy}
+            onClick={() => pickPrimaryViaFinder()}
+          >
+            <span className="project-option-mark" aria-hidden="true">＋</span>
+            选择其他目录…
+          </button>
+        </div>
+      )}
+      {open && !editable && (
+        <div className="project-menu project-detail" aria-label="会话目录">
+          <div className="project-menu-label">会话工作目录</div>
+          <p className="project-detail-path" title={currentPath ?? detail}>
+            {currentPath ?? detail}
+          </p>
+          <button
+            type="button"
+            className="project-option"
+            disabled={!currentPath}
+            onClick={() => currentPath && copyPath(currentPath)}
+          >
+            <span className="project-option-mark" aria-hidden="true">⧉</span>
+            复制路径
+          </button>
+          <button
+            type="button"
+            className="project-option"
+            onClick={() => {
+              setOpen(false);
+              onNewChatHere(root);
+            }}
+          >
+            <span className="project-option-mark" aria-hidden="true">＋</span>
+            在此目录新建会话
+          </button>
+          <p className="project-detail-note">已有会话的工作目录不可修改。</p>
+        </div>
+      )}
     </div>
   );
 }

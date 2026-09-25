@@ -1,5 +1,10 @@
-import { useMemo } from "react";
+import { filterCommands, clampCommandIndex } from "./lib/commands";
+import { useMemo, useRef } from "react";
 import type { CommandInfo } from "./api";
+import { useRevealActive } from "./lib/useRevealActive";
+
+/** Id of the listbox the composer field points at with aria-controls. */
+export const COMMAND_LIST_ID = "composer-command-list";
 
 function SkillIcon() {
   return (
@@ -20,48 +25,6 @@ function CommandIcon() {
   );
 }
 
-function BuiltinIcon() {
-  return (
-    <svg className="command-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <line x1="12" y1="8" x2="12" y2="12" />
-      <line x1="12" y1="16" x2="12.01" y2="16" />
-    </svg>
-  );
-}
-
-export function filterCommands(commands: CommandInfo[], query: string): CommandInfo[] {
-  const q = (query.startsWith("/") ? query.slice(1) : query).toLowerCase();
-  return commands.filter(
-    (c) =>
-      c.name.startsWith(q) ||
-      (q.length > 0 && c.name.includes(q)) ||
-      c.description.toLowerCase().includes(q),
-  );
-}
-
-/** Clamp a command-list cursor to a valid index (0 when the list is empty). */
-export function clampCommandIndex(filtered: CommandInfo[], index: number): number {
-  const count = filtered.length;
-  if (count === 0) return 0;
-  return Math.min(Math.max(index, 0), count - 1);
-}
-
-/**
- * Single source of truth for the command-menu boundary logic. Both the
- * CommandMenu component and App's textarea onKeyDown use this so the ArrowUp /
- * ArrowDown clamp behavior cannot drift between the two implementations.
- * @param filtered the filtered command list under the current query
- * @param index    the current cursor index
- * @param delta    +1 (ArrowDown) or -1 (ArrowUp)
- */
-export function moveCommandCursor(filtered: CommandInfo[], index: number, delta: -1 | 1): number {
-  const count = filtered.length;
-  if (count === 0) return 0;
-  if (delta > 0) return Math.min(index + 1, count - 1);
-  return Math.max(index - 1, 0);
-}
-
 export function CommandMenu({
   commands,
   open,
@@ -78,14 +41,17 @@ export function CommandMenu({
   onClose: () => void;
 }) {
   const filtered = useMemo(() => filterCommands(commands, query), [commands, query]);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const idx = clampCommandIndex(filtered, index);
+  useRevealActive(boxRef, ".command-item.active", `${idx}:${filtered.length}`);
 
   if (!open || filtered.length === 0) return null;
-  const idx = clampCommandIndex(filtered, index);
 
-  // Group by category: 技能 (skill), 自定义命令 (template), 内置命令 (builtin)
+  // filterCommands returns the list grouped by kind (skill → template →
+  // builtin), which is exactly the section order below; the cursor index
+  // therefore always names the same item that is highlighted.
   const skills = filtered.filter((c) => c.kind === "skill");
   const templates = filtered.filter((c) => c.kind === "template");
-  const builtins = filtered.filter((c) => c.kind === "builtin");
 
   let globalCounter = 0;
 
@@ -100,7 +66,10 @@ export function CommandMenu({
             const isActive = itemIdx === idx;
             const sourceLabel = c.source === "user" ? "个人" : c.source === "project" ? "项目" : "";
             return (
-              <div
+              <button
+                type="button"
+                role="option"
+                aria-selected={isActive}
                 key={c.name}
                 className={`command-item ${isActive ? "active" : ""}`}
                 onMouseDown={(e) => {
@@ -109,13 +78,7 @@ export function CommandMenu({
                 }}
               >
                 <div className="command-item-left">
-                  {c.kind === "skill" ? (
-                    <SkillIcon />
-                  ) : c.kind === "template" ? (
-                    <CommandIcon />
-                  ) : (
-                    <BuiltinIcon />
-                  )}
+                  {c.kind === "skill" ? <SkillIcon /> : <CommandIcon />}
                   <span className="command-name">/{c.name}</span>
                   {c.argument_hint && <span className="command-hint">{c.argument_hint}</span>}
                   <span className="command-desc" title={c.description}>
@@ -123,7 +86,7 @@ export function CommandMenu({
                   </span>
                 </div>
                 {sourceLabel && <div className="command-source">{sourceLabel}</div>}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -133,10 +96,9 @@ export function CommandMenu({
 
   return (
     <div className="command-menu">
-      <div className="command-menu-scroll">
+      <div className="command-menu-scroll" ref={boxRef} id={COMMAND_LIST_ID} role="listbox" aria-label="可用命令">
         {renderSection("技能", skills)}
         {renderSection("命令", templates)}
-        {renderSection("内置命令", builtins)}
       </div>
       <div className="command-scrim" onClick={onClose} />
     </div>

@@ -1,15 +1,4 @@
-"""Platform integration: OS / subprocess orchestration used by the web layer.
-
-B1 extraction: the Finder folder picker (``osascript``), the reveal call
-(macOS ``open``), and the git-worktree creation pipeline (``git worktree add``
-+ ``git apply`` + ``.worktreeinclude`` copy + sandboxed ``.easycode/setup.sh``)
-live here so ``main.py`` routes stay thin HTTP shells.
-
-Every public function either returns plain data or raises a
-:class:`ValueError` subclass that the route layer maps to HTTP semantics
-(422 for user-input/validation, :class:`WorktreeAddError` → 500 for a
-platform-level failure).
-"""
+"""OS integration: folder picker, reveal in Finder, and Git worktrees."""
 
 from __future__ import annotations
 
@@ -118,6 +107,7 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
     (→ HTTP 500) when ``git worktree add`` itself fails. ``sandbox_command`` is
     injected so the caller (``main.py``) can keep it patchable in tests.
     """
+
     def run(cmd: list[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
         return subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=timeout
@@ -141,7 +131,9 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
     slug = f"{src.name}-{uuid.uuid4().hex[:5]}"
     wt = root_home / slug
     added = run(["git", "worktree", "add", "--detach", str(wt), head_sha], src)
-    if added.returncode != 0 or not ((wt.is_dir() and (wt / ".git").exists()) or (wt / ".git").is_file()):
+    if added.returncode != 0 or not (
+        (wt.is_dir() and (wt / ".git").exists()) or (wt / ".git").is_file()
+    ):
         raise WorktreeAddError(f"git worktree add failed: {added.stderr[:200]}")
 
     notes: list[str] = []
@@ -180,9 +172,7 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
             s = raw_s.resolve()
             d = (wt / rel).resolve()
             if not s.is_relative_to(src_resolved) or not d.is_relative_to(wt_resolved):
-                warnings.append(
-                    f"skipped .worktreeinclude entry outside worktree: {rel}"
-                )
+                warnings.append(f"skipped .worktreeinclude entry outside worktree: {rel}")
                 continue
             if d.exists():
                 continue

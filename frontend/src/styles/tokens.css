@@ -1,0 +1,212 @@
+/* EasyCode design tokens, base element rules and shared keyframes.
+ * Visual language: cool-neutral dark, hairline ring elevation, quiet chrome.
+ * Imported by styles.css; token names are shared with the TSX markup.
+ */
+
+@import "@fontsource-variable/inter/wght.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
+
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --page: oklch(20.9% 0.004 264.5);
+  --canvas: oklch(23.1% 0.004 264.5);
+  --surface: oklch(26% 0.006 271.2);
+  --inset: oklch(24.3% 0.004 264.5);
+  --hover: oklch(28.9% 0.006 271.2);
+  --hover-2: oklch(31.8% 0.007 274.7);
+
+  /* ink */
+  --ink: oklch(96.4% 0.002 247.8);
+  --ink-2: oklch(73.1% 0.008 260.7);
+  --ink-3: oklch(54.1% 0.01 264.5);
+
+  /* lines */
+  --line: oklch(30.8% 0.006 258.4);
+  --line-strong: oklch(35.6% 0.007 264.5);
+  --line-soft: oklch(27.8% 0.006 258.4);
+
+  /* fields */
+  --field: oklch(29.3% 0.006 271.2);
+
+  /* accent — used only for primary action, links, focus */
+  --accent: oklch(68% 0.173 253.3);
+  --accent-ink: oklch(78.8% 0.113 248.3);
+  --accent-tint: oklch(68% 0.173 253.3 / 0.16);
+
+  /* status */
+  --green: oklch(70.5% 0.154 153.8);
+  --green-tint: oklch(70.5% 0.154 153.8 / 0.14);
+  --orange: oklch(74.6% 0.156 55.6);
+  --orange-tint: oklch(74.6% 0.156 55.6 / 0.14);
+  --red: oklch(66.6% 0.18 21.4);
+  --red-tint: oklch(66.6% 0.18 21.4 / 0.14);
+
+  /* texture — dithered grids and the diagonal page stripes */
+  --grid-line: color-mix(in srgb, var(--line) 78%, transparent);
+  --stripe: oklch(100% 0 0 / 0.055);
+  --stripe-bg: oklch(22.6% 0.004 264.5);
+
+  /* dark-on-dark overlays (tooltips, hover cards) */
+  --tooltip-bg: oklch(18.2% 0.004 264.5);
+  --tooltip-fg: oklch(96.4% 0.002 247.8);
+  --tooltip-muted: oklch(73.1% 0.008 260.7);
+  --tooltip-border: oklch(30.8% 0.006 258.4);
+
+  /* elevation — hairline ring + soft drop */
+  --shadow-hairline: 0 0 0 1px var(--line);
+  --shadow-btn: 0 0 0 1px oklch(100% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.3);
+  --shadow-card: 0 0 0 1px oklch(100% 0 0 / 0.11), 0 1px 2px oklch(0% 0 0 / 0.2),
+    0 2px 6px oklch(0% 0 0 / 0.2);
+  --shadow-raised: 0 0 0 1px oklch(100% 0 0 / 0.13), 0 2px 10px oklch(0% 0 0 / 0.22);
+  --shadow-overlay: 0 0 0 1px oklch(100% 0 0 / 0.15), 0 8px 28px oklch(0% 0 0 / 0.34);
+  --shadow-inset-field: inset 0 1px 2px oklch(0% 0 0 / 0.4);
+
+  /* radius — chip 6 / control 8 / card 10 / window 14 */
+  --r-xs: 5px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+  --r-pill: 999px;
+
+  /* type */
+  --font-sans: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, monospace;
+
+  /* motion */
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-link: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 70% -20%, oklch(100% 0 0 / 0.035), transparent 38%),
+    var(--page);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-feature-settings: "cv11", "ss01";
+  letter-spacing: -0.01em;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+select,
+textarea,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid oklch(68% 0.173 253.3 / 0.65);
+  outline-offset: 2px;
+}
+
+/* numbers that must not shift while they tick (timers, counters, diff stats) */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------ shared keyframes */
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer-text {
+  from {
+    background-position: 150% center;
+  }
+  to {
+    background-position: -50% center;
+  }
+}
+
+/* pixel-grid loader — brighten plateau, staggered per cell */
+@keyframes pixel-on {
+  0%,
+  100% {
+    opacity: 0.15;
+  }
+  18%,
+  42% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 0.15;
+  }
+}
+
+/* text arriving from the model: a short lift, not a fade from nothing */
+@keyframes stream-in {
+  from {
+    opacity: 0.35;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

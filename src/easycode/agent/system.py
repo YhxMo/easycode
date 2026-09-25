@@ -41,6 +41,9 @@ Available tools:
 Guidelines:
 - Before answering questions about the codebase, inspect the actual files
   (glob / grep / read_file) instead of guessing.
+- For work that takes several steps, call update_todos first with the plan and
+  send the whole list again as steps start and finish, so the user can follow
+  progress. Keep it to the steps this task actually needs.
 - For large files, read them in pages: read_file returns line-numbered content
   with a footer (line range + next offset). Continue with offset=<next line> to
   page through the file instead of asking for the whole file at once.
@@ -59,7 +62,14 @@ Guidelines:
   a concise justification. Never let the sandbox infer writable paths from the
   command string; if a path is not in both the command and writable_roots it
   will be denied.
-- Tool JSON results may be truncated; rely on the status field.
+- Tool JSON results may be truncated; rely on the status field. A result that
+  carries ``approved_by_user: true`` was approved through the permission UI;
+  ``in_allowed`` only says whether the target is inside the workspace, never
+  whether an approval happened.
+- Before you hand work over, check what the handover points at: run the commands
+  you wrote into a document, and search for references to any file you deleted
+  or renamed (README, AGENTS.md, scripts, config) so nothing still points at a
+  path that is gone.
 - Keep answers concise and cite file paths when relevant.
 """
     if agents_desc:

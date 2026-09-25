@@ -36,7 +36,7 @@ async def test_summarize_returns_none_on_provider_error(monkeypatch) -> None:
 
     monkeypatch.setattr(sm, "acompletion", boom)
     s = LLMSummarizer("fake/model")
-    out = await s.summarize([{"role": "user", "content": "the real conversation"}])
+    out = await s([{"role": "user", "content": "the real conversation"}])
     assert out is None
 
 
@@ -55,5 +55,5 @@ async def test_summarize_returns_content_on_success(monkeypatch) -> None:
 
     monkeypatch.setattr(sm, "acompletion", ok)
     s = LLMSummarizer("fake/model")
-    out = await s.summarize([{"role": "user", "content": "x"}])
+    out = await s([{"role": "user", "content": "x"}])
     assert out == "a real summary"

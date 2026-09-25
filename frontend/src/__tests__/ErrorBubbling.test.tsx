@@ -3,58 +3,23 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
+import { primeApiMock } from "./helpers";
 
-// SecondaryEditor and ProjectPicker previously swallowed
-// Finder-choose failures into a local `.picker-error` that is easy to miss (and
-// invisible when the sidebar is collapsed or while editing inside a modal).
-// Both now accept an `onError` prop bubbled up to App's `showToast("err", ...)`
-// so a workspace/root-choose failure always surfaces as a global toast.
+// Finder-choose failures used to be reported twice: a local `.picker-error`
+// (easy to miss when the sidebar is collapsed or a modal covers it) plus the
+// App-level toast. DEC-F1 keeps a single error channel: the global toast via
+// the `onError` prop.
 //
 // Test drives App purely against a mocked ./api (easycode-audit rule 3: no
 // network, no real ~/.easycode).
-vi.mock("../api", () => ({
-  fetchSessions: vi.fn(),
-  fetchArchivedSessions: vi.fn(),
-  fetchSession: vi.fn(),
-  fetchWorkspaces: vi.fn(),
-  fetchModels: vi.fn(),
-  fetchCommands: vi.fn(),
-  setSessionPermission: vi.fn(),
-  streamChat: vi.fn(),
-  undoSession: vi.fn(),
-  redoSession: vi.fn(),
-  submitApproval: vi.fn(),
-  cancelSessionChat: vi.fn(),
-  deleteSession: vi.fn(),
-  archiveProjectChats: vi.fn(),
-  createWorktree: vi.fn(),
-  pinProject: vi.fn(),
-  removeProject: vi.fn(),
-  revealInFinder: vi.fn(),
-  saveProject: vi.fn(),
-  setSessionArchived: vi.fn(),
-  chooseWorkspace: vi.fn(),
-  switchModel: vi.fn(),
-  addModel: vi.fn(),
-  deleteModel: vi.fn(),
-  fetchModel: vi.fn(),
-  updateModel: vi.fn(),
-}));
+vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  primeApiMock(m);
   m.fetchSessions.mockResolvedValue([]);
-  m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
-  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {} });
-  m.fetchCommands.mockResolvedValue({ commands: [] });
-  m.streamChat.mockResolvedValue(undefined);
-  m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "s1", permission_mode: mode }));
-  m.undoSession.mockResolvedValue({ ok: true });
-  m.redoSession.mockResolvedValue({ ok: true });
-  m.submitApproval.mockResolvedValue(undefined);
+  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
 });
 
 describe("App · 访达选择失败冒泡", () => {
@@ -63,11 +28,11 @@ describe("App · 访达选择失败冒泡", () => {
     m.chooseWorkspace.mockRejectedValue(new Error("访达引擎不可用"));
 
     render(<App />);
-    // Foreground is a blank new session (currentId === null), so the sidebar
-    // shows the ProjectPicker with its "用访达添加主目录" button.
-    await screen.findByRole("button", { name: "用访达添加主目录" });
+    // Foreground is a blank new session (currentId === null), so the sidebar's
+    // directory card opens the picker that offers the Finder entry.
+    await user.click(document.querySelector(".project-picker .dir-card-main")!);
 
-    await user.click(screen.getByRole("button", { name: "用访达添加主目录" }));
+    await user.click(screen.getByRole("button", { name: /选择其他目录/ }));
 
     // The error must bubble through ProjectPicker.onError to the app toast
     // instead of living only in the local .picker-error.
@@ -75,7 +40,7 @@ describe("App · 访达选择失败冒泡", () => {
       const toast = document.querySelector(".app-toast");
       expect(toast?.textContent).toContain("访达引擎不可用");
     });
-    // The local picker error still appears too (backward compat preserved).
-    expect(document.querySelector(".picker-error")?.textContent).toContain("访达引擎不可用");
+    // DEC-F1: no local duplicate — the error lives only in the global toast.
+    expect(document.querySelector(".picker-error")).toBeNull();
   });
 });

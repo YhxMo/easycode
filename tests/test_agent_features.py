@@ -1,4 +1,4 @@
-"""Phase 3 tests: AGENTS.md rules, context compression, parallel sub-agents."""
+"""AGENTS.md rules, context compression, parallel sub-agents."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def make_agent(tmp_path: Path, script: list[dict] | None = None, **kw) -> Agent:
     )
 
 
-# ---------- P3-2 AGENTS.md ----------
+# Project instructions
 
 
 async def test_agents_md_loaded_into_system_prompt(tmp_path):
@@ -48,11 +48,11 @@ async def test_no_agents_md_no_rules_section(tmp_path):
 
 
 def test_history_condense_replaces_old_messages():
-    h = History(max_chars=1_000_000, max_messages=100)
+    h = History(max_chars=1_000_000)
     for i in range(30):
         h.add_user(f"user {i}")
         h.add_assistant(f"answer {i}")
-    ok = h.condense("EARLY SUMMARY", keep_recent=5)
+    ok = h.condense_from("EARLY SUMMARY", len(h.messages) - 5)
     assert ok is True
     roles = [m["role"] for m in h.messages]
     assert roles[0] == "system" and "EARLY SUMMARY" in h.messages[0]["content"]
@@ -64,13 +64,13 @@ def test_history_condense_noop_when_few_messages():
     h = History()
     h.add_user("hi")
     h.add_assistant("yo")
-    assert h.condense("S", keep_recent=5) is False
+    assert h.condense_from("S", 0) is False
 
 
 async def test_agent_condenses_when_over_budget(tmp_path):
     calls = []
 
-    async def fake_summarizer(messages) -> str:
+    async def fake_summarizer(messages, previous_summary=None) -> str:
         calls.append(messages)
         return "COMPRESSED"
 
@@ -97,13 +97,11 @@ async def test_parallel_tasks_runs_subagents(tmp_path):
         provider=FakeProvider(script=[{"text": "result-one"}]),
         registry=build_registry(8000),
         root=tmp_path,
-        include_parallel_tool=False,
     )
     sub_2 = Agent(
         provider=FakeProvider(script=[{"text": "result-two"}]),
         registry=build_registry(8000),
         root=tmp_path,
-        include_parallel_tool=False,
     )
     made = iter([sub_1, sub_2])
 
@@ -156,10 +154,34 @@ async def test_parallel_tasks_in_main_schema(tmp_path):
     assert "parallel_tasks" in names
 
 
-async def test_parallel_tasks_disabled_optionally(tmp_path):
-    agent = make_agent(tmp_path, [{"text": "x"}], include_parallel_tool=False)
+async def test_parallel_tasks_disabled_by_enabled_tools(tmp_path):
+    agent = make_agent(tmp_path, [{"text": "x"}], enabled_tools={"read_file", "glob"})
     names = [s["function"]["name"] for s in agent.tool_schemas()]
     assert "parallel_tasks" not in names
+
+
+def test_builtin_schemas_are_self_contained_and_bounded():
+    """The advertised schemas are generated from the runtime models but stay
+    plain, self-contained JSON (no $ref) and keep the shared limits."""
+    from easycode.agent.builtin_tools import (
+        MAX_PARALLEL_TASKS,
+        PARALLEL_TASKS_SCHEMA,
+        TASK_SCHEMA,
+        USE_SKILL_SCHEMA,
+    )
+
+    for schema in (PARALLEL_TASKS_SCHEMA, TASK_SCHEMA, USE_SKILL_SCHEMA):
+        blob = json.dumps(schema)
+        assert "$ref" not in blob and "$defs" not in blob
+
+    params = PARALLEL_TASKS_SCHEMA["function"]["parameters"]
+    assert params["properties"]["tasks"]["minItems"] == 1
+    assert params["properties"]["tasks"]["maxItems"] == MAX_PARALLEL_TASKS
+    assert params["properties"]["tasks"]["items"]["required"] == ["name", "prompt"]
+    assert params["properties"]["max_parallel"]["minimum"] == 1
+    assert params["properties"]["max_parallel"]["maximum"] == MAX_PARALLEL_TASKS
+    assert TASK_SCHEMA["function"]["parameters"]["required"] == ["agent", "prompt"]
+    assert USE_SKILL_SCHEMA["function"]["parameters"]["required"] == ["name"]
 
 
 async def test_parallel_tasks_subagent_error_reported(tmp_path):
@@ -167,7 +189,6 @@ async def test_parallel_tasks_subagent_error_reported(tmp_path):
         provider=FakeProvider(script=[{"error": "boom"}]),
         registry=build_registry(8000),
         root=tmp_path,
-        include_parallel_tool=False,
     )
     main = make_agent(
         tmp_path,

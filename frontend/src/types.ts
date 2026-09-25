@@ -1,10 +1,11 @@
-// Shared UI domain types for the chat stream layer.
-//
-// Extracted from App.tsx during the B5 stream-layer split so that the reducer
-// (chatStream.ts), the useChatStream hook and the history helpers
-// (lib/history.ts) can all share one source of truth without reaching into
-// App's closure.
+// Shared chat UI types.
 export type ApprovalState = "pending" | "approved" | "denied" | "expired";
+
+/** One line of the session's task list (mirrors the update_todos tool). */
+export interface TodoItem {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
 
 export type Item =
   | { kind: "user"; text: string; time?: string }
@@ -34,13 +35,9 @@ export type Item =
       scope?: string;
       state: ApprovalState;
     }
+  | { kind: "todo"; todos: TodoItem[] }
   | { kind: "review"; text: string }
   | { kind: "notice"; text: string }
-  | { kind: "error"; text: string };
-
-export type RollbackInfo = {
-  count: number;
-  prompt: string;
-  files: number;
-  messageOnly: boolean;
-};
+  /** A terminal error. `code` marks one the server produced deliberately (e.g. a
+   *  configured iteration ceiling), which is a turn that can be continued. */
+  | { kind: "error"; text: string; code?: string };

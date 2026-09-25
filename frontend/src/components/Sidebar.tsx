@@ -1,222 +1,342 @@
-import type {
-  ModelsInfo,
-  SessionSummary,
-  WorkspaceProject,
-  WorkspacesInfo,
-} from "../api";
-import { ModelPicker } from "../ModelPicker";
+import type { ReactNode, RefObject } from "react";
+import { useState } from "react";
+import type { SessionSummary, WorkspaceProject, WorkspacesInfo } from "../api";
+import type { StreamActivityMap } from "../useChatStream";
 import { ProjectMenu, type ProjectAction } from "../ProjectMenu";
-import { ProjectPicker, basename } from "../ProjectPicker";
+import { ProjectPicker } from "../ProjectPicker";
 import { SecondaryEditor } from "../SecondaryEditor";
+import type { ProjectGroup, SessionGroups } from "../lib/sessionGroups";
 
-const DEFAULT_PROJECT = "default project";
+/** Working directories listed before the project list spills. */
+const PROJECT_PREVIEW = 5;
 
 function FolderIcon() {
   return (
-    <svg className="project-folder-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <svg className="side-folder" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="M3.5 7.5h6l1.8 2h9.2v7.8a2.7 2.7 0 0 1-2.7 2.7H6.2a2.7 2.7 0 0 1-2.7-2.7V7.5Z" />
       <path d="M3.5 7.5V6.7A2.7 2.7 0 0 1 6.2 4h3.1l2 2h3.2" />
     </svg>
   );
 }
 
-function PinBadgeIcon() {
+function PinIcon() {
   return (
-    <svg className="project-pin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M12 3v9m0 0-4-4m4 4 4-4M6 21h12" />
+    <svg className="side-pin" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M9.5 4h5l-.7 5.2 2.7 2.6v1.7H7.5v-1.7l2.7-2.6z" />
+      <path d="M12 13.5V20" />
     </svg>
+  );
+}
+
+function Caret({ open }: { open: boolean }) {
+  return (
+    <span className={`side-caret${open ? " open" : ""}`} aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false">
+        <path d="M9 5.5 15.5 12 9 18.5" />
+      </svg>
+    </span>
   );
 }
 
 export interface SidebarProps {
   currentId: string | null;
+  /** Per-session running/approval state, for row badges. */
+  activity: StreamActivityMap;
+  groups: SessionGroups;
   archived: SessionSummary[];
   showArchived: boolean;
+  /** Collapsed top-level sections, keyed `sec:<name>`. */
+  collapsedSections: Record<string, boolean>;
   collapsedProjects: Record<string, boolean>;
   busy: boolean;
-  models: ModelsInfo;
+  /** Foreground session loading/failed: session-scoped edits stay disabled. */
+  sessionBlocked: boolean;
+  /** Current view version, for dropping superseded secondary-root saves. */
+  viewToken: RefObject<number>;
   workspaces: WorkspacesInfo;
-  groups: Array<[string | null, SessionSummary[]]>;
-  projectMeta: Map<string | null, WorkspaceProject>;
+  /** False until the workspace list has been fetched once (loading card state). */
+  workspacesLoaded: boolean;
   chosenRoot: string | null;
-  chosenSecondary: string[];
   currentRoot: string | null;
-  currentSecondary: string[];
+  /** Secondary roots of the draft (new session) or open session. */
+  secondary: string[];
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
+  onToggleSection: (key: string) => void;
   onToggleCollapsed: (key: string) => void;
   onNewChatInProject: (root: string | null) => void;
   onProjectAction: (root: string | null, action: ProjectAction) => void;
   onSetChosenRoot: (root: string | null) => void;
-  onSetChosenSecondary: (secondary: string[]) => void;
-  onSetCurrentSecondary: (secondary: string[]) => void;
-  onSetWorkspaces: (workspaces: WorkspacesInfo) => void;
+  onSetSecondary: (secondary: string[]) => void;
+  onProjects: (projects: WorkspaceProject[]) => void;
   onToggleArchived: () => void;
   onDeleteSession: (session: SessionSummary) => void;
+  onTogglePin: (session: SessionSummary) => void;
   onRestoreSession: (session: SessionSummary) => void;
-  onModelChange: (models: ModelsInfo) => void;
   /** Global error reporter (app-level toast) for picker/editor failures. */
   onError: (message: string) => void;
 }
 
 export function Sidebar({
   currentId,
+  activity,
+  groups,
   archived,
   showArchived,
+  collapsedSections,
   collapsedProjects,
   busy,
-  models,
+  sessionBlocked,
+  viewToken,
   workspaces,
-  groups,
-  projectMeta,
+  workspacesLoaded,
   chosenRoot,
-  chosenSecondary,
   currentRoot,
-  currentSecondary,
+  secondary,
   onNewSession,
   onOpenSession,
+  onToggleSection,
   onToggleCollapsed,
   onNewChatInProject,
   onProjectAction,
   onSetChosenRoot,
-  onSetChosenSecondary,
-  onSetCurrentSecondary,
-  onSetWorkspaces,
+  onSetSecondary,
+  onProjects,
   onToggleArchived,
   onDeleteSession,
+  onTogglePin,
   onRestoreSession,
-  onModelChange,
   onError,
 }: SidebarProps) {
+  const [showAllProjects, setShowAllProjects] = useState(false);
+
+  /** One conversation row: open it, or act on it from its own buttons. */
+  const sessionRow = (s: SessionSummary) => {
+    const act = activity[s.id];
+    return (
+      <div
+        key={s.id}
+        className={`session-item${s.id === currentId ? " active" : ""}${act?.busy ? " running" : ""}`}
+      >
+        <button
+          type="button"
+          className="session-open"
+          title={s.title}
+          aria-current={s.id === currentId ? "page" : undefined}
+          onClick={() => onOpenSession(s.id)}
+        >
+          <span className="session-title">{s.title}</span>
+          {act?.busy && <span className="session-run" aria-label="正在运行" />}
+        </button>
+        {act?.approvals ? (
+          <span className="session-ask" title={`${act.approvals} 个待批准`}>
+            待批准
+          </span>
+        ) : null}
+        <span className="session-actions">
+          <button
+            type="button"
+            className={`session-pin${s.pinned ? " on" : ""}`}
+            title={s.pinned ? "取消置顶" : "置顶会话"}
+            aria-label={s.pinned ? `取消置顶 ${s.title}` : `置顶会话 ${s.title}`}
+            onClick={() => onTogglePin(s)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M9.5 4h5l-.7 5.2 2.7 2.6v1.7H7.5v-1.7l2.7-2.6z" />
+              <path d="M12 13.5V20" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="session-del"
+            title="删除"
+            aria-label={`删除会话 ${s.title}`}
+            onClick={() => onDeleteSession(s)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </span>
+      </div>
+    );
+  };
+
+  const projectBlock = (g: ProjectGroup) => {
+    const key = `proj:${g.root}`;
+    const collapsed = Boolean(collapsedProjects[key]);
+    return (
+      <div key={g.root} className={`project-group${collapsed ? " collapsed" : ""}`}>
+        <div className="project-group-head" title={g.root}>
+          <button
+            type="button"
+            className="group-head-main"
+            title={g.root}
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "展开项目" : "折叠项目"}
+            onClick={() => onToggleCollapsed(key)}
+          >
+            <Caret open={!collapsed} />
+            <FolderIcon />
+            <span className="project-group-name">{g.name}</span>
+            {g.pinned && (
+              <span className="project-pin-badge" title="已置顶" aria-label="已置顶">
+                <PinIcon />
+              </span>
+            )}
+          </button>
+          <div className="group-head-actions">
+            <button
+              type="button"
+              className="group-new-btn"
+              title="在此项目下新建会话"
+              aria-label="在此项目下新建会话"
+              onClick={(e) => {
+                e.stopPropagation();
+                onNewChatInProject(g.root);
+              }}
+            >
+              <span aria-hidden="true">＋</span>
+            </button>
+            <ProjectMenu
+              pinned={g.pinned}
+              running={g.sessions.some((s) => activity[s.id]?.busy)}
+              onAction={(action) => onProjectAction(g.root, action)}
+            />
+          </div>
+        </div>
+        {!collapsed && g.sessions.map(sessionRow)}
+        {!collapsed && g.sessions.length === 0 && (
+          <div className="project-empty">还没有会话</div>
+        )}
+      </div>
+    );
+  };
+
+  const section = (key: string, label: string, body: ReactNode, count?: number) => {
+    const collapsed = Boolean(collapsedSections[key]);
+    return (
+      <section className={`side-sec${collapsed ? " collapsed" : ""}`}>
+        <button
+          type="button"
+          className="side-head"
+          aria-expanded={!collapsed}
+          onClick={() => onToggleSection(key)}
+        >
+          <Caret open={!collapsed} />
+          <span className="side-head-label">{label}</span>
+          {count ? <span className="side-count">{count}</span> : null}
+        </button>
+        {!collapsed && <div className="side-body">{body}</div>}
+      </section>
+    );
+  };
+
+  const projects = showAllProjects ? groups.projects : groups.projects.slice(0, PROJECT_PREVIEW);
+
   return (
     <aside className="sidebar" id="sidebar">
       <div className="brand">
-        <span className="brand-mark" aria-hidden="true">&gt;_</span>
+        <span className="brand-mark" aria-hidden="true">
+          &gt;_
+        </span>
         <h1>Easy code</h1>
       </div>
-      <button className="new-btn" type="button" onClick={onNewSession}>
-        <span aria-hidden="true">＋</span> 新会话
-      </button>
-      <div className="project-picker">
-        {currentId === null ? (
-          <ProjectPicker
-            workspaces={workspaces}
-            root={chosenRoot}
-            secondary={chosenSecondary}
-            disabled={busy}
-            onRoot={onSetChosenRoot}
-            onSecondary={onSetChosenSecondary}
-            onWorkspaces={onSetWorkspaces}
-            onError={onError}
-          />
-        ) : currentRoot ? (
-          <div className="project-tag" title={currentRoot}>
-            {basename(currentRoot)}
-          </div>
-        ) : (
-          <div className="project-tag default">{DEFAULT_PROJECT}</div>
+      <div className="sidebar-scroll">
+        {section(
+          "sec:dirs",
+          "目录",
+          <>
+            <div className="dir-area">
+              <ProjectPicker
+                workspaces={workspaces}
+                loaded={workspacesLoaded}
+                root={currentId === null ? chosenRoot : currentRoot}
+                editable={currentId === null}
+                disabled={busy}
+                viewToken={viewToken}
+                onRoot={onSetChosenRoot}
+                onSecondary={onSetSecondary}
+                onProjects={onProjects}
+                onNewChatHere={onNewChatInProject}
+                onError={onError}
+              />
+              <SecondaryEditor
+                root={currentId === null ? chosenRoot : currentRoot}
+                secondary={secondary}
+                sessionId={currentId}
+                disabled={busy || sessionBlocked}
+                viewToken={viewToken}
+                onSecondary={onSetSecondary}
+                onProjects={onProjects}
+                onError={onError}
+              />
+            </div>
+            <button
+              className="new-btn"
+              type="button"
+              title="在默认工作区新建会话"
+              onClick={onNewSession}
+            >
+              <span aria-hidden="true">＋</span> 新会话
+              <small className="new-btn-hint">默认工作区</small>
+            </button>
+          </>,
         )}
-        {currentId !== null && (
-          <SecondaryEditor
-            root={currentRoot}
-            secondary={currentSecondary}
-            sessionId={currentId}
-            disabled={busy}
-            onSecondary={onSetCurrentSecondary}
-            onWorkspaces={onSetWorkspaces}
-            onError={onError}
-          />
-        )}
-      </div>
-      <div className="session-list">
-        {groups.length > 0 && <div className="session-list-label">项目</div>}
-        {groups.map(([root, list]) => {
-          const meta = projectMeta.get(root);
-          const pinned = meta?.pinned ?? false;
-          const groupKey = root ?? "__default__";
-          const isCollapsed = Boolean(collapsedProjects[groupKey]);
-          return (
-          <div key={groupKey} className={`project-group ${isCollapsed ? "collapsed" : ""}`}>
-            <div className="project-group-head" title={root ?? DEFAULT_PROJECT}>
+
+        {groups.pinned.length > 0 &&
+          section("sec:pinned", "置顶", groups.pinned.map(sessionRow))}
+
+        {section(
+          "sec:projects",
+          "项目",
+          <>
+            {projects.map(projectBlock)}
+            {groups.projects.length > PROJECT_PREVIEW && (
               <button
                 type="button"
-                className="group-head-main"
-                title={root ?? DEFAULT_PROJECT}
-                aria-expanded={!isCollapsed}
-                aria-label={isCollapsed ? "展开项目" : "折叠项目"}
-                onClick={() => onToggleCollapsed(groupKey)}
+                className="side-more"
+                onClick={() => setShowAllProjects((v) => !v)}
               >
-                <span className="project-collapse-caret" aria-hidden="true">{isCollapsed ? "›" : "⌄"}</span>
-                <FolderIcon />
-                <span className="project-group-name">{meta?.name ?? (root ? basename(root) : DEFAULT_PROJECT)}</span>
-                {pinned && (
-                  <span className="project-pin-badge" title="已置顶" aria-label="已置顶">
-                    <PinBadgeIcon />
-                  </span>
-                )}
+                {showAllProjects ? "收起" : "展开显示"}
               </button>
-              <div className="group-head-actions">
-                <button
-                  type="button"
-                  className="group-new-btn"
-                  title="在此项目下新建会话"
-                  aria-label="在此项目下新建会话"
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onNewChatInProject(root);
-                  }}
-                >
-                  <span aria-hidden="true">＋</span>
-                </button>
-                <ProjectMenu
-                  pinned={pinned}
-                  disabled={busy}
-                  onAction={(action) => onProjectAction(root, action)}
-                />
-              </div>
-            </div>
-            {!isCollapsed && list.map((s) => (
-              <div
-                key={s.id}
-                className={`session-item ${s.id === currentId ? "active" : ""}`}
-                onClick={() => onOpenSession(s.id)}
-              >
-                <span className="session-title">{s.title}</span>
-                <span
-                  className="session-del"
-                  title="删除"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteSession(s);
-                  }}
-                >
-                  ✕
-                </span>
-              </div>
-            ))}
-          </div>
-        );
-        })}
-        {groups.length === 0 && <div className="session-empty">新会话会保存在这里</div>}
+            )}
+            {groups.projects.length === 0 && (
+              <div className="session-empty">添加项目以组织会话</div>
+            )}
+          </>,
+          groups.projects.length || undefined,
+        )}
+
+        {section(
+          "sec:recents",
+          "最近",
+          groups.recents.length ? (
+            groups.recents.map(sessionRow)
+          ) : (
+            <div className="session-empty">默认工作区的会话显示在这里</div>
+          ),
+        )}
+
         {archived.length > 0 && (
-          <div className="archive-section">
+          <section className="side-sec">
             <button
               type="button"
-              className="archive-head"
+              className="side-head"
               onClick={onToggleArchived}
               aria-expanded={showArchived}
             >
-              <span className="archive-icon" aria-hidden="true">📦</span>
-              <span>已归档</span>
-              <span className="archive-count">{archived.length}</span>
-              <span className="archive-caret" aria-hidden="true">{showArchived ? "⌄" : "›"}</span>
+              <Caret open={showArchived} />
+              <span className="side-head-label">已归档</span>
+              <span className="side-count">{archived.length}</span>
             </button>
             {showArchived && (
-              <div className="archive-list">
+              <div className="side-body archive-list">
                 {archived.map((s) => (
                   <div key={s.id} className="session-item archived">
-                    <span className="session-title" title={s.title}>{s.title}</span>
+                    <span className="session-title" title={s.title}>
+                      {s.title}
+                    </span>
                     <div className="archive-actions">
                       <button
                         type="button"
@@ -247,11 +367,8 @@ export function Sidebar({
                 ))}
               </div>
             )}
-          </div>
+          </section>
         )}
-      </div>
-      <div className="sidebar-foot">
-        <ModelPicker models={models} current={models.default} onChange={onModelChange} onError={onError} />
       </div>
     </aside>
   );

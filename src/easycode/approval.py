@@ -2,8 +2,9 @@
 
 Three permission modes (config global / CLI flag / Web session):
 
-- ``ask`` (default): workspace/temp/~/.easycode actions run automatically;
-  editing external files and network-ish shell commands ask the user first.
+- ``ask`` (default): workspace/temp actions run automatically; editing
+  external files, the data-home state dirs (~/.easycode/{sessions,agents,
+  skills,commands}), and network-ish shell commands ask the user first.
 - ``auto-review``: everything runs; changes are summarized afterwards.
 - ``allow-all``: everything runs; no tracking at all.
 """
@@ -17,19 +18,7 @@ import shlex
 from pathlib import Path
 
 from easycode.models.base import ToolCall
-from easycode.policy import (
-    PERM_ALLOW_ALL,
-    SANDBOX_DANGER_FULL_ACCESS,
-)
-from easycode.policy import (
-    PERM_ASK as PERM_ASK,  # re-export: config/loop import the mode constants from here
-)
-from easycode.policy import (
-    PERM_AUTO_REVIEW as PERM_AUTO_REVIEW,
-)
-from easycode.policy import (
-    permission_parse as permission_parse,  # re-export: config imports it from here
-)
+from easycode.policy import PERM_ALLOW_ALL, SANDBOX_DANGER_FULL_ACCESS
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
 NETWORK_HINTS = (
@@ -76,7 +65,7 @@ def approval_key(tc: ToolCall, *, grant: ToolGrant | None = None) -> str:
     an identical command always yields the same key. When ``grant`` is given
     the digest also binds the conveyed capability (network / explicit writable
     roots, sorted+normalised) so a permission narrowed or widened along those
-    axes is never confused with a plain command-only grant (P0-1).
+    axes is never confused with a plain command-only grant.
     """
     if tc.name in FILE_EDIT_TOOLS:
         return f"{tc.name}:{approval_scope(tc)}"
@@ -163,7 +152,9 @@ def approval_reason(tc: ToolCall, ctx: PathContext) -> str:
         resolved = ctx.resolve(str(path))
         for protected in ctx.protected_paths():
             if resolved.is_relative_to(protected):
-                return "修改受保护目录 (.git/.easycode)"
+                return "修改受保护目录 (.git/.easycode/项目配置)"
+        if ctx.is_model_state(resolved):
+            return "修改会话或扩展数据目录 (~/.easycode)"
         return "访问项目目录之外的文件"
     if tc.name == "execute_shell":
         if tc.arguments.get("sandbox_permissions") == "require_escalated":
@@ -178,21 +169,11 @@ def _looks_like_network(command: str) -> bool:
     return bool(NETWORK_HINT_RE.search(command))
 
 
-def looks_like_network(command: str) -> bool:
-    """Compatibility preflight; Seatbelt is the actual network boundary."""
-    return _looks_like_network(command)
-
-
-def needs_review(tc: ToolCall) -> bool:
-    """Auto-review mode: worth surfacing afterwards (file changes)."""
-    return tc.name in FILE_EDIT_TOOLS or tc.name == "execute_shell"
-
-
 def grant_for_toolcall(tc: ToolCall, ctx: PathContext) -> ToolGrant:
     """Minimal, precise grant derived from an *approved* tool call.
 
     This is the single-call authorization an approval actually conveys. It is
-    deliberately narrow (P0-1):
+    deliberately narrow:
 
     - ``execute_shell``: network is granted only when the command looks like a
       network operation (or was marked escalated); no external writable roots
@@ -213,20 +194,20 @@ def grant_for_toolcall(tc: ToolCall, ctx: PathContext) -> ToolGrant:
         # A protected target (credentials, or any workspace/extra root's
         # .git/.easycode, incl. the target's parent being one) must never be
         # granted — the approval can only emit a precise safe grant, else the
-        # file tool's own hard-deny rejects the write (P0-2).
+        # file tool's own hard-deny rejects the write.
         if ctx.is_protected_path(p):
             return ToolGrant()
         return ToolGrant(writable_roots=(p.parent,))
     if tc.name == "execute_shell":
         command = str(tc.arguments.get("command", ""))
-        network = (tc.arguments.get("sandbox_permissions") == "require_escalated") or _looks_like_network(
-            command
-        )
+        network = (
+            tc.arguments.get("sandbox_permissions") == "require_escalated"
+        ) or _looks_like_network(command)
         declared = tc.arguments.get("writable_roots") or []
         # The grant's writable roots come *only* from the model's explicit,
         # validated declaration (never by parsing the command string). If ANY
         # declared root is invalid, the whole list fails closed — a partial
-        # grant is never kept (P0-1).
+        # grant is never kept.
         roots, err = validate_writable_roots(list(declared), None)
         if err is not None:
             roots = []
@@ -321,16 +302,24 @@ def destructive_command_reason(command: str) -> str | None:
 def definitive_deny_reason(tc: ToolCall, ctx: PathContext) -> str | None:
     """Categorical denial for a tool call.
 
-    Only ``execute_shell`` is in scope; anything else (file tools, MCP,
-    builtins) is handled by the existing approval policy. Returning a reason
-    means the call must be rejected without running — even when an approval
-    handler is missing or a reviewer would have approved it.
+    A file write into a permanent protected boundary (``.git``/``.easycode``/
+    ``easycode.config.json`` of any authorization root, plus the credential
+    files) is refused here so no approval is ever offered for a call that could
+    not succeed: those boundaries are hard protection, and asking the user to
+    approve one only produces a decision that the file tool must ignore.
 
-    Under ``danger-full-access`` (the ``allow-all`` preset) the denylist is
-    off, matching Codex's ``danger-full-access`` semantics: the sandbox and
-    approvals are already gone, so no in-process denylist remains. Selective
-    limits under allow-all are the job of ``permission_rules``.
+    ``execute_shell`` is denied for clearly destructive commands. Under
+    ``danger-full-access`` (the ``allow-all`` preset) that denylist is off,
+    matching Codex's ``danger-full-access`` semantics: the sandbox and approvals
+    are already gone, so no in-process denylist remains. Selective limits under
+    allow-all are the job of ``permission_rules``. File-tool protection is not
+    part of that preset — protected paths stay denied in every mode.
     """
+    if tc.name in FILE_EDIT_TOOLS:
+        path = str(tc.arguments.get("path", "")).strip()
+        if path and ctx.is_protected_path(ctx.resolve(path)):
+            return f"受保护路径不可写（.git/.easycode/项目配置/凭据）: {path}"
+        return None
     if ctx.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
         return None
     if tc.name != "execute_shell":

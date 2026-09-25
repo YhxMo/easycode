@@ -41,8 +41,6 @@ def render_event(ev: AgentEvent) -> None:
         console.print(f"[dim]  └→ {snippet}[/]", highlight=False, soft_wrap=True)
     elif ev.kind == "error":
         console.print(Panel(ev.error or "unknown error", title="error", border_style="red"))
-    elif ev.kind == "cancelled":
-        console.print("\n[dim]⏹ 已中断[/]")
     elif ev.kind == "done":
         console.print("\n")
 
@@ -71,24 +69,3 @@ def show_diff_summary(edits: list[dict]) -> None:
     for edit in edits:
         console.print(f"\n[bold]{edit['path']}[/]")
         console.print(Syntax(edit["diff"], "diff", theme="monokai", word_wrap=True))
-
-
-def print_help(models: dict[str, str], current: str) -> None:
-    lines = [
-        "[bold]Commands[/]",
-        "  /help                  show this help",
-        "  /model                 list models & current default",
-        "  /model <alias>         switch model by alias",
-        "  /model <a>=<litellm>   add/override alias at runtime",
-        "  /exit                  quit",
-        "",
-        "[bold]Editing[/]",
-        "  Enter       send",
-        "  Alt+Enter   newline",
-        "  Ctrl+C      interrupt current turn",
-        "  Ctrl+D      quit",
-        "",
-        f"[bold]Models[/]  [yellow]current: {current}[/]",
-    ]
-    lines += [f"  {a}: {m}" for a, m in models.items()]
-    console.print(Panel("\n".join(lines), title="Easy code", border_style="cyan"))

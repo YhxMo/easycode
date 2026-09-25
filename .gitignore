@@ -42,3 +42,6 @@ PLAN-phase*.md
 !.env.example
 .easycode/sessions/
 .easycode/credentials.json
+
+# IDE settings
+.idea/

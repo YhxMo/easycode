@@ -2,7 +2,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface ProjectMenuProps {
   pinned: boolean;
-  disabled: boolean;
+  /** True when this project has a conversation with a turn running. */
+  running: boolean;
   onAction: (action: ProjectAction) => void;
 }
 
@@ -36,17 +37,20 @@ const ITEMS: {
   label: string;
   d: string;
   dividerBefore?: boolean;
+  /** Needs every conversation of the project to be idle (the backend holds
+   *  each session's lock for the whole of a turn). */
+  needsIdle?: boolean;
 }[] = [
   { action: "pin", label: "置顶", d: PIN_D },
   { action: "unpin", label: "取消置顶", d: UNPIN_D },
   { action: "edit", label: "编辑", d: EDIT_D },
   { action: "reveal", label: "在 Finder 中显示", d: REVEAL_D, dividerBefore: true },
   { action: "worktree", label: "创建永久工作树", d: WORKTREE_D },
-  { action: "archive", label: "归档聊天", d: ARCHIVE_D, dividerBefore: true },
+  { action: "archive", label: "归档聊天", d: ARCHIVE_D, dividerBefore: true, needsIdle: true },
   { action: "remove", label: "移除项目", d: REMOVE_D, dividerBefore: true },
 ];
 
-export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
+export function ProjectMenu({ pinned, running, onAction }: ProjectMenuProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -118,7 +122,6 @@ export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
         aria-label="更多操作"
         aria-haspopup="menu"
         aria-expanded={open}
-        disabled={disabled}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
@@ -141,19 +144,25 @@ export function ProjectMenu({ pinned, disabled, onAction }: ProjectMenuProps) {
             visibility: pos ? "visible" : "hidden",
           }}
         >
-          {items.map((it) => (
-            <button
-              type="button"
-              key={it.action}
-              role="menuitem"
-              className={`project-menu-item ${it.dividerBefore ? "divider" : ""}`}
-              disabled={disabled}
-              onClick={() => pick(it.action)}
-            >
-              <Icon d={it.d} />
-              <span>{it.label}</span>
-            </button>
-          ))}
+          {items.map((it) => {
+            // Only the actions a running turn really blocks are gated: the
+            // rest stay usable while another conversation is working.
+            const blocked = it.needsIdle && running;
+            return (
+              <button
+                type="button"
+                key={it.action}
+                role="menuitem"
+                className={`project-menu-item ${it.dividerBefore ? "divider" : ""}`}
+                disabled={blocked}
+                title={blocked ? "该项目有会话正在运行，先停止后再归档" : undefined}
+                onClick={() => pick(it.action)}
+              >
+                <Icon d={it.d} />
+                <span>{it.label}</span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

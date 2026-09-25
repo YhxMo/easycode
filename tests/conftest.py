@@ -10,6 +10,12 @@ import pytest
 from easycode.models.base import Provider, StreamEvent, ToolCall
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """Every test runs against a throw-away HOME (never the real ~/.easycode)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 class FakeProvider(Provider):
     """A scripted provider.
 

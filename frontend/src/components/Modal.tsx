@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 // Every focusable control that should participate in the dialog's Tab cycle.
 // Disabled controls are excluded so the trap never lands on an inert element.
@@ -7,6 +8,10 @@ const FOCUSABLE =
 
 /**
  * Generic modal dialog.
+ *
+ * Rendered through a portal on <body> and laid out as a fixed backdrop with the
+ * card centred inside it, so an ancestor's `overflow: hidden` (the composer, the
+ * chat card) can never crop it.
  *
  * Provides the WAI-ARIA Dialog (Modal) contract that the previous inline
  * `.modal-backdrop` divs lacked:
@@ -54,7 +59,9 @@ export function Modal({
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        onCloseRef.current();
+        // A popover inside the dialog closes first and claims the key, so one
+        // Escape never closes two layers at once.
+        if (!e.defaultPrevented) onCloseRef.current();
         return;
       }
       if (e.key !== "Tab") return;
@@ -94,7 +101,9 @@ export function Modal({
 
   if (!open) return null;
 
-  return (
+  // Portalled to <body>: the composers and cards that open dialogs clip their
+  // own overflow, so a dialog rendered in place would be cropped by them.
+  return createPortal(
     <div className="modal-backdrop" onClick={onClose}>
       <div
         ref={cardRef}
@@ -105,9 +114,11 @@ export function Modal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-title">{title}</div>
-        {children}
+        {/* Only the body scrolls: the title and the actions stay reachable. */}
+        <div className="modal-body">{children}</div>
         {actions ? <div className="modal-actions">{actions}</div> : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

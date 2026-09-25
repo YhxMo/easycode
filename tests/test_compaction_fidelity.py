@@ -13,7 +13,7 @@ compaction must raise :class:`BudgetExceededError` *before* the provider call
 (that is a legal, documented outcome rather than a silent truncation).
 
 The scenario only exercises ``Agent`` and :class:`~easycode.agent.context.History`
-over the real ``_condense_if_over_budget`` path — no product code is touched
+over the real ``Compactor.condense`` path — no product code is touched
 here.
 """
 
@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import pytest
 
-import easycode.agent.loop as loop
+import easycode.agent.compaction as compaction
+from easycode.agent.compaction import PRUNED_OUTPUT, BudgetExceededError
 from easycode.agent.context import History
-from easycode.agent.loop import PRUNED_OUTPUT, Agent, BudgetExceededError
+from easycode.agent.loop import Agent
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 
@@ -153,8 +154,8 @@ def _recovered(history: History) -> dict[str, bool]:
 async def test_compaction_recovers_all_five_categories(tmp_path, monkeypatch):
     """A faithful summarizer + retained tail must recover all five contract
     categories after the real prune + condense path."""
-    monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
-    monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
+    monkeypatch.setattr(compaction, "PRUNE_PROTECT", 20)
+    monkeypatch.setattr(compaction, "PRUNE_MINIMUM", 5)
     agent = build_agent(tmp_path)
 
     recorded: list[list[dict]] = []
@@ -165,7 +166,7 @@ async def test_compaction_recovers_all_five_categories(tmp_path, monkeypatch):
 
     agent.summarizer = faithful_summarize
 
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     # prune ran BEFORE summarize: the summarizer saw the big old edit result
     # already cleared to the protected marker.
@@ -203,8 +204,8 @@ async def test_compaction_recovers_all_five_categories(tmp_path, monkeypatch):
 async def test_summarizer_none_falls_back_to_trim_without_fabrication(tmp_path, monkeypatch):
     """None summary: conservative trim path — no injected summary, no fabricated
     degrade text."""
-    monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
-    monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
+    monkeypatch.setattr(compaction, "PRUNE_PROTECT", 20)
+    monkeypatch.setattr(compaction, "PRUNE_MINIMUM", 5)
     agent = build_agent(tmp_path)
 
     async def returning_none(messages, previous_summary=None):
@@ -213,7 +214,7 @@ async def test_summarizer_none_falls_back_to_trim_without_fabrication(tmp_path, 
     agent.summarizer = returning_none
     before = len(agent.history.messages)
 
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert agent.history.summary is None  # never fabricated a summary
     for m in agent.history.messages:
@@ -225,8 +226,8 @@ async def test_summarizer_none_falls_back_to_trim_without_fabrication(tmp_path, 
 async def test_summarizer_exception_propagates_without_fabrication(tmp_path, monkeypatch):
     """A raising summarizer surfaces the failure without injecting fabricated
     summary text."""
-    monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
-    monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
+    monkeypatch.setattr(compaction, "PRUNE_PROTECT", 20)
+    monkeypatch.setattr(compaction, "PRUNE_MINIMUM", 5)
     agent = build_agent(tmp_path)
 
     async def exploding(messages, previous_summary=None):
@@ -235,7 +236,7 @@ async def test_summarizer_exception_propagates_without_fabrication(tmp_path, mon
     agent.summarizer = exploding
 
     with pytest.raises(RuntimeError, match="summarizer blew up"):
-        await agent._condense_if_over_budget()
+        await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert agent.history.summary is None
     for m in agent.history.messages:
@@ -246,8 +247,8 @@ async def test_oversized_summary_trips_budget_gate(tmp_path, monkeypatch):
     """Oversized garbage summary: the system injects it verbatim (never
     fabricating) and the A4 final gate raises BudgetExceededError *before* the
     provider call — a legal, explicit outcome rather than silent truncation."""
-    monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
-    monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
+    monkeypatch.setattr(compaction, "PRUNE_PROTECT", 20)
+    monkeypatch.setattr(compaction, "PRUNE_MINIMUM", 5)
     agent = build_agent(tmp_path)
 
     garbage = "x" * 20_000
@@ -257,18 +258,18 @@ async def test_oversized_summary_trips_budget_gate(tmp_path, monkeypatch):
 
     agent.summarizer = bloat
 
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
     assert agent.history.summary == garbage  # injected as-is, not fabricated
 
     with pytest.raises(BudgetExceededError):
-        agent._raise_if_over_budget()
+        agent.compactor.check_budget(agent.history, agent._tool_schema_tokens(agent.tool_schemas()))
 
 
 async def test_field_missing_summary_injected_verbatim_without_fabrication(tmp_path, monkeypatch):
     """A summary missing fields is passed through verbatim; the system never
     invents filler to replace absent fields."""
-    monkeypatch.setattr(loop, "PRUNE_PROTECT", 20)
-    monkeypatch.setattr(loop, "PRUNE_MINIMUM", 5)
+    monkeypatch.setattr(compaction, "PRUNE_PROTECT", 20)
+    monkeypatch.setattr(compaction, "PRUNE_MINIMUM", 5)
     agent = build_agent(tmp_path)
 
     # Deliberately omits side-effect and next-step fields.
@@ -279,7 +280,7 @@ async def test_field_missing_summary_injected_verbatim_without_fabrication(tmp_p
 
     agent.summarizer = partial_summarize
 
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert agent.history.summary == partial
     summary, _tail = _summary_and_tail(agent.history)

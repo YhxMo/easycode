@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -120,12 +121,12 @@ async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(agent, "tool_schemas", lambda: [big])
 
-    assert agent._tool_schema_tokens() > 0
+    assert agent._tool_schema_tokens(agent.tool_schemas()) > 0
 
     called: list[str] = []
     agent.summarizer = fake_summarizer_that_marks(called)
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert called, "a large tool schema must count toward the budget and trip compaction"
 
@@ -148,7 +149,7 @@ async def test_compaction_auto_false_skips_condense(tmp_path, monkeypatch):
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
     before = list(agent.history.messages)
 
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert called == []  # no summarize, no trim
     assert agent.history.messages == before  # history untouched
@@ -173,7 +174,7 @@ async def test_compaction_auto_true_still_condenses(tmp_path, monkeypatch):
     called: list[str] = []
     agent.summarizer = fake_summarizer_that_marks(called)
     monkeypatch.setattr(agent.history, "trim", lambda: called.append("trim"))
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert called, "expected compaction to fire when auto=True and over budget"
 
@@ -200,7 +201,7 @@ async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_pat
         return  # simulate provider failure surfaced as None
 
     agent.summarizer = failing_summarize
-    await agent._condense_if_over_budget()
+    await agent.compactor.condense(agent.history, agent.summarizer, agent._tool_schema_tokens(agent.tool_schemas()))
 
     assert "summarize" in log  # compaction attempted
     # no fabricated "(summary unavailable...)" note, and no injected summary
@@ -209,13 +210,107 @@ async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_pat
     assert agent.history.summary is None
 
 
-async def test_max_iterations_guard(tmp_path):
-    agent, _ = make_agent(tmp_path, [])
-    agent.provider.script = [
-        {"tool_calls": [("c", "glob", {"pattern": "*"})], "text": ""}
-    ] * 15
-    events = [ev async for ev in agent.respond("loop")]
-    assert any(e.kind == "error" and e.error and "max tool iterations" in e.error for e in events)
+async def test_model_can_finish_after_more_than_twelve_tool_rounds(tmp_path):
+    script = [
+        {"tool_calls": [(f"c{i}", "glob", {"pattern": "*"})]}
+        for i in range(15)
+    ] + [{"text": "finished"}]
+    agent, provider = make_agent(tmp_path, script)
+
+    events = await collect(agent, "loop")
+
+    assert len(provider.calls) == 16
+    assert sum(event.kind == "tool_result" for event in events) == 15
+    assert [event.content for event in events if event.kind == "text"] == list("finished")
+    assert not any(event.kind == "error" for event in events)
+    assert events[-1].kind == "done"
+
+
+async def test_explicit_iteration_limit_ends_the_turn_with_a_coded_error(tmp_path):
+    """A configured ceiling stops the turn itself — it is never reported as a
+    finished task, and the work already done stays in history."""
+    script = [{"tool_calls": [(f"c{i}", "glob", {"pattern": "*"})]} for i in range(5)]
+    script.append({"text": "never reached"})
+    agent, provider = make_agent(tmp_path, script)
+    agent.max_tool_iterations = 3
+
+    events = await collect(agent, "loop")
+
+    assert len(provider.calls) == 3
+    errors = [e for e in events if e.kind == "error"]
+    assert [e.code for e in errors] == ["tool_iteration_limit"]
+    assert "max_tool_iterations=3" in (errors[0].error or "")
+    assert events[-1].kind == "done"
+    assert not any(e.kind == "text" for e in events)
+    # the ceiling cancels nothing: every executed call keeps its result.
+    assert sum(e.kind == "tool_result" for e in events) == 3
+    assert_valid_tool_protocol(agent.history.messages)
+
+
+async def test_approved_tool_result_tells_the_model_it_was_approved(tmp_path):
+    """`in_allowed: false` means "outside the workspace", not "no approval": the
+    model-visible result must carry the approval fact separately."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "note.txt"
+    target.write_text("external\n", encoding="utf-8")
+    inside = root / "inside.txt"
+    inside.write_text("internal\n", encoding="utf-8")
+    script = [
+        {"tool_calls": [("c1", "read_file", {"path": str(target)})]},
+        {"tool_calls": [("c2", "read_file", {"path": str(inside)})]},
+        {"text": "done"},
+    ]
+    agent, _ = make_agent(root, script)
+    # An explicit rule, so the prompt does not depend on how the platform
+    # classifies a path that happens to live under the OS temp dir (which is
+    # where pytest puts tmp_path).
+    agent.permission_rules = {"read_file": {f"{outside}/*": "ask"}}
+    asked: list[str] = []
+
+    async def approve(tc: ToolCall, reason: str, identity: str) -> bool:
+        asked.append(tc.name)
+        return True
+
+    agent.approval_handler = approve
+    await collect(agent, "read both")
+
+    assert asked == ["read_file"]
+    tool_messages = [m for m in agent.history.messages if m["role"] == "tool"]
+    approved = json.loads(tool_messages[0]["content"])
+    assert approved["approved_by_user"] is True
+    assert approved["status"] == "ok" and "external" in approved["content"]
+    # An in-workspace call nobody approved must not claim an approval.
+    assert "approved_by_user" not in json.loads(tool_messages[1]["content"])
+
+
+async def test_protected_write_is_rejected_without_offering_an_approval(tmp_path):
+    """A hard-protected target can never be written, so the turn must not ask
+    the user to approve it — the decision would be unenforceable."""
+    (tmp_path / ".easycode").mkdir()
+    target = tmp_path / ".easycode" / "blocked.txt"
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "x"})]},
+        {"text": "stopped"},
+    ]
+    agent, _ = make_agent(tmp_path, script)
+    asked: list[str] = []
+
+    async def approve(tc: ToolCall, reason: str, identity: str) -> bool:
+        asked.append(tc.name)
+        return True
+
+    agent.approval_handler = approve
+    events = await collect(agent, "write it")
+
+    assert asked == []
+    result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
+    assert result["status"] == "error"
+    assert result["rejected"] is True
+    assert "受保护路径" in result["reason"]
+    assert not target.exists()
 
 
 async def test_concurrent_turns_isolated(tmp_path):
@@ -255,6 +350,44 @@ async def test_write_file_model_view_strips_diff(tmp_path):
     assert "diff" not in payload_tools[0]["content"]
 
 
+async def test_auto_review_ignores_reads_and_dry_runs(tmp_path):
+    """Auto-review collects only real changes: no reads, no dry-run previews."""
+    import json as _json
+
+    (tmp_path / "f.txt").write_text("old\n", encoding="utf-8")
+    script = [
+        {
+            "tool_calls": [
+                ("c1", "read_file", {"path": "f.txt"}),
+                (
+                    "c2",
+                    "edit_file",
+                    {
+                        "path": "f.txt",
+                        "old_string": "old",
+                        "new_string": "new",
+                        "dry_run": True,
+                    },
+                ),
+                ("c3", "write_file", {"path": "f.txt", "content": "real change\n"}),
+            ],
+            "text": "",
+        },
+        {"text": "done"},
+    ]
+    agent, _provider = make_agent(tmp_path, script)
+    agent.permission_mode = "auto-review"
+    events = await collect(agent, "change it")
+
+    reviews = [e for e in events if e.kind == "review"]
+    assert len(reviews) == 1
+    changes = _json.loads(reviews[0].content)["changes"]
+    assert len(changes) == 1
+    assert changes[0]["tool"] == "write_file"
+    assert changes[0]["path"] == "f.txt"
+    assert "real change" in changes[0]["diff"]
+
+
 async def test_edit_file_model_view_strips_diff_review_keeps(tmp_path):
     """P7-1: same for edit_file — the auto-review diff stays complete."""
     import json as _json
@@ -292,29 +425,19 @@ class _RaiseAfterToolProvider(FakeProvider):
         raise RuntimeError("provider blew up mid-turn")
 
 
-async def test_provider_exception_rolls_back_history_and_snapshot(tmp_path):
-    """a generic (non-cancel) provider exception must roll history and the
-    snapshot stack back to the turn start and surface an error event — it must
-    not leave ``[user]`` in history or a dangling snapshot record."""
-    from easycode.snapshot import FileSnapshotManager
-
+async def test_provider_exception_keeps_partial_text(tmp_path):
     provider = _RaiseAfterToolProvider()
     agent = Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
-    agent.snapshot_manager = FileSnapshotManager("s", agent.path_context().roots)
-
-    events: list[AgentEvent] = []
+    events = []
     with pytest.raises(RuntimeError, match="provider blew up"):
-        async for ev in agent.respond("hello"):
-            events.append(ev)
-
-    # history rolled back to turn start (empty, since this was the first turn)
-    assert agent.history.messages == []
-    assert agent.history.last_user_index() == -1
-    # snapshot stack has no dangling turn record
-    assert agent.snapshot_manager.stack == []
-    # an error event was surfaced to the UI before re-raising
-    errs = [e for e in events if e.kind == "error"]
-    assert errs and "provider blew up" in errs[0].error
+        async for event in agent.respond("hello"):
+            events.append(event)
+    assert agent.history.messages == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "full"},
+    ]
+    assert any(event.kind == "error" for event in events)
+    assert_valid_tool_protocol(agent.history.messages)
 
 
 # ---------------------------------------------- tool protocol one-to-one check

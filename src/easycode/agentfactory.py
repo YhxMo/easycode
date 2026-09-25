@@ -1,11 +1,4 @@
-"""Neutral agent factory shared by the CLI and the web control plane.
-
-This module owns the provider-building chain (``provider_kwargs`` /
-``build_provider`` / ``build_summarizer``) and the agent assembly
-(``make_agent`` / ``rebind_agent``). Both ``easycode.cli`` and ``easycode.web``
-consume it as peers; ``easycode.cli`` re-exports these names for backwards
-compatibility, so this module deliberately depends on no CLI or web module.
-"""
+"""Build and configure agents for CLI and Web entry points."""
 
 from __future__ import annotations
 
@@ -14,6 +7,7 @@ from pathlib import Path
 from easycode.agent.loop import Agent
 from easycode.config import API_FORMATS, Config
 from easycode.credentials import load_credentials
+from easycode.models.base import DeferredProvider, Provider
 from easycode.models.litellm_provider import LiteLLMProvider
 from easycode.tools import build_registry
 
@@ -76,8 +70,7 @@ def provider_kwargs(cfg: Config, alias: str) -> tuple[str, dict]:
         raise ValueError(f"invalid api_format '{spec.api_format}' for model '{alias}'")
     if not spec.key_id:
         raise ValueError(
-            f"model '{alias}' has no credential configured"
-            "（请在该模型的编辑对话框中填写 API Key）"
+            f"model '{alias}' has no credential configured（请在该模型的编辑对话框中填写 API Key）"
         )
     cred = load_credentials().get(spec.key_id)
     if cred is None:
@@ -106,12 +99,51 @@ def build_provider(cfg: Config, alias: str) -> LiteLLMProvider:
     return LiteLLMProvider(model, **kwargs)
 
 
-def build_summarizer(cfg: Config, alias: str, max_chars: int = 8_000):
-    """LLM summarizer for an alias (same credentials as the stream provider)."""
+def bind_agent(agent: Agent, cfg: Config, alias: str) -> Provider:
+    """Bind provider/summarizer/reviewer/limits for ``alias`` onto ``agent``.
+
+    ``provider_kwargs`` raises ``ValueError`` when the alias has no usable
+    credential; the whole binding is built before the first assignment, so a
+    failure never leaves a mix of old and new components. The provider is
+    returned for ``DeferredProvider``'s first resolve.
+    """
     from easycode.agent.summarizer import LLMSummarizer
+    from easycode.reviewer import AutoReviewer
 
     model, kwargs = provider_kwargs(cfg, alias)
-    return LLMSummarizer(model, max_chars=max_chars, **kwargs)
+    provider = LiteLLMProvider(model, **kwargs)
+    # The reviewer gets its own kwargs copy because subagents may mutate
+    # ``provider.kwargs``.
+    reviewer = AutoReviewer(LiteLLMProvider(model, **dict(kwargs))).review
+    summarizer = LLMSummarizer(
+        model, max_chars=int(cfg.compaction["summary_max_chars"]), **kwargs
+    )
+    limits = cfg.get_model_limits(alias)
+    max_tokens = agent.compactor.usable_tokens(agent.max_context_tokens, limits)
+
+    agent.provider = provider
+    agent.summarizer = summarizer
+    agent.review_handler = reviewer
+    agent.model_limits = limits
+    agent.model_alias = alias
+    agent.history.max_tokens = max_tokens
+    return provider
+
+
+def defer_binding(agent: Agent, cfg: Config, alias: str) -> None:
+    """Point ``agent`` at ``alias`` but resolve credentials on first use.
+
+    Used when a model edit/delete leaves a session without a usable provider:
+    the alias rename still takes effect and persists, while the deferred
+    provider makes the first send fail with the existing 422 path (and recover
+    in place once the credential is restored).
+    """
+    agent.provider = DeferredProvider(lambda: bind_agent(agent, cfg, alias))
+    agent.summarizer = None
+    agent.review_handler = None
+    agent.model_limits = None
+    agent.model_alias = alias
+    agent.history.max_tokens = agent.compactor.usable_tokens(agent.max_context_tokens, None)
 
 
 def make_agent(
@@ -119,11 +151,11 @@ def make_agent(
     model_alias: str,
     root: Path,
     secondary_roots: list[Path] | None = None,
-    extra_safe_dirs: list[Path] | None = None,
+    *,
+    defer_credential: bool = False,
 ) -> Agent:
-    provider = build_provider(cfg, model_alias)
     registry = build_registry(cfg.max_tool_result_chars)
-    enabled = {name for name, on in cfg.tools.items() if on}
+    disabled = {name for name, on in cfg.tools.items() if not on}
     discovery_roots = [root, *(Path(p) for p in (secondary_roots or []))]
     from easycode.agents import AgentRegistry
     from easycode.skills import SkillRegistry
@@ -131,43 +163,28 @@ def make_agent(
     agents = AgentRegistry.discover(discovery_roots)
     skills = SkillRegistry.discover(discovery_roots) if cfg.skills_enabled else None
     agent = Agent(
-        provider=provider,
+        provider=LiteLLMProvider(model_alias),  # rebound below from one credential read
         registry=registry,
         root=root,
-        enabled_tools=enabled,
+        disabled_tools=disabled,
         secondary_roots=list(secondary_roots or []),
-        extra_safe_dirs=list(extra_safe_dirs or []),
+        extra_safe_dirs=cfg.path_context(root=root, secondary=[]).extra_safe_dirs,
         permission_mode=cfg.permission_mode,
         permission_rules=dict(cfg.permission_rules),
         mcp_servers=cfg.mcp_servers,
         max_context_tokens=cfg.max_context_tokens,
         compaction=dict(cfg.compaction),
-        model_limits=cfg.get_model_limits(model_alias),
-        summarizer=build_summarizer(
-            cfg, model_alias, max_chars=int(cfg.compaction.get("summary_max_chars", 8_000))
-        ),
         agents=agents,
         skills=skills,
+        max_tool_iterations=cfg.max_tool_iterations,
     )
-    from easycode.reviewer import AutoReviewer
-
-    reviewer = AutoReviewer(build_provider(cfg, model_alias))
-    agent.review_handler = reviewer.review
+    try:
+        bind_agent(agent, cfg, model_alias)
+    except ValueError:
+        if not defer_credential:
+            raise
+        # Restoring a session must not fail because the model currently has no
+        # credential; the binding is retried on the first turn (routes 422).
+        defer_binding(agent, cfg, model_alias)
+    agent.subagent_factory = lambda alias: make_agent(cfg, alias, root, secondary_roots)
     return agent
-
-
-def rebind_agent(agent: Agent, cfg: Config, alias: str) -> None:
-    """Swap the provider on the existing agent, keeping history.
-
-    Public name; ``easycode.cli`` re-exports it as ``_rebind_agent`` for
-    backwards compatibility with any callers that referenced the old name.
-    """
-    agent.provider = build_provider(cfg, alias)
-    from easycode.reviewer import AutoReviewer
-
-    agent.review_handler = AutoReviewer(build_provider(cfg, alias)).review
-    agent.summarizer = build_summarizer(
-        cfg, alias, max_chars=int(cfg.compaction.get("summary_max_chars", 8_000))
-    )
-    agent.model_limits = cfg.get_model_limits(alias)
-    agent.history.max_tokens = agent._usable_tokens()

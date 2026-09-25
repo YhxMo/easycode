@@ -48,6 +48,36 @@ def test_over_budget_char_backstop() -> None:
     assert h.over_budget() is True
 
 
+def test_dense_code_token_count_beats_chars_over_four() -> None:
+    """10B: dense ASCII code tokenizes far denser than the 4-chars/token
+    heuristic; the exact token count must drive the gate (the character
+    ceiling is a memory backstop, far away in this case)."""
+    code = "x+=1;" * 10_000
+    h = History(max_tokens=15_000, max_chars=10_000_000)
+    h.add({"role": "user", "content": code})
+    assert h.estimate_tokens() > h.estimate_messages_tokens(h.messages)
+    assert h.over_budget() is True
+
+
+def test_large_tool_output_counts_toward_token_budget() -> None:
+    """Tool outputs are token-accounted like any other message content."""
+    output = "\n".join(f"item-{i}: value {i * 7}" for i in range(4000))
+    h = History(max_tokens=10_000, max_chars=10_000_000)
+    h.add_user("q")
+    h.add({"role": "assistant", "content": "", "tool_calls": [_tc("a")]})
+    h.add_tool("a", "f", output)
+    assert h.over_budget() is True
+
+
+def test_char_backstop_is_independent_of_model_budget() -> None:
+    """The character ceiling stays an explicit memory guard: a history that
+    fits a huge token budget still trips once it exceeds ``max_chars``."""
+    h = History(max_tokens=10_000_000, max_chars=50_000)
+    h.add({"role": "user", "content": "x" * 60_000})
+    assert h.estimate_tokens() < h.max_tokens
+    assert h.over_budget() is True
+
+
 def test_select_tail_start_keeps_recent_turns() -> None:
     h = History()
     for i in range(4):
@@ -126,16 +156,15 @@ def test_over_budget_cheap_gate_counts_system_and_extra() -> None:
 # ----------------------------------------------------------------
 
 
-def test_add_trims_by_whole_turn_not_single_message() -> None:
-    """popping past ``max_messages`` must never split a tool_call from
-    its result. Old code popped one message at a time (pop(0)), which could
-    leave an orphaned ``tool`` result behind (leaving ``[tool, u2, a2]``)."""
-    h = History(max_messages=3)
+def test_trim_drops_whole_turn_not_single_message() -> None:
+    """Trimming must never split a tool_call from its result."""
+    h = History(max_chars=4)
     h.add_user("u1")
     h.add({"role": "assistant", "content": "", "tool_calls": [_tc("a")]})
     h.add_tool("a", "f", "r1")
     h.add_user("u2")
     h.add_assistant("a2")
+    h.trim()
     # The oldest complete turn (u1 + assistant-with-tool_call + tool) is dropped
     # wholesale; the payload never holds an orphan tool result.
     assert_no_orphan_tools(h.messages)
@@ -297,13 +326,14 @@ def test_protocol_rejects_out_of_order_results_within_batch() -> None:
 def test_protocol_survives_trim_of_adjacent_batches() -> None:
     """Whole-turn trimming that cuts across adjacent multi-call batches
     must keep the one-to-one pairing intact (never an unpaired call/result)."""
-    h = History(max_messages=8)
+    h = History(max_chars=16)
     for i in range(3):
         h.add_user(f"u{i}")
         h.add({"role": "assistant", "content": "", "tool_calls": [_tc(f"a{i}"), _tc(f"b{i}")]})
         h.add_tool(f"a{i}", "f", f"ra{i}")
         h.add_tool(f"b{i}", "f", f"rb{i}")
-    assert len(h.messages) <= 8
+    h.trim()
+    assert len(h.messages) < 12
     assert_valid_tool_protocol(h.messages)
     assert_valid_tool_protocol(h.payload())
 

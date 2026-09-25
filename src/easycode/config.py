@@ -9,10 +9,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from easycode.approval import PERM_ASK, permission_parse
-from easycode.workspace import PathContext
+from easycode.agent.compaction import COMPACTION_DEFAULTS
+from easycode.policy import PERM_ASK, permission_parse
+from easycode.workspace import CONFIG_FILENAME, PathContext, resolve_workspace_path
 
-CONFIG_FILENAME = "easycode.config.json"
 DEFAULT_MAX_TOOL_RESULT_CHARS = 8000
 DEFAULT_MAX_CONTEXT_TOKENS = 32_000
 
@@ -25,33 +25,20 @@ API_FORMATS = (
 )
 DEFAULT_API_FORMAT = "openai_compatible"
 
+DEFAULT_MODEL_ALIAS = "deepseek-v4flash"
+
 DEFAULT_MODELS: dict[str, str] = {
-    "deepseek-v4flash": "deepseek/deepseek-v4-flash",
+    DEFAULT_MODEL_ALIAS: "deepseek/deepseek-v4-flash",
     "gpt5.6-terra": "openai/gpt-5.6-terra",
     "gpt5.6-sol": "openai/gpt-5.6-sol",
     "claude-sonnet5": "anthropic/claude-sonnet-5",
     "claude-opus5": "anthropic/claude-opus-5",
 }
 
-DEFAULT_TOOLS = dict.fromkeys(("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks"), True)
-
-DEFAULT_CONFIG: dict[str, Any] = {
-    "default_model": "deepseek-v4flash",
-    "models": DEFAULT_MODELS,
-    "tools": DEFAULT_TOOLS,
-    "max_tool_result_chars": DEFAULT_MAX_TOOL_RESULT_CHARS,
-    "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
-}
-
-#: Context-compaction knobs (aligned with opencode `compaction` config).
-DEFAULT_COMPACTION: dict[str, Any] = {
-    "auto": True,
-    "buffer": 20_000,  # reserved output buffer subtracted from the model window
-    "preserve_recent_tokens": None,  # None → 25% of usable, clamped 2k..15k
-    "tail_turns": None,  # max recent turns kept verbatim (None → budget-driven)
-    "prune": True,  # clear old completed tool outputs before summarizing
-    "summary_max_chars": 8_000,
-}
+DEFAULT_TOOLS = dict.fromkeys(
+    ("execute_shell", "read_file", "write_file", "edit_file", "grep", "glob", "parallel_tasks"),
+    True,
+)
 
 
 def _skills_enabled(raw: dict[str, Any]) -> bool:
@@ -59,6 +46,25 @@ def _skills_enabled(raw: dict[str, Any]) -> bool:
     if isinstance(skills, dict):
         return bool(skills.get("enabled", True))
     return True
+
+
+def _max_tool_iterations(raw: dict[str, Any]) -> int | None:
+    """Optional per-message model round-trip ceiling.
+
+    Absent or ``null`` means unlimited (the model ends the turn). Anything else
+    must be a real positive integer: a bool, zero, a negative or a non-integer
+    is an error, not a silent fallback to the most permissive reading.
+    """
+    value = raw.get("max_tool_iterations")
+    if value is None:
+        return None
+    # `bool` is an `int` subclass, so an exact type check rejects `true`/`false`
+    # along with floats and strings.
+    if type(value) is not int or value <= 0:
+        raise ValueError(
+            f"invalid max_tool_iterations: {value!r} (expected a positive integer or null)"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -138,24 +144,28 @@ class Config:
 
     config_path: Path | None = None
     root: Path = field(default_factory=Path.cwd)
-    default_model: str = "deepseek-v4flash"
-    models: dict[str, ModelSpec] = field(default_factory=lambda: {k: ModelSpec(v) for k, v in DEFAULT_MODELS.items()})
+    default_model: str = DEFAULT_MODEL_ALIAS
+    models: dict[str, ModelSpec] = field(
+        default_factory=lambda: {k: ModelSpec(v) for k, v in DEFAULT_MODELS.items()}
+    )
     tools: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_TOOLS))
     permission_rules: dict[str, Any] = field(default_factory=dict)
     max_tool_result_chars: int = DEFAULT_MAX_TOOL_RESULT_CHARS
-    secondary_roots: list[str] = field(default_factory=list)
     extra_safe_dirs: list[str] = field(default_factory=list)
     permission_mode: str = PERM_ASK
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
-    compaction: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_COMPACTION))
+    compaction: dict[str, Any] = field(default_factory=lambda: dict(COMPACTION_DEFAULTS))
     model_limits_cache: dict[str, dict[str, int] | None] = field(default_factory=dict, repr=False)
     workspace_projects: list[dict[str, Any]] = field(default_factory=list)  # [{root, secondary}]
     skills_enabled: bool = True
+    #: Optional ceiling on model round-trips per user message; ``None`` lets the
+    #: model end the turn itself.
+    max_tool_iterations: int | None = None
 
     @classmethod
     def load(cls, start: Path | None = None) -> Config:
-        load_dotenv(find_env_file(start) if find_env_file(start) else None, override=False)
+        load_dotenv(find_env_file(start), override=False)
         cfg_path = find_config_file(start)
         raw: dict[str, Any] = {}
         if cfg_path:
@@ -164,33 +174,33 @@ class Config:
         # one it anchors at CWD itself (never CWD's parent — that would widen
         # the sandbox and write easycode.config.json outside the project).
         root = cfg_path.parent.resolve() if cfg_path else Path.cwd().resolve()
-        merged_models = {**DEFAULT_MODELS, **(raw.get("models") or {})}
-        models = {alias: ModelSpec.parse(value) for alias, value in merged_models.items()}
+        # Built-in aliases seed a fresh config only; once the file carries a
+        # `models` key (cfg.save always writes it) deletions must stick.
+        raw_models = raw.get("models", DEFAULT_MODELS)
+        models = {alias: ModelSpec.parse(value) for alias, value in (raw_models or {}).items()}
         tools = {**DEFAULT_TOOLS, **(raw.get("tools") or {})}
         workspace = raw.get("workspace") or {}
-        permission_raw = raw.get("permission", raw.get("permission_mode", PERM_ASK))
-        try:
-            permission_mode = permission_parse(str(permission_raw))
-        except ValueError:
-            permission_mode = PERM_ASK
+        # Only the documented key is read, and an invalid value is an error
+        # instead of a silent fallback to the most permissive parse.
+        permission_mode = permission_parse(str(raw.get("permission", PERM_ASK)))
         return cls(
             config_path=cfg_path,
             root=root,
-            default_model=raw.get("default_model", DEFAULT_CONFIG["default_model"]),
+            default_model=raw.get("default_model", DEFAULT_MODEL_ALIAS),
             models=models,
             tools=tools,
             permission_rules=dict(raw.get("permissions") or {}),
             max_tool_result_chars=int(
                 raw.get("max_tool_result_chars", DEFAULT_MAX_TOOL_RESULT_CHARS)
             ),
-            secondary_roots=list(workspace.get("secondary") or []),
             extra_safe_dirs=list(workspace.get("extra_safe_dirs") or []),
             workspace_projects=list(workspace.get("projects") or []),
             permission_mode=permission_mode,
             mcp_servers=dict(raw.get("mcp_servers") or {}),
             max_context_tokens=int(raw.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
-            compaction={**DEFAULT_COMPACTION, **(raw.get("compaction") or {})},
+            compaction={**COMPACTION_DEFAULTS, **(raw.get("compaction") or {})},
             skills_enabled=_skills_enabled(raw),
+            max_tool_iterations=_max_tool_iterations(raw),
         )
 
     def resolve_model(self, alias_or_model: str) -> str:
@@ -249,7 +259,13 @@ class Config:
         self.model_limits_cache[model] = limits
         return limits
 
-    def path_context(self, root: Path | None = None, secondary: list[Path] | None = None) -> PathContext:
+    def base_dir(self) -> Path:
+        """Anchor for resolving relative workspace paths (config dir, not CWD)."""
+        return self.config_path.parent if self.config_path else self.root
+
+    def path_context(
+        self, root: Path | None = None, secondary: list[Path] | None = None
+    ) -> PathContext:
         """Sandbox context for an agent: config workspace + overrides.
 
         ``root``/``secondary`` override the config values when given (CLI/Web).
@@ -257,19 +273,11 @@ class Config:
         ``~`` is expanded.
         """
         primary = (root or self.root).resolve()
-        base = self.config_path.parent if self.config_path else Path.cwd()
-        secondary_resolved: list[Path] = []
-        for raw in secondary if secondary is not None else self.secondary_roots:
-            p = Path(raw).expanduser()
-            if not p.is_absolute():
-                p = base / p
-            secondary_resolved.append(p.resolve())
-        extra: list[Path] = []
-        for raw in self.extra_safe_dirs:
-            p = Path(raw).expanduser()
-            if not p.is_absolute():
-                p = base / p
-            extra.append(p.resolve())
+        # Relative config paths resolve against the same anchor as every other
+        # workspace path (config dir, else the load-time root).
+        base = self.base_dir()
+        secondary_resolved = [resolve_workspace_path(raw, base) for raw in (secondary or [])]
+        extra = [resolve_workspace_path(raw, base) for raw in self.extra_safe_dirs]
         return PathContext(primary=primary, secondary=secondary_resolved, extra_safe_dirs=extra)
 
     def save(self) -> None:
@@ -286,8 +294,7 @@ class Config:
         if self.permission_rules:
             payload["permissions"] = self.permission_rules
         workspace_payload: dict[str, Any] = {}
-        if self.secondary_roots or self.extra_safe_dirs:
-            workspace_payload["secondary"] = self.secondary_roots
+        if self.extra_safe_dirs:
             workspace_payload["extra_safe_dirs"] = self.extra_safe_dirs
         if self.workspace_projects:
             workspace_payload["projects"] = self.workspace_projects
@@ -297,10 +304,14 @@ class Config:
             payload["permission"] = self.permission_mode
         if self.mcp_servers:
             payload["mcp_servers"] = self.mcp_servers
-        if self.compaction != DEFAULT_COMPACTION:
+        if self.compaction != COMPACTION_DEFAULTS:
             payload["compaction"] = self.compaction
         if not self.skills_enabled:
             payload["skills"] = {"enabled": False}
+        # An unset ceiling is left out entirely: re-saving other settings must
+        # not turn "unlimited" into an explicit number, or vice versa.
+        if self.max_tool_iterations is not None:
+            payload["max_tool_iterations"] = self.max_tool_iterations
         self.config_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )

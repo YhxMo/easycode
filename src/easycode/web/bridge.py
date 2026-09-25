@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 from easycode.agent.loop import Agent, AgentEvent
 from easycode.models.base import ToolCall
-from easycode.workspace import ToolGrant
 
 if TYPE_CHECKING:
     from easycode.web.session import Session
@@ -44,23 +43,20 @@ def _event_payload(ev: AgentEvent) -> dict:
         payload["result"] = ev.tool_result
     elif ev.kind == "error" and ev.error:
         payload["error"] = ev.error
-    elif ev.kind == "approval" and ev.tool_call:
-        payload["tool_call"] = _tool_call_dict(ev.tool_call)
+        if ev.code:
+            payload["code"] = ev.code
     elif ev.kind == "review" and ev.content:
         payload["content"] = ev.content
+    elif ev.kind == "todo" and ev.content:
+        # the live task list, so the pane can update without refetching
+        payload["todos"] = json.loads(ev.content)
     elif ev.kind == "cancelled":
         payload["content"] = "cancelled"
     return payload
 
 
 def event_to_sse(ev: AgentEvent | dict[str, Any]) -> str:
-    """Serialize an agent event — or an already-built payload dict — into one SSE
-    ``data:`` line.
-
-    B3: this is the single serialization authority. ``stream_chat``,
-    ``stream_chat_with_approval`` and the web chat route all build their lines
-    here; no second ``f"data: {json.dumps(...)}"`` copy lives in the route.
-    """
+    """Serialize an agent event or payload dictionary as one SSE data line."""
     payload = _event_payload(ev) if isinstance(ev, AgentEvent) else dict(ev)
     return _sse_line(payload)
 
@@ -79,10 +75,6 @@ def approval_required_sse(approval_id: str, tc: ToolCall, reason: str, scope: st
             "tool_call": _tool_call_dict(tc),
         }
     )
-
-
-def cancelled_sse() -> str:
-    return event_to_sse({"type": "cancelled"})
 
 
 class ApprovalBroker:
@@ -107,48 +99,6 @@ class ApprovalBroker:
         fut.set_result((approve, always))
         return True
 
-    def cancel_all(self) -> None:
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.cancel()
-        self._pending.clear()
-
-
-async def stream_chat(
-    agent: Agent,
-    message: str,
-    flush_chars: int = TEXT_FLUSH_CHARS,
-    flush_seconds: float = TEXT_FLUSH_SECONDS,
-) -> AsyncIterator[str]:
-    """Yield SSE lines for one user message through the agent loop.
-
-    Token-level ``text`` events are coalesced with a char-count / age
-    throttle; every other event kind is passed through immediately.
-    """
-    buf: list[str] = []
-    last_flush = time.monotonic()
-
-    def give_text() -> str:
-        nonlocal buf, last_flush
-        text = "".join(buf)
-        buf = []
-        last_flush = time.monotonic()
-        return event_to_sse(AgentEvent(kind="text", content=text))
-
-    async for ev in agent.respond(message):
-        if ev.kind == "text" and ev.content:
-            buf.append(ev.content)
-            size = sum(len(part) for part in buf)
-            age = time.monotonic() - last_flush
-            if size >= flush_chars or (buf and age >= flush_seconds):
-                yield give_text()
-        else:
-            if buf:
-                yield give_text()
-            yield event_to_sse(ev)
-    if buf:
-        yield give_text()
-
 
 async def stream_chat_with_approval(
     agent: Agent,
@@ -162,14 +112,15 @@ async def stream_chat_with_approval(
     """Agent turn with human approval interleaved.
 
     Yields (kind, payload) pairs:
-    - ("text", chunk) / ("event", AgentEvent) for the normal stream
+    - ("event", AgentEvent) for the normal stream; token-level text is
+      coalesced into larger ``AgentEvent(kind="text")`` chunks
     - ("approval", (approval_id, tool_call, reason, scope)) when the user must decide
     - ("event", AgentEvent(kind="cancelled")) once ``cancel_event`` fires
 
     The agent pauses on the approval future; the caller resolves it via
     ``broker.resolve`` (or a timeout rejects it). When ``cancel_event`` is
     provided and gets set, the in-flight turn task is cancelled (the agent
-    rolls back partial history) and the stream ends with a ``cancelled``
+    retains completed operations) and the stream ends with a ``cancelled``
     event instead of raising.
 
     When ``session`` is given, approvals that match the session's recorded
@@ -185,41 +136,30 @@ async def stream_chat_with_approval(
         text = "".join(buf)
         buf = []
         last_flush = time.monotonic()
-        return ("text", text)
+        return ("event", AgentEvent(kind="text", content=text))
 
     async def run_turn() -> None:
         prev = agent.approval_handler
 
-        async def approval_handler(tc: ToolCall) -> bool | ToolGrant | None:
-            from easycode.approval import (
-                approval_key,
-                approval_reason,
-                approval_scope,
-                grant_for_toolcall,
-            )
+        async def approval_handler(tc: ToolCall, reason: str, identity: str) -> bool:
+            from easycode.approval import approval_scope
 
             scope = approval_scope(tc)
-            grant = grant_for_toolcall(tc, agent.path_context())
-            key = approval_key(tc, grant=grant)
-            if session and key in session.always_allow:
-                # 'always allow' keeps its directory/command scope in the stored
-                # key, but at execution we regenerate the precise target grant.
-                return grant if grant else True
+            if session and identity in session.always_allow:
+                # 'always allow' keeps its capability scope in the stored key;
+                # the loop regenerates the precise target grant against the
+                # executing agent's own context.
+                return True
             approval_id = uuid.uuid4().hex[:12]
             fut = broker.add(approval_id)
-            reason = (
-                agent.mcp_manager.approval_reason(tc.name)
-                if agent.mcp_manager and agent.mcp_manager.requires_approval(tc.name)
-                else approval_reason(tc, agent.path_context())
-            )
             await q.put(("approval", (approval_id, tc, reason, scope)))
             decision = "expired"
             always = False
             try:
                 approve, always = await asyncio.wait_for(fut, timeout=broker.timeout)
                 decision = "approved" if approve else "denied"
-                if approve and session and always and key not in session.always_allow:
-                    session.always_allow.append(key)
+                if approve and session and always and identity not in session.always_allow:
+                    session.always_allow.append(identity)
             except TimeoutError:
                 decision = "expired"
             finally:
@@ -236,7 +176,7 @@ async def stream_chat_with_approval(
                             "always": bool(always and decision == "approved"),
                         }
                     )
-            return grant if decision == "approved" else False
+            return decision == "approved"
 
         agent.approval_handler = approval_handler
         try:
@@ -252,35 +192,27 @@ async def stream_chat_with_approval(
                 agent.approval_handler = prev
             await q.put(("end", None))
 
+    if cancel_event is None:
+        # No caller-supplied cancellation: a never-set event keeps one code path.
+        cancel_event = asyncio.Event()
     task = asyncio.create_task(run_turn())
-    get_task: asyncio.Task | None = asyncio.create_task(q.get()) if cancel_event else None
-    watcher: asyncio.Task | None = (
-        asyncio.create_task(cancel_event.wait()) if cancel_event else None
-    )
+    get_task = asyncio.create_task(q.get())
+    watcher = asyncio.create_task(cancel_event.wait())
 
     try:
         while True:
-            if cancel_event is not None and watcher is not None and watcher.done():
+            if watcher.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 if buf:
                     yield give_text()
-                # the agent's rollback may not be able to undo shell side
-                # effects; surface the residual risk even though the in-flight
-                # generator's own yield is lost with the cancelled task.
-                note = getattr(agent, "_last_cancel_note", None)
-                if note:
-                    yield ("event", AgentEvent(kind="error", error=note))
                 yield ("event", AgentEvent(kind="cancelled"))
                 break
-            if cancel_event is not None:
-                done, _ = await asyncio.wait({get_task, watcher}, return_when=asyncio.FIRST_COMPLETED)
-                if watcher in done:
-                    continue  # re-check cancellation at loop top
-                kind, payload = get_task.result()
-                get_task = asyncio.create_task(q.get())
-            else:
-                kind, payload = await q.get()
+            done, _ = await asyncio.wait({get_task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+            if watcher in done:
+                continue  # re-check cancellation at loop top
+            kind, payload = get_task.result()
+            get_task = asyncio.create_task(q.get())
             if kind == "end":
                 break
             if kind == "approval":
@@ -289,8 +221,6 @@ async def stream_chat_with_approval(
                 yield ("approval", payload)
             elif kind == "agent":
                 ev: AgentEvent = payload
-                if ev.kind == "approval":
-                    continue  # broker-driven event already yielded
                 if ev.kind == "text" and ev.content:
                     buf.append(ev.content)
                     size = sum(len(part) for part in buf)
@@ -301,15 +231,12 @@ async def stream_chat_with_approval(
                     if buf:
                         yield give_text()
                     yield ("event", ev)
+        if buf:
+            yield give_text()
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        if get_task is not None and not get_task.done():
+        if not get_task.done():
             get_task.cancel()
-        if watcher is not None and not watcher.done():
+        if not watcher.done():
             watcher.cancel()
-        if buf:
-            yield give_text()
-        ty = getattr(q, "shutdown", None)
-        if ty is not None:
-            ty()

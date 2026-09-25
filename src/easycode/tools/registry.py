@@ -5,14 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from easycode.workspace import PathContext, ToolGrant
-
-ParamsT = TypeVar("ParamsT", bound=BaseModel)
 
 MAX_DEFAULT_CHARS = 8000
 
@@ -45,11 +43,22 @@ class Tool:
         arguments: dict[str, Any],
         root: Path,
         ctx: PathContext | None = None,
-        force_allowed: bool = False,
         grant: ToolGrant | None = None,
     ) -> Any:
         params = self.params_model.model_validate(arguments)
-        return self.handler(params, root=root, ctx=ctx, force_allowed=force_allowed, grant=grant)
+        return self.handler(params, root=root, ctx=ctx, grant=grant)
+
+
+def json_out(status: str, payload: dict) -> str:
+    """Canonical tool result envelope: ``{"status": ..., **payload}`` as JSON."""
+    return json.dumps({"status": status, **payload}, ensure_ascii=False, default=str)
+
+
+def tool_scope(root: Path, ctx: PathContext | None) -> PathContext:
+    """Effective sandbox context for a tool call; ``root`` alone when absent."""
+    from easycode.workspace import PathContext
+
+    return ctx if ctx is not None else PathContext(primary=root)
 
 
 class ToolRegistry:
@@ -63,8 +72,11 @@ class ToolRegistry:
         self._tools[tool.name] = tool
         return tool
 
+    def names(self) -> set[str]:
+        return set(self._tools)
+
     def schemas(self, enabled: set[str] | None = None) -> list[dict[str, Any]]:
-        names = enabled or set(self._tools)
+        names = set(self._tools) if enabled is None else enabled
         return [t.schema() for name, t in self._tools.items() if name in names]
 
     def execute(
@@ -73,15 +85,12 @@ class ToolRegistry:
         arguments: dict[str, Any],
         root: Path,
         ctx: PathContext | None = None,
-        force_allowed: bool = False,
         grant: ToolGrant | None = None,
     ) -> str:
-        if name not in self._tools:
-            raise KeyError(f"unknown tool: {name}")
         try:
-            result = self._tools[name].run(
-                arguments, root=root, ctx=ctx, force_allowed=force_allowed, grant=grant
-            )
+            if name not in self._tools:
+                raise KeyError(f"unknown tool: {name}")
+            result = self._tools[name].run(arguments, root=root, ctx=ctx, grant=grant)
             return self._serialize(name, result)
         except Exception as exc:  # noqa: BLE001 - report tool failures as JSON
             return json.dumps(
@@ -255,24 +264,3 @@ class ToolRegistry:
                 ensure_ascii=False,
             )
         return result
-
-
-def tool(name: str, description: str, params_model: type[BaseModel]):
-    """Decorator: wrap a handler into a :class:`Tool`.
-
-    The handler receives the validated params model as first argument and a
-    keyword-only ``root: Path`` (workspace root).
-
-    Example:
-        class ReadArgs(BaseModel):
-            path: str = Field(description="path relative to workspace root")
-
-        @tool("read_file", "Read a file", ReadArgs)
-        def _read_file(args: ReadArgs, *, root: Path) -> str:
-            ...
-    """
-
-    def decorator(fn: Callable[[Any], Any]) -> Tool:
-        return Tool(name, description, params_model, fn)
-
-    return decorator

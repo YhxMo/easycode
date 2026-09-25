@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -58,3 +58,32 @@ class Provider(ABC):
         ``tool_calls`` batch when the model requests tools, then ``done``.
         On failure, yields ``error``.
         """
+
+
+class DeferredProvider(Provider):
+    """Placeholder provider for a session restored without a usable model.
+
+    ``build`` runs on the first :meth:`resolve` and may raise ``ValueError``;
+    until then the agent is fully inspectable (history, permission mode,
+    skills) but cannot start a turn. The caller resolves it before streaming so
+    a missing credential surfaces as a clear 4xx instead of a mid-stream error.
+    """
+
+    def __init__(self, build: Callable[[], Provider]) -> None:
+        super().__init__("unbound")
+        self._build = build
+        self._resolved: Provider | None = None
+
+    def resolve(self) -> Provider:
+        if self._resolved is None:
+            self._resolved = self._build()
+        return self._resolved
+
+    async def stream(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        provider = self.resolve()
+        async for event in provider.stream(messages, tools):
+            yield event

@@ -16,32 +16,20 @@ from uuid import uuid4
 
 CREDENTIALS_DIR = ".easycode"
 CREDENTIALS_FILENAME = "credentials.json"
-LEGACY_DATA_DIR = ".myagent"
 
 
 def data_home() -> Path:
-    """Data directory (``~/.easycode``), migrating any pre-rename ``~/.myagent`` once."""
-    new_dir = Path.home() / CREDENTIALS_DIR
-    legacy_dir = Path.home() / LEGACY_DATA_DIR
-    if not new_dir.exists() and legacy_dir.exists():
-        try:
-            legacy_dir.rename(new_dir)
-        except OSError:
-            pass
-    return new_dir
+    return Path.home() / CREDENTIALS_DIR
 
 
 @dataclass
 class Credential:
     key_id: str
     api_key: str
-    provider: str | None = None
     base_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"api_key": self.api_key}
-        if self.provider:
-            out["provider"] = self.provider
         if self.base_url:
             out["base_url"] = self.base_url
         return out
@@ -49,12 +37,7 @@ class Credential:
     def masked(self) -> dict[str, Any]:
         """Public view: no api key, only a tail-hint for recognition."""
         tail = self.api_key[-4:] if len(self.api_key) >= 4 else ""
-        return {
-            "key_id": self.key_id,
-            "key_tail": tail,
-            "provider": self.provider,
-            "base_url": self.base_url,
-        }
+        return {"key_id": self.key_id, "key_tail": tail, "base_url": self.base_url}
 
 
 def new_credential_id() -> str:
@@ -79,17 +62,13 @@ def load_credentials(path: Path | None = None) -> dict[str, Credential]:
         return {}
     out: dict[str, Credential] = {}
     for key_id, entry in (raw or {}).items():
-        if (
-            not isinstance(entry, dict)
-            or (not entry.get("api_key")
-            and not entry.get("provider")
-            and not entry.get("base_url"))
+        if not isinstance(entry, dict) or (
+            not entry.get("api_key") and not entry.get("base_url")
         ):
             continue
         out[str(key_id)] = Credential(
             key_id=str(key_id),
             api_key=str(entry.get("api_key") or ""),
-            provider=entry.get("provider"),
             base_url=entry.get("base_url"),
         )
     return out

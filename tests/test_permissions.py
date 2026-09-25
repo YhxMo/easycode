@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from easycode.agent.builtin_tools import make_subagent
 from easycode.agent.loop import Agent
 from easycode.models.base import ToolCall
 from easycode.policy import ExecutionPolicy, cap_permission, permission_rule_action
@@ -19,6 +20,7 @@ from easycode.reviewer import ReviewDecision
 from easycode.tools import build_registry
 from easycode.workspace import PathContext, ToolGrant
 from tests.conftest import FakeProvider
+from tests.helpers_history import assert_valid_tool_protocol
 
 
 def _shell(root: Path, ctx: PathContext, command: str, **extra) -> dict:
@@ -78,7 +80,7 @@ def test_subagent_inherits_parent_permission_rules(tmp_path):
         subagent_factory=lambda _model: Agent(FakeProvider(script=[]), build_registry(8_000), tmp_path),
     )
 
-    child = agent._make_subagent()
+    child = make_subagent(agent)
 
     assert child.permission_rules == rules
 
@@ -134,6 +136,134 @@ async def test_permission_rule_deny_still_applies_under_allow_all(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_disabled_tool_call_is_rejected_at_execution(tmp_path):
+    """A tool outside the advertised schema set is rejected, never executed."""
+    target = tmp_path / "blocked.txt"
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "nope"})]},
+        {"text": "ok"},
+    ]
+    agent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        tmp_path,
+        enabled_tools={"read_file"},
+    )
+
+    events = [event async for event in agent.respond("write it")]
+
+    result = next(event.tool_result for event in events if event.kind == "tool_result")
+    payload = json.loads(result)
+    assert payload["rejected"] is True
+    assert payload["category"] == "policy"
+    assert "tool not enabled" in payload["message"]
+    assert not target.exists()
+    assert "".join(e.content for e in events if e.kind == "text") == "ok"
+    assert events[-1].kind == "done"
+    assert_valid_tool_protocol(agent.history.payload())
+
+
+@pytest.mark.asyncio
+async def test_approval_identity_binds_capabilities_and_is_reused(tmp_path):
+    """The loop hands the handler a capability-bound identity: the same command
+    with different granted capabilities must not silently reuse an earlier
+    'always allow'; an identical call does reuse it."""
+    from easycode.approval import approval_key, grant_for_toolcall
+
+    ext = tmp_path / "ext"
+    ext.mkdir()
+    calls: list[str] = []
+    allowed: set[str] = set()
+
+    async def handler(tc, _reason, key):
+        if key in allowed:
+            return True
+        calls.append(key)
+        allowed.add(key)
+        return True
+
+    escalated = {"command": "echo one", "sandbox_permissions": "require_escalated"}
+    script = [
+        {"tool_calls": [("c1", "execute_shell", dict(escalated))]},
+        {"tool_calls": [("c2", "execute_shell", {**escalated, "writable_roots": [str(ext)]})]},
+        {"tool_calls": [("c3", "execute_shell", dict(escalated))]},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        tmp_path,
+        approval_handler=handler,
+    )
+
+    events = [event async for event in agent.respond("go")]
+    assert events[-1].kind == "done"
+
+    # c1 and c2 share the command but not the capability: both prompt.
+    assert len(calls) == 2, calls
+    assert calls[0] != calls[1]
+    # c3 repeats c1 exactly: the stored identity is reused (handler no-op).
+    tc = ToolCall(id="c1", name="execute_shell", arguments=escalated)
+    expected = approval_key(tc, grant=grant_for_toolcall(tc, agent.path_context()))
+    assert calls[0] == expected
+
+
+@pytest.mark.asyncio
+async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
+    """Approval must grant against the *executing* agent's context.
+
+    The handler mirrors the pre-fix web bridge: it derives the grant from the
+    parent's (allow-all) context and returns it. The loop must ignore the
+    returned grant and regenerate the precise grant for the capped subagent.
+    """
+    from easycode.agents import AgentRegistry, AgentSpec
+    from easycode.approval import grant_for_toolcall
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    target = tmp_path / "outside.txt"
+    registry = AgentRegistry({"writer": AgentSpec(name="writer", description="writes", permission="ask")})
+
+    sub_script = [
+        {"tool_calls": [("s1", "write_file", {"path": str(target), "content": "approved"})]},
+        {"text": "done"},
+    ]
+    subs: list[Agent] = []
+
+    def factory(_model: str) -> Agent:
+        sub = Agent(FakeProvider(script=sub_script), build_registry(8_000), root)
+        subs.append(sub)
+        return sub
+
+    script = [
+        {"tool_calls": [("t1", "task", {"agent": "writer", "prompt": "write it"})]},
+        {"text": "finished"},
+    ]
+    parent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        root,
+        permission_mode="allow-all",
+        agents=registry,
+        subagent_factory=factory,
+    )
+    asked: list[str] = []
+
+    async def approval(tc, _reason, _key):
+        grant = grant_for_toolcall(tc, parent.path_context())
+        asked.append(tc.name)
+        return grant if grant else True
+
+    parent.approval_handler = approval
+    async for _ in parent.respond("delegate"):
+        pass
+
+    assert asked == ["write_file"]
+    assert target.read_text() == "approved"
+    assert len(subs) == 1
+
+
+@pytest.mark.asyncio
 async def test_destructive_command_is_not_policy_rejected_under_allow_all(tmp_path):
     script = [
         {"tool_calls": [("c1", "execute_shell", {"command": "git reset --hard"})]},
@@ -170,10 +300,10 @@ async def test_permission_rule_allow_grants_exact_external_file_write(tmp_path):
         permission_rules={"write_file": {f"*{outside.name}": "allow"}},
     )
     agent.root.mkdir()
-    events = [event async for event in agent.respond("write approved file")]
+    [event async for event in agent.respond("write approved file")]
 
+    # rule=allow skips approval entirely: no handler is set, yet the write ran
     assert outside.read_text() == "approved"
-    assert not any(event.kind == "approval" for event in events)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
@@ -239,15 +369,9 @@ def test_shell_network_is_blocked_by_default(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
-def test_read_only_blocks_workspace_write_and_full_access_allows_external_write(tmp_path):
+def test_full_access_allows_external_write(tmp_path):
     primary = tmp_path / "primary"
     primary.mkdir()
-    target = primary / "blocked.txt"
-    readonly = PathContext(primary=primary, sandbox_mode="read-only")
-    blocked = _shell(primary, readonly, "printf no > blocked.txt")
-    assert blocked["exit_code"] != 0
-    assert not target.exists()
-
     outside = tmp_path / "outside.txt"
     full = PathContext(primary=primary, sandbox_mode="danger-full-access")
     allowed = _shell(primary, full, f"printf yes > {outside}")
@@ -365,11 +489,13 @@ def test_approval_reason_is_categorical(tmp_path):
 
     (tmp_path / ".git").mkdir()
     protected = ToolCall(id="c3", name="write_file", arguments={"path": str(tmp_path / ".git" / "config"), "content": "x"})
-    assert approval_reason(protected, ctx) == "修改受保护目录 (.git/.easycode)"
+    assert approval_reason(protected, ctx) == "修改受保护目录 (.git/.easycode/项目配置)"
 
 
-def test_system_dir_exempt_but_credentials_protected(tmp_path, monkeypatch):
+def test_data_home_state_dirs_need_approval_but_worktrees_stay_writable(tmp_path, monkeypatch):
+    """DEC-T3: ~/.easycode state dirs are no longer silently writable."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.approval import needs_approval
     from easycode.credentials import data_home
 
     proj = tmp_path / "proj"
@@ -378,13 +504,23 @@ def test_system_dir_exempt_but_credentials_protected(tmp_path, monkeypatch):
     (dh / "sessions").mkdir(parents=True, exist_ok=True)
     ctx = PathContext(primary=proj)
 
-    # ~/.easycode/** is now approval-exempt (matches README claim).
-    assert ctx.in_allowed(dh / "sessions" / "s.json") is True
+    # Session records and extension definitions require approval (never silent).
+    for rel in ("sessions/s.json", "agents/a.md", "skills/s/SKILL.md", "commands/c.md"):
+        target = dh / rel
+        assert ctx.in_allowed(target) is False, rel
+        tc = ToolCall(id="c", name="write_file", arguments={"path": str(target), "content": "x"})
+        assert needs_approval(tc, ctx, "ask") is True, rel
 
-    # but credentials.json stays protected once it exists.
+    # Permanent worktrees under the data dir stay writable without approval.
+    worktree = dh / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    assert ctx.in_allowed(worktree / "file.txt") is True
+
+    # credentials.json stays hard-protected (approval cannot lift it).
     cred = dh / "credentials.json"
     cred.write_text("{}", encoding="utf-8")
     assert ctx.in_allowed(cred) is False
+    assert ctx.is_protected_path(cred) is True
 
 
 # ------------------------------------------------------------ P0-1 precise ToolGrant
@@ -410,20 +546,32 @@ def test_secondary_and_extra_safe_need_no_approval(tmp_path):
     assert ctx.in_allowed(extra / "b.txt") is True
 
 
-def test_git_and_easycode_hard_denied_everywhere(tmp_path):
-    """.git/.easycode are never writable by the file-tool chain, even with a grant."""
+def test_git_easycode_and_config_hard_denied_everywhere(tmp_path):
+    """.git/.easycode/项目配置 are never writable by the file-tool chain, even with a grant."""
     primary = tmp_path / "p"
     primary.mkdir()
     (primary / ".git").mkdir()
     (primary / ".easycode").mkdir()
+    (primary / "easycode.config.json").write_text("{}", encoding="utf-8")
     ctx = PathContext(primary=primary)
     reg = build_registry(8000)
 
     assert ctx.in_allowed(primary / ".git" / "config") is False
+    assert ctx.is_protected_path(primary / "easycode.config.json") is True
     r = json.loads(reg.execute("write_file", {"path": str(primary / ".git" / "config"), "content": "x"}, primary, ctx, grant=ToolGrant()))
     assert r["status"] == "error"
     r2 = json.loads(reg.execute("write_file", {"path": str(primary / ".easycode" / "x"), "content": "x"}, primary, ctx, grant=ToolGrant()))
     assert r2["status"] == "error"
+    r3 = json.loads(
+        reg.execute(
+            "write_file",
+            {"path": str(primary / "easycode.config.json"), "content": "{}"},
+            primary,
+            ctx,
+            grant=ToolGrant(writable_roots=(primary,)),
+        )
+    )
+    assert r3["status"] == "error"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from easycode.agent.loop import Agent, BudgetExceededError
+from easycode.agent.compaction import BudgetExceededError
+from easycode.agent.loop import Agent
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 
@@ -38,8 +39,8 @@ async def test_single_oversized_turn_fails_before_provider(tmp_path):
     # the failure is surfaced as a user-visible error event, not swallowed
     errs = [e for e in events if e.kind == "error"]
     assert errs and "预算" in errs[0].error
-    # the turn is rolled back so no orphan user message remains
-    assert agent.history.last_user_index() == -1
+    # The failed prompt stays visible; no tool calls were added.
+    assert agent.history.messages == [{"role": "user", "content": "x" * 2000}]
 
 
 async def test_gate_fires_even_when_compaction_auto_false(tmp_path):
@@ -89,4 +90,3 @@ async def test_budget_error_reaches_web_sse_channel(tmp_path):
     assert provider.calls == []
     errs = [e for e in events if e.kind == "error"]
     assert errs and "预算" in errs[0].error
-

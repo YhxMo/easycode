@@ -2,7 +2,7 @@
 
 - Credential paths are unconditionally protected and
   reading / writing / enumerating them is rejected by every file tool.
-- An approved shell (``force_allowed=True``) relaxes only the
+- An approved shell (``grant=ToolGrant(network_allowed=True)``) relaxes only the
   network dimension — file-write and process limits are retained; only
   ``danger-full-access`` disables the sandbox.
 - Model detail redacts ``api_key``; cross-origin state-change
@@ -30,16 +30,11 @@ from easycode.credentials import Credential, data_home, new_credential_id, save_
 from easycode.mcp import StdioTransport
 from easycode.sandbox import child_env
 from easycode.tools import build_registry
-from easycode.web.main import _origin_is_local, create_app
+from easycode.web.main import create_app
+from easycode.web.middleware import _origin_is_local
 from easycode.web.session import SessionStore
-from easycode.workspace import PathContext
+from easycode.workspace import PathContext, ToolGrant
 from tests.conftest import FakeProvider
-
-
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
 
 # ----------------------------------------------------------------
 
@@ -78,14 +73,14 @@ def test_write_file_rejected_creating_credential(tmp_path, monkeypatch):
     assert not cred.exists()
 
 
-def test_write_file_cannot_bypass_credentials_with_force_allowed(tmp_path, monkeypatch):
+def test_write_file_cannot_bypass_credentials_with_grant(tmp_path, monkeypatch):
     proj, home = make_home_ctx(tmp_path)
     monkeypatch.setenv("HOME", str(home))
     cred = data_home() / "credentials.json"
 
     out = json.loads(
         build_registry(8000).execute(
-            "write_file", {"path": str(cred), "content": "{}"}, proj, force_allowed=True
+            "write_file", {"path": str(cred), "content": "{}"}, proj, grant=ToolGrant(network_allowed=True)
         )
     )
     assert out["status"] == "error"
@@ -123,20 +118,20 @@ def test_in_allowed_false_for_credentials_even_when_missing(tmp_path, monkeypatc
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
-def test_sandbox_command_force_allowed_relaxes_network_not_bare(tmp_path):
+def test_sandbox_command_grant_relaxes_network_not_bare(tmp_path):
     from easycode.sandbox.macos import sandbox_command
 
     cmd = ["/bin/sh", "-c", "curl -I https://example.com"]
     ctx = PathContext(primary=tmp_path)
-    wrapped = sandbox_command(cmd, ctx, force_allowed=True)
+    wrapped = sandbox_command(cmd, ctx, grant=ToolGrant(network_allowed=True))
 
-    assert wrapped != cmd, "force_allowed must not return the bare (unsandboxed) command"
+    assert wrapped != cmd, "a grant must not return the bare (unsandboxed) command"
     assert wrapped[0] == "/usr/bin/sandbox-exec"
     policy = wrapped[2]
     assert "(deny default)" in policy
     assert "(allow network*)" in policy  # only the network dimension is relaxed
 
-    # Without force_allowed, network stays denied.
+    # Without a grant, network stays denied.
     default_wrapped = sandbox_command(cmd, ctx)
     assert "(allow network*)" not in default_wrapped[2]
 
@@ -154,8 +149,8 @@ def test_approved_shell_still_cannot_write_credentials(tmp_path, monkeypatch):
     cred.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = ["/bin/sh", "-c", f"printf '{{}}' > {cred}"]
-    # force_allowed=True simulates an approved shell: file-write protections remain.
-    proc = subprocess.run(sandbox_command(cmd, ctx, force_allowed=True), capture_output=True, text=True, check=False)
+    # grant=ToolGrant(network_allowed=True) simulates an approved shell: file-write protections remain.
+    proc = subprocess.run(sandbox_command(cmd, ctx, grant=ToolGrant(network_allowed=True)), capture_output=True, text=True, check=False)
     assert proc.returncode != 0
     assert not cred.exists()
 
@@ -347,12 +342,33 @@ def test_normal_shell_commands_are_not_in_destructive_denylist(tmp_path):
     assert destructive_command_reason("pytest tests/test_permissions.py -q") is None
 
 
-def test_sandbox_command_force_allowed_fails_closed_non_macos(monkeypatch, tmp_path):
+def test_file_tools_keep_protected_paths_closed_under_allow_all(tmp_path):
+    """`danger-full-access` is not an approval: it opens the sandbox, never the
+    permanent write boundaries."""
+    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+    from easycode.workspace import CONFIG_FILENAME
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".easycode").mkdir()
+    ctx = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
+    registry = build_registry(8000)
+
+    for rel in (".git/config", ".easycode/blocked.txt", CONFIG_FILENAME):
+        target = tmp_path / rel
+        result = json.loads(
+            registry.execute("write_file", {"path": str(target), "content": "x"}, tmp_path, ctx)
+        )
+        assert result["status"] == "error", rel
+        assert result["protected"] is True, rel
+        assert not target.exists(), rel
+
+
+def test_sandbox_command_grant_fails_closed_non_macos(monkeypatch, tmp_path):
     import easycode.sandbox.macos as macos
 
     monkeypatch.setattr(sys, "platform", "linux")
     with pytest.raises(RuntimeError):
-        macos.sandbox_command(["/bin/sh", "-c", "true"], PathContext(primary=tmp_path), force_allowed=True)
+        macos.sandbox_command(["/bin/sh", "-c", "true"], PathContext(primary=tmp_path), grant=ToolGrant(network_allowed=True))
 
 
 # ----------------------------------------------------------------
@@ -598,7 +614,7 @@ def test_worktreeinclude_copies_valid_entries(tmp_path):
 
 
 def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatch):
-    import easycode.web.main as main_mod
+    import easycode.web.routes_workspaces as main_mod
 
     client = make_app(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup")
@@ -627,7 +643,7 @@ def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatc
 
 
 def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, monkeypatch):
-    import easycode.web.main as main_mod
+    import easycode.web.routes_workspaces as main_mod
 
     client = make_app(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup-nosand")
@@ -651,6 +667,95 @@ def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, m
     assert (wt / ".easycode" / "setup.sh").is_file()
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+@pytest.mark.parametrize("sandbox_mode", ["workspace-write", "danger-full-access"])
+def test_managed_worktree_root_is_usable_in_every_mode(tmp_path, monkeypatch, sandbox_mode):
+    """A worktree under ~/.easycode/worktrees must be readable/writable by its
+    own shell in every permission mode (allow-all used to deny the whole data
+    home, breaking even `pwd`)."""
+    _, home = make_home_ctx(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    worktree = data_home() / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    (worktree / "source.py").write_text("x = 1\n", encoding="utf-8")
+    ctx = PathContext(primary=worktree, sandbox_mode=sandbox_mode)
+
+    result = json.loads(
+        build_registry(8000).execute(
+            "execute_shell",
+            {"command": "pwd && cat source.py && printf 'y=2\\n' > own.txt && cat own.txt"},
+            worktree,
+            ctx,
+        )
+    )
+    assert result["status"] == "ok", result
+    assert result["exit_code"] == 0, result
+    assert (worktree / "own.txt").read_text(encoding="utf-8") == "y=2\n"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+@pytest.mark.parametrize("sandbox_mode", ["workspace-write", "danger-full-access"])
+def test_worktree_exception_keeps_state_dirs_denied(tmp_path, monkeypatch, sandbox_mode):
+    """The worktree exception must not open sessions, global extensions or
+    credentials to model-originated shells."""
+    _, home = make_home_ctx(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    worktree = data_home() / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    sessions = data_home() / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "s.json").write_text('{"secret":"session-record"}', encoding="utf-8")
+    cred = data_home() / "credentials.json"
+    cred.write_text('{"api_key":"sk-worktree-secret"}', encoding="utf-8")
+    ctx = PathContext(primary=worktree, sandbox_mode=sandbox_mode)
+    registry = build_registry(8000)
+
+    for command, needle in (
+        (f"cat {sessions / 's.json'}", "session-record"),
+        (f"cat {cred}", "sk-worktree-secret"),
+        (f"printf x > {sessions / 'new.json'}", None),
+    ):
+        result = json.loads(
+            registry.execute("execute_shell", {"command": command}, worktree, ctx)
+        )
+        assert result["status"] == "ok", (command, result)
+        assert result["exit_code"] != 0, (command, result)
+        if needle is not None:
+            assert needle not in json.dumps(result), command
+    assert not (sessions / "new.json").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
+def test_grant_root_shell_cannot_write_metadata(tmp_path):
+    """A granted external writable root stays writable, but its
+    .git/.easycode/config remain write-protected in the Seatbelt policy."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    ext = tmp_path / "ext"
+    (ext / ".git" / "hooks").mkdir(parents=True)
+    ctx = PathContext(primary=proj)
+    grant = ToolGrant(writable_roots=(ext,))
+    command = (
+        f"printf ok > {ext}/ok.txt; "
+        f"printf x > {ext}/.git/hooks/x; "
+        f"printf y > {ext}/easycode.config.json"
+    )
+
+    result = json.loads(
+        build_registry(8000).execute(
+            "execute_shell",
+            {"command": command, "writable_roots": [str(ext)]},
+            proj,
+            ctx,
+            grant=grant,
+        )
+    )
+    assert result["status"] == "ok", result
+    assert (ext / "ok.txt").read_text(encoding="utf-8") == "ok"
+    assert not (ext / ".git" / "hooks" / "x").exists()
+    assert not (ext / "easycode.config.json").exists()
+
+
 # -------------------------------------------------- finder prompt sanitization
 # ``choose_folders_via_finder`` splices a user-controlled ``prompt`` into an
 # ``osascript -e`` AppleScript literal. Only printable, trimmed, length-capped
@@ -660,23 +765,23 @@ def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, m
 
 
 def test_finder_prompt_sanitizer_strips_controls_and_caps():
-    import easycode.web.main as main_mod
+    import easycode.web.platform as platform_mod
 
     raw = "a\nb\tc\x00d" + "x" * 1000
-    out = main_mod._sanitize_finder_prompt(raw)
+    out = platform_mod._sanitize_finder_prompt(raw)
     assert "\n" not in out
     assert "\t" not in out
     assert "\x00" not in out
     # length-capped for the script literal
-    assert len(out) == main_mod.FINDER_PROMPT_MAX_LEN
+    assert len(out) == platform_mod.FINDER_PROMPT_MAX_LEN
     # leading/trailing whitespace is trimmed
-    assert main_mod._sanitize_finder_prompt("   hi  ") == "hi"
+    assert platform_mod._sanitize_finder_prompt("   hi  ") == "hi"
 
 
 def test_finder_prompt_script_no_newline_and_quotes_escaped(tmp_path, monkeypatch):
     import subprocess as sp
 
-    import easycode.web.main as main_mod
+    import easycode.web.routes_workspaces as main_mod
 
     monkeypatch.setattr(main_mod, "finder_supported", lambda: True)
     captured: dict[str, list[str]] = {}

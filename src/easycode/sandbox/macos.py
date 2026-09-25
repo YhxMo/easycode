@@ -6,8 +6,14 @@ import sys
 from pathlib import Path
 
 from easycode.credentials import data_home
-from easycode.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_READ_ONLY
-from easycode.workspace import PathContext, ToolGrant
+from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+from easycode.workspace import (
+    CONFIG_FILENAME,
+    DATA_HOME_STATE_DIRS,
+    PathContext,
+    ToolGrant,
+    secret_paths,
+)
 
 SEATBELT_EXECUTABLE = Path("/usr/bin/sandbox-exec")
 
@@ -51,12 +57,32 @@ def _seatbelt_literal(path: Path) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _state_deny_policy(include_write: bool) -> str:
+    """Deny reads (and writes) of data-home state dirs + credential files.
+
+    Used when a workspace root lives INSIDE the data dir (a managed git
+    worktree): the worktree itself must stay usable, but session records,
+    global agent/skill/command definitions, and credentials must not become
+    reachable just because the worktree is. ``deny`` always wins over
+    ``allow`` in Seatbelt, so listing the state dirs is enough.
+    """
+    targets = [data_home() / sub for sub in DATA_HOME_STATE_DIRS]
+    targets.extend(secret_paths())
+    out: list[str] = []
+    for p in targets:
+        lit = _seatbelt_literal(p)
+        out.append(f"(deny file-read* (subpath {lit}))")
+        if include_write:
+            out.append(f"(deny file-write* (subpath {lit}))")
+    return "\n".join(out)
+
+
 def _secret_policy(include_write: bool, *, protect_all_data_home: bool = True) -> str:
     """Deny reads (and, when ``include_write``, writes) of the application data
     dir, or — when a workspace root lives INSIDE the data dir (a git worktree
-    under ``~/.easycode/worktrees``) — just the credential files, so that
-    worktree can still be read by its own setup script while ``credentials.json``
-    stays off-limits.
+    under ``~/.easycode/worktrees``) — only the data-home state dirs and
+    credential files, so that worktree can still be used while sessions and
+    credentials stay off-limits.
 
     In Seatbelt ``deny`` always wins over ``allow``, so a narrower ``allow``
     cannot carve a worktree out of a blanket data-home denial; the caller narrows
@@ -70,14 +96,7 @@ def _secret_policy(include_write: bool, *, protect_all_data_home: bool = True) -
     write target either.
     """
     if not protect_all_data_home:
-        creds = data_home() / "credentials.json"
-        out: list[str] = []
-        for p in (creds, creds.with_suffix(".tmp")):
-            lit = _seatbelt_literal(p)
-            out.append(f"(deny file-read* (literal {lit}))")
-            if include_write:
-                out.append(f"(deny file-write* (literal {lit}))")
-        return "\n".join(out)
+        return _state_deny_policy(include_write)
     lit = _seatbelt_literal(data_home())
     out = [f"(deny file-read* (subpath {lit}))"]
     if include_write:
@@ -85,38 +104,39 @@ def _secret_policy(include_write: bool, *, protect_all_data_home: bool = True) -
     return "\n".join(out)
 
 
+def _root_in_data_home(ctx: PathContext) -> bool:
+    """True when any of the context's roots lives under the data home."""
+    data = data_home().resolve()
+    return any(
+        r.resolve().is_relative_to(data) for r in [*ctx.roots, *ctx.extra_safe_dirs]
+    )
+
+
 def sandbox_command(
     command: list[str],
     ctx: PathContext,
     *,
-    force_allowed: bool = False,
     grant: ToolGrant | None = None,
 ) -> list[str]:
-    """Wrap a command in Seatbelt; non-macOS callers fail closed upstream.
-
-    ``force_allowed`` is a legacy alias: it is folded into ``grant`` as a
-    network-only relaxation so existing callers keep working. The precise grant
-    (P0-1) separates the two dimensions — ``grant.network_allowed`` enables
-    network, while ``grant.writable_roots`` adds *specific* external writable
-    directories (each its own ``-D`` + subpath rule). File-write and process-exec
-    limits are always retained; only ``danger-full-access`` disables the sandbox
-    almost entirely — and even then the application data dir (``~/.easycode``)
-    stays off-limits so credentials cannot be read or written by a child.
-    """
+    """Apply workspace isolation, with explicit network and write grants."""
+    protect_all = not _root_in_data_home(ctx)
     if ctx.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
-        # allow-all: full access, but retain the secret firewall.
+        # allow-all: full access, but retain the secret firewall (narrowed to
+        # the data-home state dirs when the workspace itself is a managed
+        # worktree inside the data home).
         if sys.platform != "darwin" or not SEATBELT_EXECUTABLE.is_file():
             return command  # no Seatbelt available; env sanitization still applies
-        policy = FULL_ACCESS_POLICY.format(secret_policy=_secret_policy(include_write=True))
+        policy = FULL_ACCESS_POLICY.format(
+            secret_policy=_secret_policy(
+                include_write=True, protect_all_data_home=protect_all
+            )
+        )
         args = [str(SEATBELT_EXECUTABLE), "-p", policy]
         return [*args, "--", *command]
     if sys.platform != "darwin" or not SEATBELT_EXECUTABLE.is_file():
         raise RuntimeError("workspace sandbox is currently supported only on macOS")
 
-    if grant is None and force_allowed:
-        grant = ToolGrant(network_allowed=True)
-
-    writable = [] if ctx.sandbox_mode == SANDBOX_READ_ONLY else list(ctx.writable_roots())
+    writable = list(ctx.writable_roots())
     if grant:
         for r in grant.writable_roots:
             rp = r.resolve()
@@ -130,22 +150,13 @@ def sandbox_command(
     if grant:
         for r in grant.writable_roots:
             rp = r.resolve()
-            for sub in (rp / ".git", rp / ".easycode"):
+            for sub in (rp / ".git", rp / ".easycode", rp / CONFIG_FILENAME):
                 if not any(sub == q or sub.is_relative_to(q) for q in protected):
                     protected.append(sub)
     protected_rules = [
-        f'(deny file-write* (subpath (param "PROTECTED_ROOT_{i}")))'
-        for i in range(len(protected))
+        f'(deny file-write* (subpath (param "PROTECTED_ROOT_{i}")))' for i in range(len(protected))
     ]
     network_policy = "(allow network*)" if (grant and grant.network_allowed) else ""
-    # A workspace root that lives inside the data dir (a git worktree created
-    # under ~/.easycode/worktrees) must stay readable by the sandboxed process,
-    # so the blanket data-home read denial is narrowed to just the credentials.
-    data_home_resolved = data_home().resolve()
-    any_root_in_data_home = any(
-        r.resolve().is_relative_to(data_home_resolved)
-        for r in [*ctx.roots, *ctx.extra_safe_dirs]
-    )
     policy = BASE_POLICY.format(
         write_policy="\n".join(write_rules),
         protected_policy="\n".join(protected_rules),
@@ -156,9 +167,10 @@ def sandbox_command(
         # could silently create/delete ``~/.easycode/sessions/*`` without
         # approval, bypassing SessionStore's atomic replacement. When a worktree
         # root lives INSIDE the data dir, the denial is narrowed to the
-        # credential files so the worktree stays writable by its own setup script.
+        # data-home state dirs + credentials so the worktree stays writable by
+        # its own setup script without exposing sessions or global extensions.
         secret_policy=_secret_policy(
-            include_write=True, protect_all_data_home=not any_root_in_data_home
+            include_write=True, protect_all_data_home=protect_all
         ),
     )
     args = [str(SEATBELT_EXECUTABLE), "-p", policy]

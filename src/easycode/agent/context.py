@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from easycode.models.base import Message
-
-SummarizerFn = Callable[[list[Message]], str]
 
 SUMMARY_PREFIX = "Previous conversation summary (older messages were condensed):"
 
@@ -17,30 +14,38 @@ class History:
     """Bounded message history (OpenAI-format dicts).
 
     Budgets: ``max_tokens`` (usable model budget, primary) and ``max_chars``
-    (backstop for non-token-countable models). ``summary`` tracks the latest
-    rolling compaction summary so repeated compactions merge instead of
-    overwriting (aligned with opencode).
+    (an explicit memory backstop independent of the model budget; token
+    accounting stays primary and is CJK-aware rather than a flat chars/4 rule).
+    Old turns are dropped only by ``trim``/``condense`` under those budgets,
+    never by a raw message count. ``summary`` derives from the head summary
+    message so repeated compactions merge instead of overwriting (aligned with
+    opencode).
+
+    Invariant: once a message dict is in the list it is never mutated in place
+    (compaction replaces the object) — ``Session.messages`` snapshots share
+    these dictionaries without copying them.
     """
 
     system: Message | None = None
     messages: list[Message] = field(default_factory=list)
-    max_messages: int = 100
     max_chars: int = 400_000
     max_tokens: int = 32_000
-    summary: str | None = None
+
+    @property
+    def summary(self) -> str | None:
+        """Latest rolling compaction summary, derived from ``messages[0]``."""
+        if self.messages and self.is_summary(self.messages[0]):
+            return str(self.messages[0]["content"])[len(SUMMARY_PREFIX) :].lstrip()
+        return None
 
     def set_system(self, content: str) -> None:
         self.system = {"role": "system", "content": content}
 
     def add(self, message: Message) -> None:
+        # Trimming happens in ``trim``/``condense`` under the token and char
+        # budgets; a message count limit would drop old turns without a
+        # summary.
         self.messages.append(message)
-        # Trim in whole turns so a single pop never lands mid-turn on an
-        # assistant ``tool_calls`` message or a ``tool`` result: a
-        # boundary can only break a tool_call/result pairing, which would
-        # leave an orphan tool in the payload.
-        while len(self.messages) > self.max_messages:
-            if not self._drop_oldest_turn():
-                break
 
     def add_user(self, content: str) -> None:
         self.add({"role": "user", "content": content})
@@ -62,14 +67,19 @@ class History:
         out.extend(self.messages)
         return out
 
-    def estimate_chars(self) -> int:
-        total = sum(len(str(m.get("content") or "")) for m in self.messages)
-        total += sum(
-            len(str(tc.get("function", {}).get("arguments") or ""))
-            for m in self.messages
+    @staticmethod
+    def _text(messages: list[Message]) -> str:
+        """Concatenated content + tool-call arguments of a message list."""
+        text = "".join(str(m.get("content") or "") for m in messages)
+        text += "".join(
+            str(tc.get("function", {}).get("arguments") or "")
+            for m in messages
             for tc in (m.get("tool_calls") or [])
         )
-        return total
+        return text
+
+    def estimate_chars(self) -> int:
+        return len(self._text(self.messages))
 
     def estimate_tokens(self) -> int:
         """Token estimate via litellm if possible, else the cheap heuristic.
@@ -81,7 +91,9 @@ class History:
         try:
             import litellm
 
-            return litellm.token_counter(messages=self.payload() or [{"role": "user", "content": ""}])
+            return litellm.token_counter(
+                messages=self.payload() or [{"role": "user", "content": ""}]
+            )
         except Exception:  # noqa: BLE001 - heuristic fallback
             return max(1, self._estimate_tokens_cheap() + self._system_tokens())
 
@@ -109,13 +121,7 @@ class History:
         chars/4 assumption badly under-counts non-ASCII-heavy transcripts,
         so count non-ASCII separately.
         """
-        text = "".join(str(m.get("content") or "") for m in messages)
-        text += "".join(
-            str(tc.get("function", {}).get("arguments") or "")
-            for m in messages
-            for tc in (m.get("tool_calls") or [])
-        )
-        return History.estimate_text_tokens(text)
+        return History.estimate_text_tokens(History._text(messages))
 
     def over_budget(self, extra: int = 0) -> bool:
         """Cheap-gated budget check for the completion payload.
@@ -142,23 +148,12 @@ class History:
             SUMMARY_PREFIX
         )
 
-    def _drop_oldest(self) -> Message | None:
-        """Pop the oldest non-summary message (summary messages are protected)."""
-        for i, m in enumerate(self.messages):
-            if self.is_summary(m):
-                continue
-            return self.messages.pop(i)
-        return None
-
     def trim(self) -> None:
         """Drop oldest messages beyond the limits (no summarization).
 
         Trims whole user turns so an assistant ``tool_calls`` message and its
         ``tool`` results are never split across the trim boundary.
         """
-        while len(self.messages) > self.max_messages:
-            if not self._drop_oldest_turn():
-                break
         total = self.estimate_chars()
         while total > self.max_chars and len(self.messages) > 2:
             if not self._drop_oldest_turn():
@@ -168,23 +163,12 @@ class History:
             if not self._drop_oldest_turn():
                 break
 
-    def condense(self, summary: str, keep_recent: int = 20) -> bool:
-        """Replace everything older than ``keep_recent`` messages with a summary.
-
-        Kept for compatibility; the loop uses :meth:`condense_from` with a
-        token-selected tail index instead.
-        """
-        if len(self.messages) <= keep_recent + 1:
-            return False
-        return self.condense_from(summary, len(self.messages) - keep_recent)
-
     def condense_from(self, summary: str, tail_start: int) -> bool:
         """Replace messages before ``tail_start`` with a summary; keep the tail.
 
         ``tail_start`` is first snapped to a non-tool boundary so the kept
-        tail never begins with an orphaned ``tool`` result.
-
-        Records ``summary`` so the next compaction can merge into it.
+        tail never begins with an orphaned ``tool`` result. The summary lives
+        as the head system message, so the next compaction can merge into it.
         """
         if tail_start <= 0 or tail_start >= len(self.messages):
             return False
@@ -200,7 +184,6 @@ class History:
             "content": f"{SUMMARY_PREFIX}\n{summary}",
         }
         self.messages = [summary_msg, *recent]
-        self.summary = summary
         return True
 
     def _coalesce_tail_start(self, idx: int) -> int:
@@ -247,9 +230,7 @@ class History:
             end = turns[1][0]
             del self.messages[start:end]
             return True
-        first_user = next(
-            (i for i, m in enumerate(self.messages) if m.get("role") == "user"), None
-        )
+        first_user = next((i for i, m in enumerate(self.messages) if m.get("role") == "user"), None)
         if first_user is None:
             # No user boundary: drop a single leading orphaned message.
             if self.messages:
@@ -304,22 +285,3 @@ class History:
         if keep is None or keep == 0:
             return None
         return keep
-
-    def last_user_index(self) -> int:
-        """Index of the last ``role=user`` message, or -1."""
-        for i in range(len(self.messages) - 1, -1, -1):
-            if self.messages[i].get("role") == "user":
-                return i
-        return -1
-
-    def pop_user_turn(self) -> list[Message]:
-        """Remove the last user turn (its user message + everything after).
-
-        Returns the removed messages so a redo stack can re-append them.
-        """
-        idx = self.last_user_index()
-        if idx < 0:
-            return []
-        removed = self.messages[idx:]
-        self.messages = self.messages[:idx]
-        return removed

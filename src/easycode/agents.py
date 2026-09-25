@@ -41,7 +41,6 @@ class AgentSpec:
     mode: str = "subagent"
     temperature: float | None = None
     system: str = ""
-    source: str = "project"  # project > user on name conflict
 
     @property
     def delegatable(self) -> bool:
@@ -60,13 +59,13 @@ class AgentRegistry:
         reg = cls()
         user = (user_dir or Path.home() / ".easycode" / "agents")
         for p in sorted(user.glob("*.md")) if user.is_dir() else []:
-            spec = _load_spec(p, source="user")
+            spec = _load_spec(p)
             if spec:
                 reg._specs[spec.name] = spec
         for root in roots:
             proj = root / ".easycode" / "agents"
             for p in sorted(proj.glob("*.md")) if proj.is_dir() else []:
-                spec = _load_spec(p, source="project")
+                spec = _load_spec(p)
                 if spec:
                     reg._specs[spec.name] = spec
         return reg
@@ -84,7 +83,7 @@ class AgentRegistry:
         return [f"- {s.name}: {s.description}" for s in self.list() if s.delegatable]
 
 
-def _load_spec(path: Path, source: str) -> AgentSpec | None:
+def _load_spec(path: Path) -> AgentSpec | None:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
         meta, body = parse_spec(text, default_name=path.stem, required=("description",))
@@ -109,5 +108,4 @@ def _load_spec(path: Path, source: str) -> AgentSpec | None:
         mode=mode,
         temperature=float(temperature) if temperature is not None else None,
         system=body.strip(),
-        source=source,
     )

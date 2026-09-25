@@ -3,48 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
+import { activeTitle, composerField, primeApiMock, session, sidebarRow } from "./helpers";
 
-// Regression tests: a new-session first-turn stream whose
-// finally block hijacks the foreground session ownership.
-//
-// Repro: user is in a brand-new session (currentId === null), sends a prompt,
-// and while the stream is still in flight (before the backend emits the
-// "session" event that binds the currentId) clicks "新会话" again to switch the
-// foreground to another blank session. The old stream's finally then runs
-// `setCurrentId(list[0].id)` unconditionally, silently re-routing the user's
-// input in the blank session to the previous stream's newly-created session.
-//
-// These tests drive App purely against a mocked ./api (no network, no real
-// ~/.easycode) and hold the SSE stream open with a controllable promise, so the
-// navigation happens deterministically before the turn completes.
-vi.mock("../api", () => ({
-  fetchSessions: vi.fn(),
-  fetchArchivedSessions: vi.fn(),
-  fetchSession: vi.fn(),
-  fetchWorkspaces: vi.fn(),
-  fetchModels: vi.fn(),
-  fetchCommands: vi.fn(),
-  setSessionPermission: vi.fn(),
-  streamChat: vi.fn(),
-  undoSession: vi.fn(),
-  redoSession: vi.fn(),
-  submitApproval: vi.fn(),
-  cancelSessionChat: vi.fn(),
-  deleteSession: vi.fn(),
-  archiveProjectChats: vi.fn(),
-  createWorktree: vi.fn(),
-  pinProject: vi.fn(),
-  removeProject: vi.fn(),
-  revealInFinder: vi.fn(),
-  saveProject: vi.fn(),
-  setSessionArchived: vi.fn(),
-}));
+// New streams are identified by their SSE session event. Navigation abandons old events.
+vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-function session(id: string, title: string): api.SessionSummary {
-  return { id, title, created_at: "2026-01-01T00:00:00Z", model_alias: "m", permission_mode: "ask" };
-}
 
 /**
  * A streamChat mock that captures `onEvent` and fails the test if a second
@@ -70,25 +34,11 @@ function controllableStream() {
   };
 }
 
-/** The foreground conversation title rendered in the chat header. */
-function headerTitle(): string {
-  return document.querySelector(".chat-context strong")?.textContent ?? "";
-}
-
 beforeEach(() => {
-  vi.clearAllMocks();
+  primeApiMock(m);
   m.fetchSessions.mockResolvedValue([session("A", "会话A")]);
-  m.fetchArchivedSessions.mockResolvedValue([]);
-  m.fetchWorkspaces.mockResolvedValue({ default: "", projects: [] });
-  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {} });
-  m.fetchCommands.mockResolvedValue({ commands: [] });
+  m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
   m.fetchSession.mockResolvedValue({ ...session("A", "会话A"), messages: [] });
-  // streamChat/resolve default so a stray call doesn't hit the network.
-  m.streamChat.mockResolvedValue(undefined);
-  m.setSessionPermission.mockImplementation(async (_id, mode) => ({ id: "A", permission_mode: mode }));
-  m.undoSession.mockResolvedValue({ ok: true });
-  m.redoSession.mockResolvedValue({ ok: true });
-  m.submitApproval.mockResolvedValue(undefined);
 });
 
 describe("App · 会话归属", () => {
@@ -100,47 +50,142 @@ describe("App · 会话归属", () => {
     // Sidebar shows the existing session; foreground is still the blank
     // new session (currentId === null -> header "新会话").
     await screen.findByText("会话A");
-    expect(headerTitle()).toBe("新会话");
+    expect(activeTitle()).toBe("新会话");
 
     // Send from the new session (sessionId = null); stream stays in flight and
     // crucially has NOT emitted a "session" event yet.
-    await user.type(screen.getByRole("textbox"), "hello");
+    await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
-    // While the stream is still pending, the user clicks 新会话 to switch the
-    // foreground to a fresh blank session again (openSession(null)). Because
-    // the stream never bound a session, this does NOT abort it — the old
-    // request token remains "active" and its finally would clear/hijack.
+    // Navigation invalidates the old stream even before its session event arrives.
     await user.click(screen.getByRole("button", { name: /新会话/ }));
-    expect(headerTitle()).toBe("新会话");
+    expect(activeTitle()).toBe("新会话");
 
-    // Now let the first turn complete; the old stream's finally runs.
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
     await stream.finish();
 
     // The completed (old) stream must refresh the list but must NOT take over
     // the view: the user's blank session stays the foreground owner.
-    await waitFor(() => expect(headerTitle()).toBe("新会话"));
+    await waitFor(() => expect(activeTitle()).toBe("新会话"));
     expect(document.querySelector(".session-item.active")).toBeNull();
   });
 
-  it("未中途导航时，新会话首轮流结束后仍回填新建会话 id（保持原行为）", async () => {
+  it("新会话选择完全访问后，session 事件后仍保持，下一轮发送 permission_mode=allow-all", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([]);
+    const stream = controllableStream();
+
+    render(<App />);
+    await screen.findByRole("button", { name: /请求批准/ });
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+
+    await user.type(composerField(), "first");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
+    await stream.finish();
+
+    // The created session inherits the draft's permission selection.
+    await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
+
+    await user.type(composerField(), "second");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(2));
+    expect(m.streamChat).toHaveBeenLastCalledWith(
+      "A",
+      "second",
+      expect.any(Function),
+      expect.objectContaining({ permission_mode: "allow-all" }),
+    );
+  });
+
+  it("新会话选择的次目录在 session 事件后仍显示", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([{ ...session("old", "旧会话"), root: "/p" }]);
+    m.fetchWorkspaces.mockResolvedValue({
+      projects: [{ root: "/p", secondary: ["/s1", "/s2"] }],
+    });
+    const stream = controllableStream();
+
+    render(<App />);
+    await screen.findByText("旧会话");
+    await user.click(screen.getByRole("button", { name: "在此项目下新建会话" }));
+    expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 2 个目录");
+
+    await user.type(composerField(), "go");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(stream.get()).toBeTruthy());
+
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
+    await stream.finish();
+
+    await waitFor(() =>
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain(
+        "已连接 2 个目录",
+      ),
+    );
+  });
+
+  it("使用 SSE 返回的会话 id，而不是列表中的最新会话", async () => {
     const user = userEvent.setup();
     const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("会话A");
-    expect(headerTitle()).toBe("新会话");
+    expect(activeTitle()).toBe("新会话");
 
-    await user.type(screen.getByRole("textbox"), "bye");
+    await user.type(composerField(), "bye");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
-    // No navigation whatsoever: the fallback must still claim the newly
-    // created session (list[0].id) so the turn is owned properly.
+    m.fetchSessions.mockResolvedValue([session("B", "另一个会话"), session("A", "会话A")]);
+    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
     await stream.finish();
 
-    await waitFor(() => expect(headerTitle()).toBe("会话A"));
+    await waitFor(() => expect(activeTitle()).toBe("会话A"));
     expect(document.querySelector(".session-item.active")?.textContent).toContain("会话A");
+  });
+
+  it("旧流延迟结束不清除新流的忙碌与停止状态", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("A", "会话A"), session("B", "会话B")]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve({ ...session(id, id === "A" ? "会话A" : "会话B"), messages: [] }),
+    );
+    const pending: Array<{ resolve: () => void }> = [];
+    m.streamChat.mockImplementation(() => {
+      let resolve!: () => void;
+      const p = new Promise<void>((r) => {
+        resolve = r;
+      });
+      pending.push({ resolve });
+      return p;
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await user.type(composerField(), "first");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(pending.length).toBe(1));
+
+    // Switch to B and start a second stream before the first settles.
+    await user.click(sidebarRow("会话B"));
+    await user.type(composerField(), "second");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(pending.length).toBe(2));
+
+    // The stale first stream settles late; it must not clear B's busy state.
+    await act(async () => {
+      pending[0].resolve();
+    });
+
+    expect(screen.getByRole("button", { name: /停止生成/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /发送消息/ })).toBeNull();
   });
 });

@@ -1,6 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   CommandInfo,
+  FileEntry,
   ModelsInfo,
   SessionDetail,
   SessionSummary,
@@ -9,89 +12,181 @@ import type {
 } from "./api";
 import {
   archiveProjectChats,
-  cancelSessionChat,
   createWorktree,
   deleteSession,
   fetchArchivedSessions,
   fetchCommands,
   fetchModels,
+  fetchFiles,
   fetchSession,
   fetchSessions,
+  pinSession,
   fetchWorkspaces,
   pinProject,
-  redoSession,
   removeProject,
   revealInFinder,
   saveProject,
   setSessionArchived,
   setSessionPermission,
-  streamChat,
   submitApproval,
-  undoSession,
 } from "./api";
-import { useChatStream } from "./useChatStream";
-import { currentTimeLabel, formatClock, formatDuration, historyToItems } from "./lib/history";
-import type { ApprovalState, Item, RollbackInfo } from "./types";
-import { ApprovalSheet } from "./ApprovalSheet";
-import { CommandMenu, filterCommands, clampCommandIndex, moveCommandCursor } from "./CommandMenu";
+import { DRAFT_KEY, useChatStream } from "./useChatStream";
+import { MENTION_LIST_ID, MENTION_OPTION_PREFIX, MentionMenu } from "./MentionMenu";
+import type { MentionAnswer, MentionState } from "./MentionMenu";
+import { ModelPicker } from "./ModelPicker";
+import { currentTurn } from "./chatStream";
+import { historyToItems } from "./lib/history";
+import type { ApprovalState, Item } from "./types";
+import { COMMAND_LIST_ID, CommandMenu } from "./CommandMenu";
+import { filterCommands, clampCommandIndex, moveCommandCursor } from "./lib/commands";
 import { Modal } from "./components/Modal";
-import { Markdown } from "./components/Markdown";
+import { ChatMessages } from "./components/ChatMessages";
 import { Sidebar } from "./components/Sidebar";
-import { PermissionPicker } from "./PermissionPicker";
+import { ComposerBar } from "./components/layout/ComposerBar";
+import { RightPane, type PaneSection } from "./components/layout/RightPane";
+import { EmptyState } from "./components/primitives/EmptyState";
+import { LoadingState } from "./components/primitives/LoadingState";
+import { TabBar, type OpenTab } from "./components/layout/TabBar";
+import { SelectionActions } from "./components/primitives/SelectionActions";
+import { ContextCards } from "./components/primitives/ContextCards";
+import { DiffView } from "./components/primitives/DiffView";
+import { FilePreview } from "./components/primitives/FilePreview";
+import { paneData } from "./lib/pane";
+import { TaskRows } from "./components/primitives/TaskRows";
+import { groupSessions } from "./lib/sessionGroups";
+import { applyMention, mentionToken } from "./lib/mention";
+import { useVoiceInput } from "./lib/useVoiceInput";
+import { usePersistedFlags } from "./lib/usePersistedFlags";
+import { useDrafts } from "./lib/useDrafts";
+import { useStickToBottom } from "./lib/useStickToBottom";
+import type { StickToBottom } from "./lib/useStickToBottom";
 import type { ProjectAction } from "./ProjectMenu";
-import { basename } from "./ProjectPicker";
+import { basename, DEFAULT_PROJECT } from "./lib/paths";
 import { SecondaryEditor } from "./SecondaryEditor";
-import { ToolCard } from "./ToolCard";
 
-const EMPTY_MODELS: ModelsInfo = { default: "deepseek-v4flash", models: {} };
-const DEFAULT_PROJECT = "default project";
+const EMPTY_MODELS: ModelsInfo = { default: "", models: {}, providers: {}, limits: {} };
 
-function UndoIcon() {
-  return (
-    <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M9 7 4 12l5 5" />
-      <path d="M4 12h10a6 6 0 0 1 6 6" />
-    </svg>
-  );
+/**
+ * Chat width at which the pane covers the stream instead of sharing the row.
+ * Mirrors the `@container` rule for `.right-pane` in styles.css: keeping the
+ * conversation at least 560px wide is what both numbers express.
+ */
+const NARROW_CHAT_PX = 950;
+
+/** Offered after a turn the server ended on purpose; filled in, never sent. */
+const CONTINUE_PROMPT =
+  "继续完成上一轮未完成的任务。先核对工作区里已经发生的改动和任务清单，再决定下一步。";
+
+/** Right-hand pane sections; phase 4 fills their bodies. */
+const PANE_SECTIONS: PaneSection[] = [
+  { id: "tasks", label: "任务" },
+  { id: "context", label: "上下文" },
+  { id: "changes", label: "变更" },
+  { id: "file", label: "文件" },
+];
+
+/** Foreground session load phase; null means ready. */
+type SessionLoad = { status: "loading" } | { status: "error"; message: string };
+
+/**
+ * One conversation's right-pane state. `turn` is the turn the open/section
+ * choices were made in, so they expire with that turn and the next one can
+ * open the pane again.
+ */
+interface PaneState {
+  turn: number;
+  open: boolean | null;
+  section: string | null;
+  preview: string | null;
 }
 
-function CopyIcon({ copied = false }: { copied?: boolean }) {
-  if (copied) {
-    return (
-      <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="m5 12 4 4L19 6" />
-      </svg>
-    );
+/** Restore the stored tab list: strings only, de-duplicated, never fatal. */
+function readStoredTabs(): string[] {
+  try {
+    const saved = window.localStorage.getItem("easycode:open_tabs");
+    if (!saved) return [];
+    const parsed: unknown = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.filter((v): v is string => typeof v === "string" && v !== ""))];
+  } catch {
+    // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
+    return [];
   }
-  return (
-    <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="8" y="8" width="11" height="11" rx="1.5" />
-      <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" />
-    </svg>
-  );
 }
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
-  const [input, setInput] = useState("");
+  // Unsent composer text, one record per conversation: switching sessions must
+  // never carry what was typed here into another conversation's field.
+  const drafts = useDrafts();
   const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
-  const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ default: "", projects: [] });
+  const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ projects: [] });
+  // False until the workspace list has been answered once, so the directory
+  // card shows a loading state instead of a wrong project name.
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+
   const [chosenRoot, setChosenRoot] = useState<string | null>(null);
-  const [chosenSecondary, setChosenSecondary] = useState<string[]>([]);
-  const [currentSecondary, setCurrentSecondary] = useState<string[]>([]);
-  const [chosenPermission, setChosenPermission] = useState<string>("ask");
-  const [currentPermission, setCurrentPermission] = useState<string>("ask");
-  const [overlayOpen, setOverlayOpen] = useState(true);
-  const [commands, setCommands] = useState<CommandInfo[]>([]);
+  // One pair of states serves both the new-session draft and the open session:
+  // a session event updates them in place, and openSession resets them.
+  const [secondary, setSecondary] = useState<string[]>([]);
+  const [permission, setPermission] = useState<string>("ask");
+  // Foreground session load state: while loading (or after a failed load) the
+  // composer, permission picker and secondary editor are disabled, so no
+  // request can be sent against a target whose state is not confirmed yet.
+  const [sessionLoad, setSessionLoad] = useState<SessionLoad | null>(null);
+  // A permission change is server-confirmed: while the request is in flight the
+  // view keeps the old value and sending is blocked, so a turn can never write
+  // an unconfirmed mode back to the server.
+  const [permissionPending, setPermissionPending] = useState(false);
+  const [commandResult, setCommandResult] = useState<{ scope: string; commands: CommandInfo[] }>({
+    scope: "",
+    commands: [],
+  });
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdIndex, setCmdIndex] = useState(0);
-  const [rollbackInfo, setRollbackInfo] = useState<RollbackInfo | null>(null);
-  const [copiedMessage, setCopiedMessage] = useState<number | null>(null);
+  // `@` file references: the token under the caret and whether the user
+  // dismissed the menu for this token.
+  const [mentionOff, setMentionOff] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  // The last answer for a file query, tagged with what it answered. A token
+  // without a matching answer is still being looked up, so "searching" never
+  // has to be written into state and a completed-but-empty result stays
+  // distinguishable from a failure.
+  const [mentionAnswer, setMentionAnswer] = useState<{
+    scope: string;
+    query: string;
+    answer: MentionAnswer;
+  } | null>(null);
+  // Bumped by the menu's retry: the effect below is what owns the request.
+  const [mentionRetry, setMentionRetry] = useState(0);
   // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+  // Open session tabs: `openTabs` is the single list of opened conversations,
+  // in the order they were opened. Closing one closes only the view: the
+  // conversation stays in the sidebar and a running turn keeps streaming into
+  // its own slot.
+  const [openTabs, setOpenTabs] = useState<string[]>(() => readStoredTabs());
+  // The pane follows the turn: it opens itself once a turn has produced context
+  // or changes, and a choice the user makes (toggle or ✕) holds for that turn
+  // only, so the next turn can open it again. Choices are per conversation, so
+  // one session's open/closed pane never governs another's.
+  const [paneState, setPaneState] = useState<Record<string, PaneState>>({});
+  const mainRef = useRef<HTMLDivElement>(null);
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  // Height of the floating composer: the message stream reserves exactly that
+  // much room at its bottom, so a grown input never hides the last reply.
+  const [composerHeight, setComposerHeight] = useState(0);
+  // View version: a response is applied only while it still matches, and the
+  // ref is readable at response time by child editors.
+  const openSeqRef = useRef(0);
+  // Newest session-list request: an out-of-order reply must not prune tabs the
+  // list it lost to still has.
+  const sessionsSeqRef = useRef(0);
+  // Draft key whose dictation is running, so a late transcript lands in the
+  // conversation it was spoken into.
+  const voiceKeyRef = useRef(DRAFT_KEY);
 
   // Escape closes the mobile drawer. Scoped to when the drawer is open so
   // the desktop layout and the composer's own Escape (command menu) are
@@ -107,9 +202,44 @@ export default function App() {
 
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
+  // Read at approval time, so the callback handed to the stream stays stable
+  // while the pane hook below is (re)created with the foreground conversation.
+  const stickyRef = useRef<StickToBottom | null>(null);
+  const revealApproval = useCallback(
+    () => stickyRef.current?.reveal(".approval-card.pending"),
+    [],
+  );
+
+  const setProjects = useCallback(
+    (projects: WorkspaceProject[]) => setWorkspaces((w) => ({ ...w, projects })),
+    [],
+  );
+
+  const registerTab = useCallback((id: string) => {
+    setOpenTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+
   const refreshSessions = useCallback(() => {
-    fetchSessions().then(setSessions).catch(() => {});
-    fetchWorkspaces().then(setWorkspaces).catch(() => {});
+    const seq = ++sessionsSeqRef.current;
+    fetchSessions()
+      .then((list) => {
+        // An older reply that lost the race must not prune a tab the newest
+        // list still carries (e.g. one a turn named while the request was out).
+        if (seq !== sessionsSeqRef.current) return;
+        setSessions(list);
+        // Tabs are ids: a conversation the server no longer lists loses its tab
+        // here, after a successful load — never on initialization or failure.
+        const known = new Set(list.map((s) => s.id));
+        setOpenTabs((prev) => {
+          const kept = prev.filter((id) => known.has(id));
+          return kept.length === prev.length ? prev : kept;
+        });
+      })
+      .catch(() => {});
+    fetchWorkspaces()
+      .then(setWorkspaces)
+      .catch(() => {})
+      .finally(() => setWorkspacesLoaded(true));
   }, []);
 
   // Resolved ahead of useChatStream so send() can stamp the model name onto the
@@ -119,41 +249,76 @@ export default function App() {
     (currentId ? (models.models[currentSession?.model_alias ?? ""]?.model ?? currentSession?.model_alias) : null) ??
     models.models[models.default]?.model ??
     models.default;
+  const sessionBlocked = sessionLoad !== null;
+  const sendBlocked = sessionBlocked || permissionPending;
 
-  // The chat stream orchestration (send/stop + the request-ownership refs
-  // currentRequestRef/reqSeqRef/currentStreamSessionRef/sendAbortRef/openSeqRef
-  // that encode the stream-ownership concurrency contract) lives in the
-  // useChatStream hook. App supplies the api surface plus the state families the
-  // stream must coordinate with (dependency injection — no App closure leaks in).
+  // The composer edits exactly one conversation's draft: the one on screen.
+  const draftKey = currentId ?? DRAFT_KEY;
+  const draft = drafts.get(draftKey);
+  const input = draft.text;
+  const caret = draft.caret;
+  const setInput = useCallback(
+    (v: string) => drafts.update(draftKey, (d) => ({ ...d, text: v })),
+    [drafts, draftKey],
+  );
+  const setCaret = useCallback(
+    (c: number) => drafts.update(draftKey, (d) => ({ ...d, caret: c })),
+    [drafts, draftKey],
+  );
+
+  // IME composition (Chinese/Japanese input) owns the field while it runs. The
+  // ref guards the caret restore below — writing a selection into the field
+  // mid-composition is what turns a pinyin buffer into stray latin text — and
+  // the state gates everything derived from the token under the caret.
+  const composingRef = useRef(false);
+  const [composing, setComposing] = useState(false);
+  /** The field's new text and caret, once the user (not the IME) is done editing. */
+  const syncComposer = useCallback(
+    (value: string, nextCaret: number) => {
+      setInput(value);
+      setCaret(nextCaret);
+      setCmdOpen(value.startsWith("/"));
+      setCmdIndex(0);
+      setMentionIndex(0);
+      setMentionOff(false);
+    },
+    [setCaret, setInput],
+  );
+
   const {
     send,
     stop,
     busy,
     items,
-    setBusy,
+    activity,
     setItems,
-    currentRequestRef,
-    currentStreamSessionRef,
-    sendAbortRef,
-    openSeqRef,
+    loadHistory,
+    dropEntry,
+    isStreaming,
   } = useChatStream({
     input,
     currentId,
     chosenRoot,
-    chosenSecondary,
-    chosenPermission,
-    currentPermission,
+    secondary,
+    permission,
     currentModelName,
+    sendBlocked,
+    getViewToken: () => openSeqRef.current,
     refreshSessions,
-    setRollbackInfo,
-    setInput,
+    clearDraft: drafts.clear,
+    moveDraft: drafts.move,
     setCurrentId,
-    setCurrentPermission,
-    onApprovalRequired: () => setOverlayOpen(true),
-    streamChat,
-    cancelSessionChat,
-    fetchSessions,
+    onApprovalRequired: revealApproval,
+    onSessionNamed: registerTab,
   });
+
+  // The message pane follows the live edge only while the reader is at it, and
+  // remembers each conversation's place. Declared after the stream because it
+  // tracks the foreground conversation's items.
+  const sticky = useStickToBottom(mainRef, draftKey, items);
+  useEffect(() => {
+    stickyRef.current = sticky;
+  }, [sticky]);
 
   const decideApproval = useCallback(
     async (item: Extract<Item, { kind: "approval" }>, approve: boolean, always: boolean) => {
@@ -170,59 +335,163 @@ export default function App() {
         mark("expired");
       }
     },
-    [],
+    [setItems],
   );
 
   const [archived, setArchived] = useState<SessionSummary[]>([]);
   const refreshArchived = useCallback(() => {
-    fetchArchivedSessions().then(setArchived).catch(() => {});
-  }, [setArchived]);
+    fetchArchivedSessions()
+      .then((list) => {
+        setArchived(list);
+        // An archived conversation has no tab: it left the main list on purpose.
+        const gone = new Set(list.map((s) => s.id));
+        setOpenTabs((prev) =>
+          prev.some((id) => gone.has(id)) ? prev.filter((id) => !gone.has(id)) : prev,
+        );
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     refreshSessions();
     fetchModels().then(setModels).catch(() => {});
-    fetchCommands()
-      .then((r) => setCommands(r.commands))
-      .catch(() => {});
   }, [refreshSessions]);
+
+  // Command discovery follows the exact foreground scope: an open session's
+  // own roots/skills, or the draft's root + secondary list. A result carries
+  // the scope it was fetched for, so a stale menu disappears the moment the
+  // scope changes and a late reply can never replace the current one.
+  const commandScope = JSON.stringify([currentId, chosenRoot, secondary]);
+  const commands = useMemo(
+    () => (commandResult.scope === commandScope ? commandResult.commands : []),
+    [commandResult, commandScope],
+  );
+  const commandMatches = useMemo(
+    () => (cmdOpen ? filterCommands(commands, input) : []),
+    [cmdOpen, commands, input],
+  );
+  useEffect(() => {
+    const scope = JSON.stringify([currentId, chosenRoot, secondary]);
+    const draft = currentId === null ? { root: chosenRoot, secondary } : undefined;
+    let live = true;
+    fetchCommands(currentId, draft)
+      .then((r) => live && setCommandResult({ scope, commands: r.commands }))
+      .catch(() => live && setCommandResult({ scope, commands: [] }));
+    return () => {
+      live = false;
+    };
+  }, [currentId, chosenRoot, secondary]);
+
+  // `@` references: fetch the listing for the token under the caret, debounced
+  // so typing does not fire a request per keystroke. A reply is used only while
+  // it still matches the scope and the query it was fetched for.
+  const mentionInfo = useMemo(
+    () => (composing ? null : mentionToken(input, caret)),
+    [input, caret, composing],
+  );
+  const mentionScope = JSON.stringify([currentId, chosenRoot, secondary]);
+  const mentionQuery = mentionInfo?.query ?? null;
+  // A bare `@` asks for a file name instead of listing the tree, so the menu
+  // never opens with noise the reader did not ask for (hidden files stay
+  // findable by typing).
+  const mentionSearching = mentionQuery !== null && mentionQuery.trim() !== "";
+  useEffect(() => {
+    if (!mentionSearching) return;
+    const draft = currentId === null ? { root: chosenRoot, secondary } : undefined;
+    const scope = mentionScope;
+    const query = mentionQuery;
+    let live = true;
+    // Debounced so typing does not fire a request per keystroke.
+    const timer = window.setTimeout(() => {
+      fetchFiles(currentId, draft, query)
+        .then((r) => {
+          if (live) {
+            setMentionAnswer({ scope, query, answer: { status: "ready", files: r.files, total: r.total } });
+          }
+        })
+        .catch((e: unknown) => {
+          if (live) {
+            setMentionAnswer({
+              scope,
+              query,
+              answer: { status: "error", message: e instanceof Error ? e.message : String(e) },
+            });
+          }
+        });
+    }, 140);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [mentionSearching, mentionQuery, mentionScope, currentId, chosenRoot, secondary, mentionRetry]);
+
+  const mentionOpen = Boolean(mentionInfo) && !mentionOff && !cmdOpen;
+  // A reply only counts while it still answers the token under the caret; a
+  // token without one is either asking for a query or still being looked up.
+  const mentionCurrent: MentionState | null = useMemo(() => {
+    if (!mentionInfo) return null;
+    if (!mentionSearching) {
+      return { status: "prompt", scope: mentionScope, query: mentionInfo.query };
+    }
+    const answered = mentionAnswer;
+    if (answered && answered.scope === mentionScope && answered.query === mentionInfo.query) {
+      return { ...answered.answer, scope: answered.scope, query: answered.query };
+    }
+    return { status: "loading", scope: mentionScope, query: mentionInfo.query };
+  }, [mentionInfo, mentionSearching, mentionAnswer, mentionScope]);
+  const mentionMatches = useMemo(
+    () => (mentionCurrent?.status === "ready" ? mentionCurrent.files : []),
+    [mentionCurrent],
+  );
+
+  const pickMention = useCallback(
+    (file: FileEntry) => {
+      const token = mentionInfo;
+      if (!token) return;
+      const next = applyMention(input, token, file.absolute_path);
+      setInput(next.value);
+      setCaret(next.caret);
+      setMentionOff(true);
+      window.requestAnimationFrame(() => {
+        fieldRef.current?.setSelectionRange(next.caret, next.caret);
+      });
+    },
+    [input, mentionInfo, setCaret, setInput],
+  );
+
+  /** Dictated text appends to the draft the dictation was started in. */
+  const appendToDraft = useCallback(
+    (key: string, text: string) =>
+      drafts.update(key, (d) => ({ ...d, text: d.text ? `${d.text} ${text}` : text })),
+    [drafts],
+  );
+  const voice = useVoiceInput((text) => appendToDraft(voiceKeyRef.current, text));
+  const toggleVoice = useCallback(() => {
+    // Remember where this dictation belongs: a transcript that arrives after
+    // the user switched away must not append to the new conversation.
+    if (!voice.listening) voiceKeyRef.current = draftKey;
+    voice.toggle();
+  }, [voice, draftKey]);
 
   useEffect(() => {
     refreshArchived();
   }, [refreshArchived]);
 
   useEffect(() => {
-    // Scroll only the message pane. scrollIntoView can walk up to ancestor
-    // overflow containers (e.g. .app with overflow:hidden), scrolling the
-    // whole UI out of view.
-    const pane = document.querySelector(".chat-main");
-    pane?.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
-  }, [items]);
+    try {
+      window.localStorage.setItem("easycode:open_tabs", JSON.stringify(openTabs));
+    } catch {
+      // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
+    }
+  }, [openTabs]);
 
   // ---- toast (shared by openSession failure + project actions) ----
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
 
-  // ---- project collapse state (persisted in localStorage) ----
-  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(() => {
-    try {
-      const saved = localStorage.getItem("easycode:collapsed_projects");
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
-  });
-
-  const toggleProjectCollapsed = useCallback((rootKey: string) => {
-    setCollapsedProjects((prev) => {
-      const next = { ...prev, [rootKey]: !prev[rootKey] };
-      try {
-        localStorage.setItem("easycode:collapsed_projects", JSON.stringify(next));
-      } catch {
-        // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
-      }
-      return next;
-    });
-  }, []);
+  // ---- sidebar collapse state (sections + project groups, in localStorage) ----
+  const [collapsedProjects, toggleProjectCollapsed] = usePersistedFlags("easycode:collapsed_projects");
+  const [collapsedSections, toggleSection] = usePersistedFlags("easycode:collapsed_sections");
 
   const showToast = useCallback((kind: "ok" | "err", text: string) => {
     setToast({ kind, text });
@@ -232,41 +501,94 @@ export default function App() {
 
   const openSession = useCallback(
     async (id: string | null) => {
-      const token = ++openSeqRef.current;
-      // Switching to a *different* session aborts the previous chat stream so
-      // its events cannot leak into the new view. Re-opening the same
-      // session is a refresh and does not cancel the in-flight request.
-      if (id !== currentStreamSessionRef.current) {
-        sendAbortRef.current?.abort();
-        sendAbortRef.current = null;
-        currentRequestRef.current = null;
+      // Re-opening the session that is currently streaming must not reload the
+      // stale disk snapshot: that would drop this turn's items and its pending
+      // approval while the stream keeps appending events.
+      if (id !== null && id === currentId && (busy || sessionLoad?.status === "loading")) {
+        setSidebarOpen(false);
+        return;
       }
+      const token = ++openSeqRef.current;
+      // Switching views no longer interrupts anything: a background turn keeps
+      // running in its own slot and is picked up again by switching back.
       setCurrentId(id);
-      setItems([]);
-      setRollbackInfo(null);
-      setOverlayOpen(true);
       setSidebarOpen(false);
+      // An unconfirmed permission change belongs to the view that started it.
+      setPermissionPending(false);
+      // Menus belong to the composer's text, which is about to change: a
+      // dismissed state keeps them closed until the user types again.
+      setCmdOpen(false);
+      setMentionOff(true);
+      if (id) registerTab(id);
       if (id) {
+        setSessionLoad({ status: "loading" });
         try {
           const detail: SessionDetail = await fetchSession(id);
           // Guard against out-of-order responses: only the most recent open
           // request may apply its result.
           if (openSeqRef.current !== token) return;
-          setItems(historyToItems(detail.messages, detail.approvals, detail.user_times));
-          setCurrentSecondary(detail.secondary_roots ?? []);
-          setCurrentPermission(detail.permission_mode ?? "ask");
+          // A live turn owns its conversation's items: the disk snapshot lags
+          // behind it and would drop the streamed reply and its pending approval.
+          if (!isStreaming(id)) {
+            const restored = historyToItems(
+              detail.messages,
+              detail.approvals,
+              detail.user_times,
+              detail.turn_failures,
+            );
+            // The task list is session state, not a message: it rides at the end
+            // of the stream so a reopened session still shows it.
+            if (detail.todos?.length) restored.push({ kind: "todo", todos: detail.todos });
+            loadHistory(id, restored);
+          }
+          setSecondary(detail.secondary_roots ?? []);
+          setPermission(detail.permission_mode ?? "ask");
+          setSessionLoad(null);
         } catch (e) {
           if (openSeqRef.current !== token) return;
-          setOverlayOpen(false);
-          showToast("err", `打开会话失败: ${e instanceof Error ? e.message : String(e)}`);
+          // A failed detail fetch must not blank a conversation that is still
+          // streaming into the view.
+          if (isStreaming(id)) {
+            setSessionLoad(null);
+            return;
+          }
+          const message = e instanceof Error ? e.message : String(e);
+          setSessionLoad({ status: "error", message });
+          showToast("err", `打开会话失败: ${message}`);
         }
       } else {
-        setCurrentSecondary([]);
-        setCurrentPermission("ask");
+        dropEntry(DRAFT_KEY);
+        setSessionLoad(null);
+        setSecondary([]);
+        setPermission("ask");
       }
     },
-    [showToast],
+    [showToast, currentId, busy, sessionLoad, loadHistory, dropEntry, isStreaming, registerTab],
   );
+
+  // Restore the caret a conversation was left at. The field keeps the focus it
+  // has: this only puts the insertion point where the user stopped typing.
+  // Never while an IME is composing — the selection belongs to it until the
+  // candidate lands.
+  useEffect(() => {
+    const field = fieldRef.current;
+    if (!field || composingRef.current) return;
+    const pos = Math.min(drafts.get(draftKey).caret, field.value.length);
+    if (field.selectionStart !== pos || field.selectionEnd !== pos) {
+      field.setSelectionRange(pos, pos);
+    }
+  }, [draftKey, drafts]);
+
+  // The composer is laid out over the stream: publish its height so the stream
+  // can keep exactly that much room clear at the bottom.
+  const attachComposer = useCallback((el: HTMLDivElement | null) => {
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const publish = () => setComposerHeight(el.offsetHeight);
+    const observer = new ResizeObserver(publish);
+    observer.observe(el);
+    publish();
+    return () => observer.disconnect();
+  }, []);
 
   const projectMeta = useMemo(() => {
     const map = new Map<string | null, WorkspaceProject>();
@@ -274,11 +596,14 @@ export default function App() {
     return map;
   }, [workspaces]);
 
+  const chooseRoot = useCallback((root: string | null) => {
+    ++openSeqRef.current;
+    setChosenRoot(root);
+  }, []);
+
   const newSession = useCallback(() => {
     openSession(null);
     setChosenRoot(null);
-    setChosenSecondary([]);
-    setChosenPermission("ask");
     setSidebarOpen(false);
     refreshSessions();
   }, [openSession, refreshSessions]);
@@ -291,24 +616,67 @@ export default function App() {
 
   const confirmDeleteSession = useCallback(async () => {
     if (!deleteTarget) return;
-    await deleteSession(deleteTarget.id).catch(() => {});
-    setArchived((prev) => prev.filter((x) => x.id !== deleteTarget.id));
-    if (currentId === deleteTarget.id) {
-      setCurrentId(null);
-      setItems([]);
+    const target = deleteTarget;
+    const viewToken = openSeqRef.current;
+    const isCurrent = currentId === target.id;
+    // The backend owns cancellation: DELETE stops the turn, waits for it to
+    // unwind and only then removes the file, so no separate cancel is needed.
+    try {
+      await deleteSession(target.id);
+    } catch (e) {
+      // The session still exists: keep it in the list/view and surface why.
+      showToast("err", `删除会话失败: ${e instanceof Error ? e.message : String(e)}`);
+      setDeleteTarget(null);
+      return;
     }
+    setArchived((prev) => prev.filter((x) => x.id !== target.id));
+    // Only a successful delete drops the tab (and the draft it holds).
+    setOpenTabs((prev) => prev.filter((t) => t !== target.id));
+    drafts.clear(target.id);
+    // Clear the view only when it is still the one the delete targeted: a
+    // switch during the delete must not blank the new view.
+    if (isCurrent && openSeqRef.current === viewToken) openSession(null);
     setDeleteTarget(null);
     refreshSessions();
     refreshArchived();
-  }, [deleteTarget, currentId, refreshSessions, refreshArchived]);
+  }, [
+    deleteTarget,
+    currentId,
+    drafts,
+    openSession,
+    refreshSessions,
+    refreshArchived,
+    setDeleteTarget,
+    showToast,
+  ]);
+
+  const togglePin = useCallback(
+    async (target: SessionSummary) => {
+      try {
+        await pinSession(target.id, !target.pinned);
+        // The server owns the flag: re-read the list rather than guessing.
+        refreshSessions();
+      } catch (e) {
+        showToast("err", `置顶失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [refreshSessions, showToast],
+  );
 
   const restoreArchived = useCallback(
     async (session: SessionSummary) => {
-      await setSessionArchived(session.id, false).catch(() => {});
+      try {
+        await setSessionArchived(session.id, false);
+      } catch (e) {
+        // A failed restore leaves the entry exactly where it was, with the
+        // reason on screen: it must not look like it moved and came back.
+        showToast("err", `恢复会话失败: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
       setArchived((prev) => prev.filter((x) => x.id !== session.id));
       refreshSessions();
     },
-    [refreshSessions, setArchived],
+    [refreshSessions, setArchived, showToast],
   );
 
   const newChatInProject = useCallback(
@@ -316,8 +684,7 @@ export default function App() {
       const proj = root ? projectMeta.get(root) : null;
       openSession(null);
       setChosenRoot(root);
-      setChosenSecondary(proj?.secondary ?? []);
-      setChosenPermission("ask");
+      setSecondary(proj?.secondary ?? []);
       setSidebarOpen(false);
       refreshSessions();
     },
@@ -332,22 +699,25 @@ export default function App() {
           setEditTarget({ root, name: proj?.name ?? (root ? basename(root) : DEFAULT_PROJECT) });
         } else if (action === "pin" || action === "unpin") {
           const r = await pinProject(root, action === "pin");
-          setWorkspaces((w) => ({ ...w, projects: r.projects }));
+          setProjects(r.projects);
           refreshSessions();
           showToast("ok", action === "pin" ? "已置顶" : "已取消置顶");
         } else if (action === "reveal") {
           const r = await revealInFinder(root);
-          if (!r.supported) showToast("err", "当前平台不支持在 Finder 中显示");
-          else if (!r.ok) showToast("err", r.path ? `无法打开: ${r.path}` : "无法打开目录");
+          if (!r.ok) showToast("err", r.error ?? "无法打开目录");
         } else if (action === "worktree") {
           if (!root) {
             showToast("err", "默认项目没有目录");
             return;
           }
           const r = await createWorktree(root);
-          setWorkspaces((w) => ({ ...w, projects: r.projects }));
+          setProjects(r.projects);
           refreshSessions();
-          showToast("ok", `已创建永久工作树 ${r.name ?? ""}`);
+          if (r.warnings?.length) {
+            showToast("err", `工作树已创建，但有提示：${r.warnings.join("；")}`);
+          } else {
+            showToast("ok", `已创建永久工作树 ${r.name ?? ""}`);
+          }
         } else if (action === "archive") {
           const r = await archiveProjectChats(root);
           refreshSessions();
@@ -360,178 +730,483 @@ export default function App() {
         showToast("err", e instanceof Error ? e.message : String(e));
       }
     },
-    [projectMeta, refreshSessions, refreshArchived, sessions, showToast],
+    [
+      projectMeta,
+      refreshSessions,
+      refreshArchived,
+      sessions,
+      setEditTarget,
+      setProjects,
+      setRemoveTarget,
+      showToast,
+    ],
   );
 
   const confirmRemoveProject = useCallback(async () => {
     if (!removeTarget) return;
+    const removedRoot = removeTarget.root;
+    const viewToken = openSeqRef.current;
+    // Sessions of this project, captured now: a failed removal leaves every
+    // tab where it was.
+    const removed = sessions.filter((s) => (s.root ?? null) === removedRoot).map((s) => s.id);
     try {
-      const r = await removeProject(removeTarget.root);
-      setWorkspaces((w) => ({ ...w, projects: r.projects }));
+      const r = await removeProject(removedRoot);
+      setProjects(r.projects);
+      setOpenTabs((prev) => prev.filter((id) => !removed.includes(id)));
+      for (const id of removed) drafts.clear(id);
       refreshSessions();
-      if (currentId === null && removeTarget.root === chosenRoot) setChosenRoot(null);
+      refreshArchived();
+      if (openSeqRef.current === viewToken) {
+        if (currentId !== null && (currentSession?.root ?? null) === removedRoot) openSession(null);
+        else if (currentId === null && removedRoot === chosenRoot) chooseRoot(null);
+      }
       showToast("ok", `已移除项目（删除 ${r.deleted_sessions} 条会话）`);
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : String(e));
     } finally {
       setRemoveTarget(null);
     }
-  }, [removeTarget, refreshSessions, chosenRoot, showToast]);
+  }, [
+    removeTarget,
+    chooseRoot,
+    drafts,
+    sessions,
+    refreshSessions,
+    refreshArchived,
+    currentSession,
+    currentId,
+    chosenRoot,
+    openSession,
+    setProjects,
+    setRemoveTarget,
+    showToast,
+  ]);
 
-  // sessions grouped by project root (null = default project); pinned projects first
-  const groups = useMemo(() => {
-    const map = new Map<string | null, SessionSummary[]>();
-    for (const s of sessions) {
-      const key = s.root ?? null;
-      const list = map.get(key);
-      if (list) list.push(s);
-      else map.set(key, [s]);
-    }
-    return Array.from(map.entries()).sort((a, b) => {
-      const pinnedA = projectMeta.get(a[0]!)?.pinned ?? false;
-      const pinnedB = projectMeta.get(b[0]!)?.pinned ?? false;
-      if (pinnedA !== pinnedB) return pinnedA ? -1 : 1;
-      return (
-        Math.max(...b[1].map((s) => Date.parse(s.created_at))) -
-        Math.max(...a[1].map((s) => Date.parse(s.created_at)))
-      );
-    });
-  }, [sessions, projectMeta]);
+  // Sidebar sections: directories, pinned conversations, projects, recents.
+  const groups = useMemo(
+    () => groupSessions(sessions, workspaces.projects ?? []),
+    [sessions, workspaces.projects],
+  );
 
-  const currentRoot = sessions.find((s) => s.id === currentId)?.root ?? null;
-  const projectName = currentRoot ? basename(currentRoot) : DEFAULT_PROJECT;
+  // Tabs are ids; the titles come from the session list so a rename shows up.
+  // Every opened conversation is registered exactly once, by opening it or by
+  // the moment the backend named a draft; the draft keeps its own tab so the
+  // strip always names what is on screen.
+  const sessionTabs: OpenTab[] = openTabs.map((id) => ({
+    id,
+    title: sessions.find((s) => s.id === id)?.title ?? "会话",
+  }));
+  const tabs: OpenTab[] =
+    currentId === null ? [{ id: DRAFT_KEY, title: "新会话", draft: true }, ...sessionTabs] : sessionTabs;
+
+  // Selecting the tab that is already open changes nothing: the draft tab in
+  // particular must never be mistaken for a stored session.
+  const selectTab = useCallback(
+    (id: string | null) => {
+      if (id === currentId) return;
+      openSession(id);
+    },
+    [currentId, openSession],
+  );
+
+  const closeTab = useCallback(
+    (id: string) => {
+      const index = openTabs.indexOf(id);
+      const remaining = openTabs.filter((t) => t !== id);
+      setOpenTabs(remaining);
+      // Dropping an idle conversation makes reopening it reload from disk; a
+      // running turn keeps its slot (and its draft) so its output is not lost
+      // and the tab can be reopened without cancelling anything.
+      dropEntry(id);
+      if (id !== currentId) return;
+      const neighbour = remaining[index] ?? remaining[index - 1] ?? null;
+      openSession(neighbour);
+    },
+    [openTabs, currentId, dropEntry, openSession],
+  );
+
+  const currentRoot = currentSession?.root ?? null;
+  // What the empty stage can promise: the directory this draft would run in.
+  const draftContext = chosenRoot
+    ? basename(chosenRoot)
+    : workspaces.default
+      ? basename(workspaces.default)
+      : DEFAULT_PROJECT;
   const exploration = useMemo(() => {
     let reads = 0;
     let searches = 0;
     for (const item of items) {
       if (item.kind !== "tool") continue;
-      if (/read|list_dir|glob|find/i.test(item.name)) reads += 1;
-      if (/search|grep/i.test(item.name)) searches += 1;
+      if (/^(read_file|glob)$/.test(item.name)) reads += 1;
+      if (item.name === "grep") searches += 1;
     }
     return { reads, searches };
   }, [items]);
   const lastItem = items[items.length - 1];
   const activeTool = lastItem?.kind === "tool" && !lastItem.done;
+  // Scoped to the current turn (items after the last user message): restored
+  // history approvals must not read as work waiting on the user now.
   const pendingApprovals = useMemo(
-    () => items.filter((it): it is Extract<Item, { kind: "approval" }> => it.kind === "approval" && it.state === "pending"),
+    () =>
+      currentTurn(items).filter(
+        (it): it is Extract<Item, { kind: "approval" }> =>
+          it.kind === "approval" && it.state === "pending",
+      ),
     [items],
   );
   const pendingApproval = pendingApprovals.length > 0;
-  // the sheet shows the first *pending* approval; its queue position is
-  // its 1-based index among every approval item, so it advances as earlier
-  // approvals are resolved instead of being hard-coded to 1.
-  const approvalQueue = useMemo(
-    () => items.filter((it): it is Extract<Item, { kind: "approval" }> => it.kind === "approval"),
-    [items],
+  // Any turn on this page: a model switch rebinds every session, so a
+  // background turn blocks it just as the foreground one does.
+  const anyBusy = useMemo(() => Object.values(activity).some((a) => a.busy), [activity]);
+  const turn = useMemo(() => currentTurn(items), [items]);
+  // Turns are counted by user messages: a choice made in one turn must not
+  // carry over to the next.
+  const turnNo = useMemo(() => items.filter((it) => it.kind === "user").length, [items]);
+  const pane = useMemo(() => paneData(turn), [turn]);
+  // The task list is session state: the newest one stays on screen even after
+  // its turn ends. Only a list produced by *this* turn may open the pane by
+  // itself — an older one must not pop it open the instant a turn starts.
+  const todos = useMemo(() => {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i];
+      if (item.kind === "todo") return item.todos;
+    }
+    return [];
+  }, [items]);
+  const turnTodos = useMemo(() => turn.some((it) => it.kind === "todo"), [turn]);
+  // Only turns produced in this view drive the pane: a restored session's
+  // history must not pop it open on load.
+  const liveTurn =
+    busy || turn.some((it) => it.kind === "assistant" && typeof it.durationMs === "number");
+  // The pane keeps the newest list on screen after its turn ends, so a list
+  // written earlier reads as the current progress unless it is labelled. Only a
+  // turn that actually ran here counts — a restored list never describes now.
+  const listIsStale = todos.length > 0 && !(turnTodos && liveTurn);
+  const hasArtifacts = pane.context.length > 0 || pane.changes.length > 0 || turnTodos;
+  // The pane covers the stream once the chat area gets narrow. Measured from
+  // the element the CSS container query measures, so the two agree; a narrow
+  // pane must not open on its own, since it would hide the reply it describes.
+  const chatRef = useRef<HTMLElement>(null);
+  const paneToggleRef = useRef<HTMLButtonElement>(null);
+  const [chatNarrow, setChatNarrow] = useState(false);
+  useEffect(() => {
+    const el = chatRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setChatNarrow(el.clientWidth < NARROW_CHAT_PX);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const paneSelf = paneState[draftKey];
+  // An explicit choice holds for the turn it was made in; otherwise the pane
+  // opens itself only where it can sit beside the conversation.
+  const paneOpen =
+    paneSelf?.turn === turnNo && paneSelf.open !== null
+      ? paneSelf.open
+      : !chatNarrow && liveTurn && hasArtifacts;
+  const paneSection =
+    paneSelf?.turn === turnNo && paneSelf.section
+      ? paneSelf.section
+      : pane.changes.length
+        ? "changes"
+        : todos.length
+          ? "tasks"
+          : "context";
+  const preview = paneSelf?.preview ?? null;
+  const patchPaneState = useCallback(
+    (key: string, patch: Partial<PaneState>) =>
+      setPaneState((prev) => {
+        const self = prev[key] ?? { turn: 0, open: null, section: null, preview: null };
+        return { ...prev, [key]: { ...self, ...patch } };
+      }),
+    [],
   );
-  const approvalPosition = useMemo(
-    () => Math.max(1, approvalQueue.findIndex((it) => it.state === "pending") + 1),
-    [approvalQueue],
+  const setPane = useCallback(
+    (open: boolean) => patchPaneState(draftKey, { turn: turnNo, open }),
+    [patchPaneState, draftKey, turnNo],
   );
-  const approvalTotal = approvalQueue.length;
+  const chooseSection = useCallback(
+    (section: string) => patchPaneState(draftKey, { turn: turnNo, section }),
+    [patchPaneState, draftKey, turnNo],
+  );
+  const setPreview = useCallback(
+    (path: string | null) => patchPaneState(draftKey, { preview: path }),
+    [patchPaneState, draftKey],
+  );
+
+  const closePane = useCallback(() => {
+    setPane(false);
+    // A drawer that vanishes hands the keyboard back to what opened it.
+    if (chatNarrow) paneToggleRef.current?.focus();
+  }, [setPane, chatNarrow]);
+
+  // Escape closes the drawer, the way it closes a modal. The composer keeps its
+  // own Escape (its menus use it), so events coming from there are left alone.
+  useEffect(() => {
+    if (!chatNarrow || !paneOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if ((e.target as HTMLElement | null)?.closest(".composer")) return;
+      closePane();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chatNarrow, paneOpen, closePane]);
+
+  // The centred first-run stage replaces the stream until a conversation has
+  // something to show; a load in progress is never masked by it.
+  const isEmptyStage = items.length === 0 && sessionLoad === null;
 
   const changePermission = useCallback(
     async (mode: string) => {
-      if (currentId === null) {
-        setChosenPermission(mode);
+      // One permission request at a time: the picker is disabled while pending,
+      // so a second request can never race the first (no request token needed).
+      if (sendBlocked) return;
+      const id = currentId;
+      // The draft's mode is a local choice for the next send: update at once.
+      if (id === null) {
+        setPermission(mode);
         return;
       }
-      setCurrentPermission(mode);
+      const viewToken = openSeqRef.current;
+      // The view keeps the confirmed mode until the server answers; a failed
+      // request therefore leaves the old value in place with no rollback.
+      setPermissionPending(true);
       try {
-        const r = await setSessionPermission(currentId, mode);
-        setCurrentPermission(r.permission_mode);
-      } catch {
-        refreshSessions();
-      }
-    },
-    [currentId, refreshSessions],
-  );
-
-  // A synchronous re-entrancy guard for rollback. ``busy`` is async state
-  // and only binds ``disabled`` on the next render, so two back-to-back clicks in
-  // the same tick could double-fire undoSession before the button re-renders. This
-  // ref is set synchronously at entry and cleared in finally, so the second click
-  // is dropped instead of issuing a duplicate undo/redo request.
-  const rollbackBusyRef = useRef(false);
-
-  const rollback = useCallback(
-    async (dir: "undo" | "redo", untilUser?: number) => {
-      if (currentId === null) return;
-      if (rollbackBusyRef.current) return;
-      rollbackBusyRef.current = true;
-      const userItems = items.filter((item): item is Extract<Item, { kind: "user" }> => item.kind === "user");
-      const rollbackCount = untilUser ? Math.max(1, userItems.length - untilUser + 1) : 1;
-      const rollbackPrompt = untilUser
-        ? userItems[Math.max(0, untilUser - 1)]?.text ?? "上一回合"
-        : userItems[userItems.length - 1]?.text ?? "上一回合";
-      setBusy(true);
-      try {
-        const r =
-          dir === "undo" ? await undoSession(currentId, untilUser) : await redoSession(currentId);
-        if (r.ok) {
-          const restored = r.restored ?? [];
-          if (dir === "undo") {
-            setRollbackInfo({
-              count: rollbackCount,
-              prompt: rollbackPrompt,
-              files: restored.length,
-              messageOnly: Boolean(r.message_only),
-            });
-          } else {
-            setRollbackInfo(null);
-          }
-          const detail = await fetchSession(currentId).catch(() => null);
-          if (detail) setItems(historyToItems(detail.messages));
-        }
+        const r = await setSessionPermission(id, mode);
+        if (openSeqRef.current !== viewToken) return;
+        setPermission(r.permission_mode);
       } catch (e) {
-        showToast("err", `回滚失败: ${e instanceof Error ? e.message : String(e)}`);
+        if (openSeqRef.current !== viewToken) return;
+        showToast("err", `修改权限失败: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
-        setBusy(false);
-        rollbackBusyRef.current = false;
-        refreshSessions();
+        // A response from a superseded view must not release a newer request.
+        if (openSeqRef.current === viewToken) setPermissionPending(false);
       }
     },
-    [currentId, items, refreshSessions, showToast],
+    [currentId, showToast, sendBlocked],
   );
 
-  const copyMessage = useCallback((text: string, index: number) => {
-    const write = navigator.clipboard?.writeText(text);
-    if (!write) return;
-    void write.then(() => {
-      setCopiedMessage(index);
-      window.setTimeout(() => setCopiedMessage((current) => (current === index ? null : current)), 2000);
-    });
-  }, []);
+  // Composer keys: command-menu navigation first, then Enter to send.
+  const onComposerKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      // IME composition (Chinese/Japanese input): Enter confirms the candidate
+      // text and must never send or pick commands.
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      if (e.key === "Escape") {
+        // the mention menu is the innermost context: dismiss it first
+        if (mentionOpen) setMentionOff(true);
+        else setCmdOpen(false);
+        return;
+      }
+      // While the file menu is up, Enter belongs to it: picking a reference is
+      // the only way forward, so a query still loading, a failure or a blank
+      // result can never turn into an accidental send. Escape closes the menu
+      // and gives Enter back to the composer.
+      if (mentionOpen) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setMentionIndex((i) => Math.min(i + 1, Math.max(0, mentionMatches.length - 1)));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setMentionIndex((i) => Math.max(0, i - 1));
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const file = mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)];
+          if (file) pickMention(file);
+          return;
+        }
+        if (e.key === "Tab" && mentionMatches.length > 0) {
+          e.preventDefault();
+          const file = mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)];
+          if (file) pickMention(file);
+          return;
+        }
+      }
+      if (cmdOpen) {
+        const filtered = filterCommands(commands, input);
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setCmdIndex((i) => moveCommandCursor(filtered, i, +1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setCmdIndex((i) => moveCommandCursor(filtered, i, -1));
+          return;
+        }
+        if (e.key === "Enter" && filtered.length > 0) {
+          // Same rule as the file menu while it is actually showing something.
+          e.preventDefault();
+          const pick = filtered[clampCommandIndex(filtered, cmdIndex)];
+          if (pick) {
+            setInput(`/${pick.name} `);
+            setCmdOpen(false);
+            setCmdIndex(0);
+          }
+          return;
+        }
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    },
+    [
+      cmdOpen,
+      commands,
+      input,
+      cmdIndex,
+      send,
+      setInput,
+      mentionOpen,
+      mentionMatches,
+      mentionIndex,
+      pickMention,
+    ],
+  );
+
+  /**
+   * A continuation the user has to agree to: the prompt goes into the composer
+   * and nothing is sent. What the interrupted turn already did is still on
+   * disk, so the message tells the model to look before it acts.
+   */
+  const continueUnfinished = useCallback(() => {
+    // Never overwrite what the user is writing: the draft is theirs.
+    if (!drafts.get(draftKey).text.trim()) setInput(CONTINUE_PROMPT);
+    fieldRef.current?.focus();
+    sticky.stick();
+  }, [drafts, draftKey, setInput, sticky]);
+
+  // One composer, two placements: the centred first-run card, or docked over
+  // the message stream. Only one of them is mounted at a time.
+  const composer = (variant: "tall" | "docked") => (
+    <ComposerBar
+      variant={variant}
+      value={input}
+      placeholder="向 Easy code 提问，使用 / 运行命令…"
+      ariaLabel="给 Easy code 发送消息"
+      busy={busy}
+      sendBlocked={sendBlocked}
+      permission={permission}
+      permissionDisabled={busy || sendBlocked}
+      onPermission={changePermission}
+      onChange={(v, nextCaret) => {
+        if (composingRef.current) {
+          // The controlled value still has to follow the field — React would
+          // otherwise write the stale text back over the IME's buffer — but
+          // nothing else moves until the candidate lands.
+          setInput(v);
+          return;
+        }
+        syncComposer(v, nextCaret);
+      }}
+      onKeyDown={onComposerKeyDown}
+      onSelectionChange={setCaret}
+      onComposingChange={(next) => {
+        composingRef.current = next;
+        setComposing(next);
+      }}
+      onCompositionEnd={(v, nextCaret) => syncComposer(v, nextCaret)}
+      fieldRef={fieldRef}
+      menuOpen={mentionOpen || commandMatches.length > 0}
+      menuId={mentionOpen ? MENTION_LIST_ID : COMMAND_LIST_ID}
+      activeOptionId={
+        mentionOpen
+          ? mentionMatches.length
+            ? `${MENTION_OPTION_PREFIX}${Math.min(mentionIndex, mentionMatches.length - 1)}`
+            : undefined
+          : undefined
+      }
+      onSend={() => {
+        // Sending is an explicit return to the live edge: the reply to your own
+        // message is never something you have to scroll back down for.
+        sticky.stick();
+        send();
+      }}
+      onStop={stop}
+      hint="Enter 发送 · Shift + Enter 换行"
+      model={
+        <ModelPicker
+          models={models}
+          current={models.default}
+          sessionAlias={currentId ? (currentSession?.model_alias ?? null) : null}
+          switchingBlocked={anyBusy}
+          onChange={(next) => {
+            setModels(next);
+            // Switching rebinds every live session, so the reply meta rows and
+            // the sidebar must be re-read rather than assume the old binding.
+            refreshSessions();
+          }}
+          onError={(msg) => showToast("err", msg)}
+        />
+      }
+      voice={{ supported: voice.supported, listening: voice.listening, toggle: toggleVoice }}
+      menu={
+        mentionOpen ? (
+          <MentionMenu
+            state={mentionCurrent}
+            query={mentionInfo?.query ?? ""}
+            index={mentionIndex}
+            onPick={pickMention}
+            onClose={() => setMentionOff(true)}
+            onRetry={() => setMentionRetry((n) => n + 1)}
+          />
+        ) : (
+          <CommandMenu
+            commands={commands}
+            open={cmdOpen}
+            query={input}
+            index={cmdIndex}
+            onPick={(c) => {
+              setInput(`/${c.name} `);
+              setCmdOpen(false);
+              setCmdIndex(0);
+            }}
+            onClose={() => setCmdOpen(false)}
+          />
+        )
+      }
+    />
+  );
 
   return (
     <div className={`app${sidebarOpen ? " sidebar-open" : ""}`}>
       <Sidebar
         currentId={currentId}
+        activity={activity}
         archived={archived}
         showArchived={showArchived}
+        collapsedSections={collapsedSections}
         collapsedProjects={collapsedProjects}
         busy={busy}
-        models={models}
+        sessionBlocked={sessionBlocked}
+        viewToken={openSeqRef}
         workspaces={workspaces}
+        workspacesLoaded={workspacesLoaded}
         groups={groups}
-        projectMeta={projectMeta}
         chosenRoot={chosenRoot}
-        chosenSecondary={chosenSecondary}
         currentRoot={currentRoot}
-        currentSecondary={currentSecondary}
+        secondary={secondary}
         onNewSession={newSession}
         onOpenSession={openSession}
+        onToggleSection={toggleSection}
         onToggleCollapsed={toggleProjectCollapsed}
         onNewChatInProject={newChatInProject}
         onProjectAction={runProjectAction}
-        onSetChosenRoot={setChosenRoot}
-        onSetChosenSecondary={setChosenSecondary}
-        onSetCurrentSecondary={setCurrentSecondary}
-        onSetWorkspaces={setWorkspaces}
+        onSetChosenRoot={chooseRoot}
+        onSetSecondary={setSecondary}
+        onProjects={setProjects}
         onToggleArchived={() => setShowArchived(!showArchived)}
+        onTogglePin={togglePin}
         onDeleteSession={setDeleteTarget}
         onRestoreSession={restoreArchived}
-        onModelChange={setModels}
         onError={(msg) => showToast("err", msg)}
       />
       {sidebarOpen && (
@@ -542,317 +1217,174 @@ export default function App() {
           aria-hidden="true"
         />
       )}
-      <main className="chat">
-        <header className="chat-header">
-          <button
-            type="button"
-            className="sidebar-toggle"
-            aria-label="打开侧栏"
-            aria-controls="sidebar"
-            aria-expanded={sidebarOpen}
-            title="打开侧栏"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <span aria-hidden="true">☰</span>
-          </button>
-          <div className="chat-context">
-            <strong>{currentId ? sessions.find((s) => s.id === currentId)?.title : "新会话"}</strong>
-            <span className="context-path" title={currentRoot ?? DEFAULT_PROJECT}>
-              <span aria-hidden="true">⌘</span> {projectName}
-            </span>
-          </div>
-          <div className="header-actions">
-            <button
-              className="header-action"
-              title="撤销上一回合"
-              disabled={busy || currentId === null || items.every((item) => item.kind !== "user")}
-              onClick={() => rollback("undo")}
-            >
-              ↶ <span>撤销</span>
-            </button>
-            <span
-              className={`connection-state ${busy ? "working" : ""} ${pendingApproval ? "clickable" : ""}`}
-              role={pendingApproval ? "button" : undefined}
-              title={pendingApproval ? "打开批准" : undefined}
-              onClick={pendingApproval ? () => setOverlayOpen(true) : undefined}
-            >
-              <span aria-hidden="true" />
-              {busy ? (pendingApproval ? "等待批准" : "正在工作") : "已连接"}
-            </span>
-          </div>
-        </header>
-        <div className="chat-main">
-          {items.length === 0 && (
-            <div className="empty">
-              <div className="empty-icon" aria-hidden="true">&gt;_</div>
-              <h2>从一个任务开始</h2>
-              <p>描述你想完成的工作，Easy code 会在当前工作区中协助你。</p>
-            </div>
-          )}
-          {items.map((it, i) => {
-            if (it.kind === "user") {
-              // 该消息在会话历史中的序号（第 n 条用户消息，1-based）
-              const nth = items.filter((x, j) => j <= i && x.kind === "user").length;
-              return (
-                <div key={i} className="msg-row user">
-                  <div className="msg user">{it.text}</div>
-                  <div className="msg-meta">
-                    <span>{currentModelName}</span>
-                    <span className="msg-meta-separator">·</span>
-                    <time>{it.time ? formatClock(it.time) : currentTimeLabel()}</time>
-                    <button
-                      className="msg-action"
-                      title="回滚到这条 prompt 之前"
-                      aria-label="回滚到这条消息之前"
-                      disabled={busy || currentId === null}
-                      onClick={() => rollback("undo", nth)}
-                    >
-                      <UndoIcon />
-                    </button>
-                    <button
-                      className="msg-action"
-                      title="复制消息"
-                      aria-label="复制消息"
-                      onClick={() => copyMessage(it.text, i)}
-                    >
-                      <CopyIcon copied={copiedMessage === i} />
-                    </button>
-                  </div>
-                </div>
-              );
-            }
-            if (it.kind === "assistant") {
-              if (!it.text) return null;
-              const metaParts: string[] = [];
-              if (it.model) metaParts.push(it.model);
-              if (typeof it.durationMs === "number") metaParts.push(formatDuration(it.durationMs));
-              return (
-                <div key={i} className="msg-row assistant">
-                  <div className="msg assistant">
-                    <Markdown text={it.text} />
-                    {busy && i === items.length - 1 && <span className="cursor" />}
-                  </div>
-                  <div className="msg-meta">
-                    <button
-                      className="msg-action"
-                      title="复制回复"
-                      aria-label="复制回复"
-                      onClick={() => copyMessage(it.text, i)}
-                    >
-                      <CopyIcon copied={copiedMessage === i} />
-                    </button>
-                    {metaParts.map((part, pi) => (
-                      <Fragment key={pi}>
-                        <span className="msg-meta-separator">·</span>
-                        <span>{part}</span>
-                      </Fragment>
-                    ))}
-                  </div>
-                </div>
-              );
-            }
-            if (it.kind === "tool") {
-              return (
-              <ToolCard key={i} tool={{ id: it.id || String(i), name: it.name, arguments: it.args }} result={it.result} done={it.done} />
-              );
-            }
-            if (it.kind === "approval") {
-              const label =
-                it.state === "approved"
-                  ? "已允许"
-                  : it.state === "denied"
-                    ? "已拒绝"
-                    : it.state === "expired"
-                      ? "已过期"
-                      : "等待批准";
-              return (
-                <div key={i} className={`approval-line ${it.state}`}>
-                  <span className="approval-line-dot" aria-hidden="true">!</span>
-                  <span className="approval-line-text">
-                    {label} · {it.name}
-                    {it.scope ? <code>{it.scope}</code> : null}
-                  </span>
-                </div>
-              );
-            }
-            if (it.kind === "review") {
-              return (
-                <details key={i} className="review-card">
-                  <summary>自动审查与变更记录</summary>
-                  <pre>{it.text}</pre>
-                </details>
-              );
-            }
-            if (it.kind === "notice") {
-              return (
-                <div key={i} className="msg notice">
-                  {it.text}
-                </div>
-              );
-            }
-            return (
-              <div key={i} className="msg error">
-                {it.text}
-              </div>
-            );
-          })}
-          {busy && !activeTool && !pendingApproval && (
-            <div className="agent-status running" role="status" aria-live="polite">
-              <strong>{exploration.reads || exploration.searches ? "正在探索" : "思考中"}</strong>
-              <span>
-                {exploration.reads > 0 && `${exploration.reads} 次读取`}
-                {exploration.reads > 0 && exploration.searches > 0 && "，"}
-                {exploration.searches > 0 && `${exploration.searches} 次搜索`}
-                {!exploration.reads && !exploration.searches && "Planning next steps"}
-              </span>
-            </div>
-          )}
-          <div ref={endRef} />
-        </div>
-        <div className="composer-area">
-          {rollbackInfo && (
-            <div className="rollback-banner" role="status">
-              <span className="rollback-icon" aria-hidden="true">↶</span>
-              <div className="rollback-copy">
-                <strong>{rollbackInfo.count} 条已回滚消息</strong>
-                <span title={rollbackInfo.prompt}>{rollbackInfo.prompt}</span>
-                <small>
-                  {rollbackInfo.messageOnly
-                    ? "非 Git 工作区，仅恢复了对话"
-                    : rollbackInfo.files > 0
-                      ? `同时恢复了 ${rollbackInfo.files} 个文件`
-                      : "对话与工作区已回到此处"}
-                </small>
-              </div>
+      <main className="chat" ref={chatRef}>
+        <div className="chat-card">
+          <div className="chat-top">
+            <TabBar
+              tabs={tabs}
+              currentId={currentId}
+              activity={activity}
+              onSelect={selectTab}
+              onClose={closeTab}
+              onNew={newSession}
+            />
+            <div className="chat-actions">
               <button
                 type="button"
-                className="rollback-restore"
-                disabled={busy}
-                onClick={() => rollback("redo")}
+                className="sidebar-toggle"
+                aria-label="打开侧栏"
+                aria-controls="sidebar"
+                aria-expanded={sidebarOpen}
+                title="打开侧栏"
+                onClick={() => setSidebarOpen(true)}
               >
-                恢复
+                <span aria-hidden="true">☰</span>
               </button>
+              <span
+                className={`connection-state ${busy ? "working" : ""} ${pendingApproval ? "clickable" : ""}`}
+                role={pendingApproval ? "button" : undefined}
+                title={pendingApproval ? "查看待批准的操作" : undefined}
+                onClick={pendingApproval ? revealApproval : undefined}
+              >
+                <span aria-hidden="true" />
+                {busy ? (pendingApproval ? "等待批准" : "正在工作") : "就绪"}
+              </span>
+              <button
+                type="button"
+                className={`icon-btn${paneOpen ? " on" : ""}`}
+                aria-label={paneOpen ? "收起面板" : "展开面板"}
+                aria-pressed={paneOpen}
+                title={paneOpen ? "收起面板" : "展开面板"}
+                ref={paneToggleRef}
+                onClick={() => (paneOpen ? closePane() : setPane(true))}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+                  <path d="M14.5 4.5v15" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div
+            className={`chat-main${isEmptyStage ? "" : " docked"}`}
+            ref={mainRef}
+            style={
+              composerHeight
+                ? ({ "--composer-h": `${composerHeight}px` } as CSSProperties)
+                : undefined
+            }
+          >
+            {items.length === 0 && sessionLoad?.status === "loading" && (
+              <div className="session-loading" role="status">
+                正在加载会话…
+              </div>
+            )}
+            {items.length === 0 && sessionLoad?.status === "error" && (
+              <div className="session-load-error" role="alert">
+                <strong>会话加载失败：{sessionLoad.message}</strong>
+                <button type="button" className="retry-btn" onClick={() => openSession(currentId)}>
+                  重试
+                </button>
+              </div>
+            )}
+            {isEmptyStage && (
+              <EmptyState
+                context={draftContext}
+                onPick={(text) => {
+                  setInput(text);
+                  fieldRef.current?.focus();
+                }}
+              >
+                {composer("tall")}
+              </EmptyState>
+            )}
+            {!isEmptyStage && (
+              <>
+                <ChatMessages
+                  items={items}
+                  busy={busy}
+                  currentModelName={currentModelName}
+                  onDecide={decideApproval}
+                  onContinue={continueUnfinished}
+                  onOpenTasks={() => {
+                    chooseSection("tasks");
+                    setPane(true);
+                  }}
+                />
+                {busy && !activeTool && !pendingApproval && (
+                  <LoadingState
+                    label={exploration.reads || exploration.searches ? "正在探索" : "思考中"}
+                  />
+                )}
+              </>
+            )}
+          </div>
+          {!isEmptyStage && (
+            <div className="composer-area" ref={attachComposer}>
+              {sticky.unread && (
+                <button type="button" className="scroll-latest" onClick={sticky.stick}>
+                  <span aria-hidden="true">↓</span> 有新内容 · 回到最新
+                </button>
+              )}
+              {composer("docked")}
             </div>
           )}
-          <div className="chat-input">
-            <div className="cmd-wrap">
-              <CommandMenu
-                commands={commands}
-                open={cmdOpen}
-                query={input}
-                index={cmdIndex}
-                onPick={(c) => {
-                  setInput(`/${c.name} `);
-                  setCmdOpen(false);
-                  setCmdIndex(0);
-                }}
-                onClose={() => setCmdOpen(false)}
-              />
-              <textarea
-                value={input}
-                aria-label="给 Easy code 发送消息"
-                placeholder="向 Easy code 提问，使用 / 运行命令…"
-                onChange={(e) => {
-                  setInput(e.target.value);
-                  setCmdOpen(e.target.value.startsWith("/"));
-                  setCmdIndex(0);
-                }}
-                onKeyDown={(e) => {
-                  // IME composition (Chinese/Japanese input): Enter confirms
-                  // the candidate text and must never send or pick commands.
-                  if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                  if (e.key === "Escape") {
-                    setCmdOpen(false);
-                    return;
-                  }
-                  if (cmdOpen) {
-                    const filtered = filterCommands(commands, input);
-                    const count = filtered.length;
-                    if (e.key === "ArrowDown") {
-                      e.preventDefault();
-                      setCmdIndex((i) => moveCommandCursor(filtered, i, +1));
-                      return;
-                    }
-                    if (e.key === "ArrowUp") {
-                      e.preventDefault();
-                      setCmdIndex((i) => moveCommandCursor(filtered, i, -1));
-                      return;
-                    }
-                    if (e.key === "Enter" && count > 0) {
-                      e.preventDefault();
-                      const pick = filtered[clampCommandIndex(filtered, cmdIndex)];
-                      if (pick) {
-                        setInput(`/${pick.name} `);
-                        setCmdOpen(false);
-                        setCmdIndex(0);
-                      }
-                      return;
-                    }
-                  }
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-              />
-            </div>
-            <div className="composer-toolbar">
-              <div className="composer-options">
-                <div className="chat-input-perm">
-                  <PermissionPicker
-                    compact
-                    value={currentId === null ? chosenPermission : currentPermission}
-                    disabled={busy}
-                    onChange={changePermission}
-                  />
-                </div>
-                <span className="composer-hint">Enter 发送 · Shift + Enter 换行</span>
-              </div>
-              <button
-                className={`send-btn ${busy ? "stop" : ""}`}
-                aria-label={busy ? "停止生成" : "发送消息"}
-                title={busy ? "停止生成" : "发送消息"}
-                onClick={busy ? stop : send}
-                disabled={!busy && !input.trim()}
-              >
-                {busy ? <span className="stop-square" /> : <span aria-hidden="true">↑</span>}
-              </button>
-            </div>
-          </div>
+          <SelectionActions
+            containerRef={mainRef}
+            onPick={(quoted, instruction) => {
+              setInput(`${instruction}\n\n> ${quoted.replace(/\n/g, "\n> ")}\n`);
+              fieldRef.current?.focus();
+            }}
+          />
         </div>
-        {pendingApproval && !overlayOpen && (
-          <div className="approval-pill">
-            <button
-              type="button"
-              onClick={() => setOverlayOpen(true)}
-              aria-label={`重新打开审批（${pendingApprovals.length} 个）`}
-            >
-              <svg
-                className="approval-pill-arrow"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <path d="M12 4.5 4.5 12h4.5v7.5h6V12h4.5z" />
-              </svg>
-              <span className="approval-pill-label">等待批准</span>
-              <span className="approval-pill-count">{pendingApprovals.length}</span>
-            </button>
-          </div>
-        )}
-        <ApprovalSheet
-          open={pendingApproval && overlayOpen}
-          position={approvalPosition}
-          total={approvalTotal}
-          name={pendingApprovals[0]?.name ?? ""}
-          reason={pendingApprovals[0]?.reason}
-          scope={pendingApprovals[0]?.scope}
-          onDecide={(approve, always) => {
-            const first = pendingApprovals[0];
-            if (first) decideApproval(first, approve, always);
-          }}
-          onDismiss={() => setOverlayOpen(false)}
-        />
+        <RightPane
+          open={paneOpen}
+          overlay={chatNarrow}
+          sections={PANE_SECTIONS}
+          active={paneSection}
+          onSelect={chooseSection}
+          onClose={closePane}
+        >
+          {paneSection === "tasks" && <TaskRows todos={todos} stale={listIsStale} />}
+          {paneSection === "context" && (
+            <ContextCards
+              cards={pane.context}
+              onOpen={(target) => {
+                setPreview(target);
+                chooseSection("file");
+              }}
+            />
+          )}
+          {paneSection === "changes" &&
+            (pane.changes.length ? (
+              pane.changes.map((change) => (
+                <DiffView
+                  key={change.id}
+                  path={change.path}
+                  diff={change.diff}
+                  applied={change.applied}
+                />
+              ))
+            ) : (
+              <p className="pane-empty">这一轮还没有修改文件。</p>
+            ))}
+          {paneSection === "file" &&
+            (preview && currentId ? (
+              // The key carries the conversation as well as the path: the same
+              // relative name in another session must never show the old text.
+              <FilePreview
+                key={`${currentId}:${preview}`}
+                sessionId={currentId}
+                path={preview}
+                onBack={() => {
+                  setPreview(null);
+                  chooseSection("context");
+                }}
+              />
+            ) : (
+              <p className="pane-empty">从「上下文」里打开一个文件查看内容。</p>
+            ))}
+        </RightPane>
         {toast && (
           <div className={`app-toast ${toast.kind}`} role="status">
             {toast.text}
@@ -880,7 +1412,7 @@ export default function App() {
                         undefined,
                         editTarget.name,
                       );
-                      setWorkspaces((w) => ({ ...w, projects: r.projects }));
+                      setProjects(r.projects);
                       refreshSessions();
                       showToast("ok", "已保存项目设置");
                     } catch (e) {
@@ -907,8 +1439,9 @@ export default function App() {
               root={editTarget.root}
               secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
               disabled={false}
+              viewToken={openSeqRef}
               onSecondary={() => {}}
-              onWorkspaces={setWorkspaces}
+              onProjects={setProjects}
               onError={(msg) => showToast("err", msg)}
             />
           </Modal>

@@ -1,0 +1,94 @@
+{
+  "read_file": {
+    "ok": {
+      "status": "ok",
+      "path": "src/app.ts",
+      "absolute_path": "/tmp/ws/src/app.ts",
+      "in_allowed": true,
+      "start_line": 1,
+      "end_line": 2,
+      "total_lines": 2,
+      "truncated": false,
+      "lines": 2,
+      "chars": 76,
+      "content": "1: export const a = 1;\n2: export const b = 2;\n\n(End of file - total 2 lines)"
+    },
+    "error": {
+      "status": "error",
+      "message": "not a file: src/nope.ts"
+    },
+    "outside": {
+      "status": "ok",
+      "path": "/tmp/other/note.txt",
+      "absolute_path": "/tmp/other/note.txt",
+      "in_allowed": false,
+      "start_line": 1,
+      "end_line": 1,
+      "total_lines": 1,
+      "truncated": false,
+      "lines": 1,
+      "chars": 44,
+      "content": "1: external note\n\n(End of file - total 1 lines)"
+    }
+  },
+  "grep": {
+    "ok": {
+      "status": "ok",
+      "matches": [
+        { "file": "src/app.ts", "line": 1, "text": "export const a = 1;" },
+        { "file": "src/app.ts", "line": 2, "text": "export const b = 2;" }
+      ],
+      "truncated": false
+    },
+    "secondary": {
+      "status": "ok",
+      "matches": [{ "file": "note.md", "line": 3, "text": "hello", "root": "/tmp/extra" }],
+      "truncated": false
+    },
+    "empty": {
+      "status": "ok",
+      "matches": [],
+      "truncated": false
+    }
+  },
+  "glob": {
+    "ok": {
+      "status": "ok",
+      "matches": ["README.md", "src/app.ts"],
+      "count": 2,
+      "truncated": false
+    },
+    "secondary": {
+      "status": "ok",
+      "matches": ["README.md", { "path": "note.md", "root": "/tmp/extra" }],
+      "count": 2,
+      "truncated": false
+    },
+    "empty": {
+      "status": "ok",
+      "matches": [],
+      "count": 0,
+      "truncated": false
+    }
+  },
+  "edit_file": {
+    "applied": {
+      "status": "ok",
+      "path": "src/app.ts",
+      "applied": true,
+      "diff": "--- src/app.ts\n+++ src/app.ts\n@@ -1,1 +1,1 @@\n-export const a = 1;\n+export const a = 2;\n",
+      "message": "edit applied"
+    },
+    "dry_run": {
+      "status": "ok",
+      "path": "src/app.ts",
+      "dry_run": true,
+      "message": "preview only, file unchanged",
+      "diff": "--- src/app.ts\n+++ src/app.ts\n@@ -1,1 +1,1 @@\n-export const a = 1;\n+export const a = 2;\n"
+    },
+    "error": {
+      "status": "error",
+      "message": "old_string not found in src/app.ts"
+    }
+  }
+}

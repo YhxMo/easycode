@@ -1,65 +1,20 @@
-"""Web session serialization — concurrent chat/undo/redo/permission gating,
-cancel special-case, and flush tmp-path uniqueness.
-
-Covers same-session concurrent chat (which would interleave history) and
-in-flight undo/redo (which would corrupt history) at the web endpoint level.
-Every test runs against a throw-away HOME and an in-process ASGI app; no real
-~/.easycode is read or written, and no easycode service is started.
-"""
+"""Concurrent chat, permission changes, and session persistence."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
 from pathlib import Path
 
 import httpx
-import pytest
 
 from easycode.agent.loop import Agent
 from easycode.config import Config
-from easycode.models.base import Provider, StreamEvent, ToolCall
+from easycode.models.base import Provider
 from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.session import SessionStore
-
-
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
-class GateProvider(Provider):
-    """One provider shared by an agent's turn.
-
-    ``stream`` call #1 waits on ``gate`` before yielding (so the session lock is
-    held deterministically while the test issues concurrent requests), then serves
-    the scripted items in order. Later calls skip the gate.
-    """
-
-    def __init__(self, gate: asyncio.Event, script: list[dict], model: str = "fake/model") -> None:
-        super().__init__(model)
-        self.gate = gate
-        self.script = list(script)
-        self.calls = 0
-
-    async def stream(self, messages, tools=None) -> AsyncIterator[StreamEvent]:
-        self.calls += 1
-        if self.gate is not None and self.calls == 1:
-            await self.gate.wait()
-        if not self.script:
-            yield StreamEvent(kind="text", content="ok")
-            yield StreamEvent(kind="done")
-            return
-        item = self.script.pop(0)
-        if item.get("text"):
-            for token in item["text"]:
-                yield StreamEvent(kind="text", content=token)
-        if item.get("tool_calls"):
-            calls = [ToolCall(id=tc[0], name=tc[1], arguments=tc[2]) for tc in item["tool_calls"]]
-            yield StreamEvent(kind="tool_calls", tool_calls=calls)
-        yield StreamEvent(kind="done")
+from tests.helpers_web import GateProvider, wait_until
 
 
 def _make_cfg(tmp_path: Path) -> Config:
@@ -74,16 +29,6 @@ def _agent(tmp_path: Path, provider: Provider, root: Path | None = None) -> Agen
     return Agent(provider=provider, registry=build_registry(8000), root=root or tmp_path)
 
 
-async def _wait_until(pred, timeout: float = 2.0) -> None:
-    """Yields to the running loop until ``pred`` is true (or timeout)."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not pred():
-        if loop.time() > deadline:
-            raise AssertionError("timed out waiting for condition")
-        await asyncio.sleep(0.01)
-
-
 def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
     """A second chat on the same session while one is streaming must
     be rejected with 409 (busy) instead of interleaving history; after the first
@@ -94,7 +39,7 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a"):
+        def factory(alias: str = "fake-a", **_):
             return _agent(
                 tmp_path,
                 GateProvider(
@@ -112,10 +57,10 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
             transport=httpx.ASGITransport(app=app), base_url="http://t"
         ) as c:
             chat1 = asyncio.create_task(c.post("/api/chat", json={"message": "first chat"}))
-            await _wait_until(lambda: len(store.list()) == 1)
+            await wait_until(lambda: len(store.list()) == 1)
             sid = list(store.list())[0].id
             # Ensure the stream's gen() has actually acquired the session lock.
-            await _wait_until(store.get(sid)._lock.locked)
+            await wait_until(store.get(sid)._lock.locked)
             # While chat1 streams (holds the session lock), chat2 must be busy.
             r2 = await c.post("/api/chat", json={"message": "second chat", "session_id": sid})
             assert r2.status_code == 409, r2.text
@@ -138,8 +83,8 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
     asyncio.run(scenario())
 
 
-def test_inflight_chat_undo_redo_permission_archive_409(tmp_path) -> None:
-    """While a chat stream is in flight, undo/redo/permission/archive
+def test_inflight_chat_permission_archive_409(tmp_path) -> None:
+    """While a chat stream is in flight, permission/archive
     and a second chat must be rejected with 409; once the turn completes the
     history is a single clean turn with user_times aligned."""
     cfg = _make_cfg(tmp_path)
@@ -147,7 +92,7 @@ def test_inflight_chat_undo_redo_permission_archive_409(tmp_path) -> None:
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a"):
+        def factory(alias: str = "fake-a", **_):
             return _agent(tmp_path, GateProvider(gate=gate, script=[{"text": "done"}]))
 
         store = SessionStore(cfg, tmp_path, factory)
@@ -156,13 +101,11 @@ def test_inflight_chat_undo_redo_permission_archive_409(tmp_path) -> None:
             transport=httpx.ASGITransport(app=app), base_url="http://t"
         ) as c:
             chat = asyncio.create_task(c.post("/api/chat", json={"message": "hi"}))
-            await _wait_until(lambda: len(store.list()) == 1)
+            await wait_until(lambda: len(store.list()) == 1)
             sid = list(store.list())[0].id
-            await _wait_until(store.get(sid)._lock.locked)
+            await wait_until(store.get(sid)._lock.locked)
 
             for method, url, body in (
-                ("POST", f"/api/sessions/{sid}/undo", None),
-                ("POST", f"/api/sessions/{sid}/redo", None),
                 ("POST", f"/api/sessions/{sid}/permission", {"mode": "allow-all"}),
                 ("POST", f"/api/sessions/{sid}/archive", {"archived": True}),
                 ("POST", "/api/chat", {"message": "x", "session_id": sid}),
@@ -185,6 +128,49 @@ def test_inflight_chat_undo_redo_permission_archive_409(tmp_path) -> None:
     asyncio.run(scenario())
 
 
+def test_prune_does_not_mutate_recorded_snapshot(tmp_path) -> None:
+    """DEC-W2: the recorded snapshot shares message dicts with the live
+    history, so pruning must replace message objects, not edit them in place."""
+    from easycode.agent.compaction import PRUNED_OUTPUT
+
+    cfg = _make_cfg(tmp_path)
+
+    def factory(alias: str = "fake-a", **_):
+        from tests.conftest import FakeProvider
+
+        return _agent(tmp_path, FakeProvider(script=[]))
+
+    store = SessionStore(cfg, tmp_path, factory)
+    sess = store.create()
+    h = sess.agent.history
+    big = "x" * 200_000
+    h.add_user("first")
+    h.add_assistant(
+        "", [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]
+    )
+    h.add_tool("c1", "read_file", big)
+    h.add_assistant("done")
+    h.add_user("second")
+    h.add_assistant("ok")
+    h.add_user("third")
+    h.add_assistant("ok")
+    store.record_exchange(sess)
+    snapshot_before = list(sess.messages)
+
+    sess.agent.compactor.prune(h)
+
+    # The old snapshot keeps the original tool output...
+    assert sess.messages == snapshot_before
+    assert big in sess.messages[2]["content"]
+    # ...while the live history has the pruned copy.
+    assert h.messages[2]["content"] == PRUNED_OUTPUT
+    assert h.messages[2] is not sess.messages[2]
+
+    # Persisting again records the pruned view.
+    store.record_exchange(sess)
+    assert PRUNED_OUTPUT in sess.messages[2]["content"]
+
+
 def test_cancel_during_inflight_not_gated(tmp_path) -> None:
     """A3: cancel is the deliberate exception — it does NOT grab the session lock
     and must be allowed while a chat is streaming (it just signals cancel_event)."""
@@ -193,7 +179,7 @@ def test_cancel_during_inflight_not_gated(tmp_path) -> None:
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a"):
+        def factory(alias: str = "fake-a", **_):
             return _agent(tmp_path, GateProvider(gate=gate, script=[{"text": "late"}]))
 
         store = SessionStore(cfg, tmp_path, factory)
@@ -202,9 +188,9 @@ def test_cancel_during_inflight_not_gated(tmp_path) -> None:
             transport=httpx.ASGITransport(app=app), base_url="http://t"
         ) as c:
             chat = asyncio.create_task(c.post("/api/chat", json={"message": "hi"}))
-            await _wait_until(lambda: len(store.list()) == 1)
+            await wait_until(lambda: len(store.list()) == 1)
             sid = list(store.list())[0].id
-            await _wait_until(store.get(sid)._lock.locked)
+            await wait_until(store.get(sid)._lock.locked)
 
             r_cancel = await c.post(f"/api/sessions/{sid}/cancel")
             assert r_cancel.status_code == 200, r_cancel.text
@@ -213,7 +199,7 @@ def test_cancel_during_inflight_not_gated(tmp_path) -> None:
             body = (await chat).text
             assert '"type": "cancelled"' in body
             sess = store.get(sid)
-            assert sess is not None and sess.agent.history.last_user_index() == -1
+            assert sess is not None and sess.agent.history.messages == [{"role": "user", "content": "hi"}]
 
     asyncio.run(scenario())
 
@@ -224,7 +210,7 @@ def test_flush_concurrent_unique_tmp_and_atomic(tmp_path) -> None:
     file on disk."""
     cfg = _make_cfg(tmp_path)
 
-    def factory(alias: str = "fake-a"):
+    def factory(alias: str = "fake-a", **_):
         from tests.conftest import FakeProvider
 
         return _agent(tmp_path, FakeProvider(script=[{"text": "ok"}]))

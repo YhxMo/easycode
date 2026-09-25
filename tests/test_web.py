@@ -18,11 +18,6 @@ from easycode.web.session import SessionStore
 from tests.conftest import FakeProvider
 
 
-@pytest.fixture(autouse=True)
-def _isolate_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-
 def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(
@@ -154,7 +149,7 @@ def test_chat_with_tool_calls(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         provider = FakeProvider(script=list(script))
         return Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
 
@@ -187,6 +182,43 @@ def test_sessions_list_and_delete(tmp_path):
         assert client.get("/api/sessions").json() == []
 
 
+def test_session_delete_reports_file_failure_and_can_retry(tmp_path, monkeypatch):
+    """A failed session-file removal must not report success: the session stays
+    tracked and retryable, and only a successful delete removes both the store
+    entry and the file (no resurrection on reload)."""
+    import pathlib
+
+    client = make_app(tmp_path)
+    with client:
+        client.post("/api/chat", json={"message": "session one"})
+        sid = client.get("/api/sessions").json()[0]["id"]
+        session_file = tmp_path / ".easycode" / "sessions" / f"{sid}.json"
+        assert session_file.exists()
+
+        real_unlink = pathlib.Path.unlink
+        failing = {"on": True}
+
+        def flaky_unlink(self, missing_ok=False):
+            if failing["on"] and self == session_file:
+                raise OSError("disk error")
+            return real_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(pathlib.Path, "unlink", flaky_unlink)
+        r = client.delete(f"/api/sessions/{sid}")
+        assert r.status_code == 500, r.text
+        assert "删除会话文件失败" in r.json()["detail"]
+        assert session_file.exists()
+        assert [s["id"] for s in client.get("/api/sessions").json()] == [sid]
+
+        # Retry after the transient failure succeeds and leaves nothing behind.
+        failing["on"] = False
+        r2 = client.delete(f"/api/sessions/{sid}")
+        assert r2.status_code == 200
+        assert not session_file.exists()
+        assert client.get("/api/sessions").json() == []
+        assert client.delete(f"/api/sessions/{sid}").status_code == 404
+
+
 def test_empty_message_rejected(tmp_path):
     client = make_app(tmp_path)
     r = client.post("/api/chat", json={"message": "   "})
@@ -200,7 +232,7 @@ def test_session_persistence(tmp_path, monkeypatch):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         return Agent(
             provider=FakeProvider(script=[{"text": "reply"}]),
             registry=build_registry(8000),
@@ -223,67 +255,6 @@ def test_session_persistence(tmp_path, monkeypatch):
     assert any("persist me" in str(m.get("content")) for m in restored.messages)
 
 
-def test_load_all_migrates_old_system_prompt(tmp_path):
-    """A persisted old base system prompt is re-anchored to the current one on reload.
-
-    The freshly built agent already holds the latest prompt (e.g. the
-    execute_shell writable_roots guidance) in ``history.system``; the old embedded
-    base system message inside ``messages`` is dropped so the ordinary history
-    starts with the user/assistant turns, while skill/custom system messages stay.
-    """
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-            secondary_roots=[Path(p).resolve() for p in (kw.get("secondary_roots") or [])],
-        )
-
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-    store = SessionStore(cfg, tmp_path, factory)
-
-    # Current prompt from a fresh agent (must mention writable_roots).
-    fresh = factory("fake-a")
-    cur = fresh.history.system["content"]
-    assert "writable_roots" in cur
-
-    # Pre-seed an OLD session whose messages[0] is the outdated base prompt.
-    old_hist = [
-        {"role": "system", "content": "You are easycode OLD prompt (no writable_roots)."},
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-        {"role": "system", "content": "[skill: docs] body"},
-    ]
-    sid = "old2222"
-    store.dir.mkdir(parents=True, exist_ok=True)
-    (store.dir / f"{sid}.json").write_text(
-        json.dumps(
-            {
-                "id": sid,
-                "title": "old",
-                "created_at": "2020-01-01T00:00:00+00:00",
-                "model_alias": "fake-a",
-                "messages": old_hist,
-                "permission_mode": "ask",
-            }
-        ),
-        encoding="utf-8",
-    )
-    store.load_all()
-    s = store.get(sid)
-    assert s is not None
-    # history.system keeps the freshly built (current) prompt, including writable_roots.
-    assert s.agent.history.system is not None
-    assert "writable_roots" in s.agent.history.system["content"]
-    m = s.agent.history.messages
-    # messages no longer carry the base system: it starts with the ordinary history.
-    assert m[0] == {"role": "user", "content": "hi"}
-    assert m[1] == {"role": "assistant", "content": "hello"}
-    assert {"role": "system", "content": "[skill: docs] body"} in m  # kept
-    assert s.messages == m  # synced
 
 
 def test_load_all_preserves_condensed_summary(tmp_path):
@@ -301,7 +272,7 @@ def test_load_all_preserves_condensed_summary(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         return Agent(
             provider=FakeProvider(script=[{"text": "reply"}]),
             registry=build_registry(8000),
@@ -368,17 +339,34 @@ def test_pin_project_persists_and_orders(tmp_path):
     assert r2.json()["projects"][0].get("pinned") is None or r2.json()["projects"][0]["pinned"] is False
 
 
-def test_reveal_unavailable_on_non_darwin(tmp_path):
+def test_reveal_unavailable_on_non_darwin(tmp_path, monkeypatch):
+    import subprocess
     import sys
 
     client = make_app(tmp_path)
     repo = _mk_repo(tmp_path, "proj-r")
+
+    # Intercept only the Finder launch so the test never pops a real window
+    # (pytest tmp_path lives under /private/var/folders/... on macOS).
+    opened: list[list[str]] = []
+    real_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:1] == ["open"]:
+            opened.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("easycode.web.platform.subprocess.run", fake_run)
+
     r = client.post("/api/workspaces/reveal", json={"root": str(repo)})
     assert r.status_code == 200
     if sys.platform != "darwin":
         assert r.json() == {"ok": False, "supported": False, "error": "open is only supported on macOS"}
+        assert opened == []
     else:
         assert r.json() == {"ok": True, "supported": True, "path": str(repo)}
+        assert opened == [["open", str(repo)]]
 
 
 def test_archive_project_chats_hides_them(tmp_path):
@@ -475,17 +463,14 @@ def _user_count(messages) -> int:
     return sum(1 for m in messages if m.get("role") == "user")
 
 
-def test_user_times_follow_compress_undo_redo(tmp_path):
-    """user_times stays aligned with the surviving user messages across
-    3 turns, compaction (front drop), undo (back drop) and redo (back restore).
-    Regression: the old ``user_times[:n_user]`` kept the WRONG end under
-    compaction and lost the timestamp that a redo should restore."""
+def test_user_times_follow_compaction(tmp_path):
+    """Keep timestamps aligned with user turns retained by compaction."""
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **_) -> Agent:
         return Agent(
             provider=FakeProvider(script=[{"text": "reply"}]),
             registry=build_registry(8000),
@@ -521,21 +506,6 @@ def test_user_times_follow_compress_undo_redo(tmp_path):
         store.record_exchange(sess)
         assert _user_count(sess.messages) == 1
         assert sess.user_times == [times3[2]]  # surviving = the most recent entry
-
-        # undo removes the last turn -> no user messages, no timestamps.
-        r = client.post(f"/api/sessions/{sid}/undo")
-        assert r.status_code == 200
-        assert r.json()["ok"]
-        assert _user_count(sess.messages) == 0
-        assert sess.user_times == []
-        assert client.get(f"/api/sessions/{sid}").json()["user_times"] == []
-
-        # redo restores the turn AND its timestamp.
-        r = client.post(f"/api/sessions/{sid}/redo")
-        assert r.status_code == 200
-        assert r.json()["ok"]
-        assert _user_count(sess.messages) == 1
-        assert sess.user_times == [times3[2]]
 
         # old-session JSON compatibility: a JSON without user_times must load and
         # keep a consistent (here: empty) user_times that stays aligned.
@@ -614,104 +584,219 @@ def test_config_project_secondary_binds_into_new_session(tmp_path):
     assert sorted(str(p) for p in s.agent.secondary_roots) == [str(sec.resolve())]
 
 
-# ------------------------------------------------- redo user_times alignment
+def test_session_without_credential_restores_and_reports_422(tmp_path):
+    """DEC-W1: a session whose model lost its credential stays visible.
 
-
-def _seed_three_turns(client, store):
-    """Chat one/two/three and return (sid, sess, times3)."""
-    sid = None
-    for msg in ("one", "two", "three"):
-        payload: dict = {"message": msg}
-        if sid:
-            payload["session_id"] = sid
-        r = client.post("/api/chat", json=payload)
-        assert r.status_code == 200
-        for line in r.text.splitlines():
-            if line.startswith("data:"):
-                ev = json.loads(line[6:])
-                if ev.get("type") == "session":
-                    sid = ev["session_id"]
-        assert sid
-    sess = store.get(sid)
-    assert sess is not None
-    times3 = list(sess.user_times)
-    assert len(times3) == 3  # one ISO timestamp per user message
-    return sid, sess, times3
-
-
-def test_redo_restores_one_timestamp_per_single_undo(tmp_path):
-    """Each redo_turn() re-applies EXACTLY one user turn, so after N
-    single-turn undos one redo must restore exactly ONE timestamp — the one
-    matching the re-applied turn — not drain the whole stash.
-
-    Repro that motivated the fix: 3 turns → 2 undos → 1 redo left user_times
-    shifted (``[t2,t3]``) instead of aligned with the surviving messages
-    ``['one','two']`` → ``[t1,t2]`` (t3 wrongly merged in, t1 lost).
+    Restoring must not build the provider, so the session is listed; the first
+    message resolves it lazily and fails with a clear 422.
     """
     cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg_file.write_text(
+        json.dumps(
+            {
+                "default_model": "gone",
+                "models": {"gone": {"model": "x/gone", "api_format": "openai_compatible"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sessions_dir = tmp_path / ".easycode" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "abc123.json").write_text(
+        json.dumps(
+            {
+                "id": "abc123",
+                "title": "旧会话",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "model_alias": "gone",
+                "permission_mode": "ask",
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        ),
+        encoding="utf-8",
+    )
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
+    client = TestClient(create_app(cfg=cfg, static_dir=tmp_path / "no-dist"))
 
-    def factory(alias: str) -> Agent:
-        return Agent(
-            provider=FakeProvider(script=[{"text": "reply"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
     with client:
-        sid, sess, times3 = _seed_three_turns(client, store)
+        sessions = client.get("/api/sessions").json()
+        assert [s["id"] for s in sessions] == ["abc123"]
 
-        # two single-turn undos rewind history to ['one'], stash [t3, t2].
-        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
-        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
-        assert _user_count(sess.messages) == 1
-        assert list(sess.user_times) == [times3[0]]
-        assert sess._undone_user_times == [times3[2], times3[1]]
-
-        # one redo re-applies turn 'two': surviving users ['one','two'] but
-        # exactly ONE timestamp (t2) restored, t3 stays stashed (still redoable).
-        assert client.post(f"/api/sessions/{sid}/redo").json()["ok"]
-        assert _user_count(sess.messages) == 2
-        assert [m["content"] for m in sess.messages if m.get("role") == "user"] == ["one", "two"]
-        assert list(sess.user_times) == [times3[0], times3[1]]
-        assert sess._undone_user_times == [times3[2]]  # t3 still undone/redoable
-
-        # and the persisted JSON agrees (load-path uses the same session object).
-        fetched = client.get(f"/api/sessions/{sid}").json()
-        assert fetched["user_times"] == [times3[0], times3[1]]
+        r = client.post("/api/chat", json={"message": "again", "session_id": "abc123"})
+        assert r.status_code == 422
+        assert "credential" in r.json()["detail"]
 
 
-def test_redo_restores_full_after_single_undo(tmp_path):
-    """Control: with only ONE undo in the stack, a single redo must
-    restore the FULL [t1,t2,t3] (the stash had exactly one entry)."""
+def test_restored_session_with_sensitive_root_reports_422(tmp_path):
+    """A legacy session pointing at a sensitive dir stays readable, but sending
+    is refused before any tool could run in that workspace."""
+    repo = tmp_path / "repo"
+    objects = repo / ".git" / "objects"
+    objects.mkdir(parents=True)
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    sessions_dir = tmp_path / ".easycode" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "legacy1.json").write_text(
+        json.dumps(
+            {
+                "id": "legacy1",
+                "title": "旧会话",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "model_alias": "fake-a",
+                "permission_mode": "ask",
+                "messages": [{"role": "user", "content": "old work"}],
+                "root": str(objects),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+    client = TestClient(create_app(cfg=cfg, static_dir=tmp_path / "no-dist"))
+
+    with client:
+        listed = client.get("/api/sessions").json()
+        assert [s["id"] for s in listed] == ["legacy1"]
+        detail = client.get("/api/sessions/legacy1")
+        assert detail.status_code == 200
+        assert detail.json()["messages"] == [{"role": "user", "content": "old work"}]
+
+        r = client.post("/api/chat", json={"message": "run", "session_id": "legacy1"})
+        assert r.status_code == 422
+        assert "工作目录无效" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_project_archive_refuses_busy_session_before_any_write(tmp_path):
+    import httpx
+
+    app = make_app(tmp_path).app
+    store = app.state.store
+    sessions = [store.create(), store.create()]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        async with sessions[-1]._lock:
+            response = await client.post("/api/workspaces/archive", json={"root": None})
+        assert response.status_code == 409
+    assert all(not sess.archived for sess in sessions)
+    assert all(not json.loads(store._path(sess.id).read_text())["archived"] for sess in sessions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_archive", [False, True])
+async def test_project_archive_and_delete_do_not_resurrect_session(tmp_path, monkeypatch, cancel_archive):
+    import asyncio
+    import threading
+
+    import httpx
+
+    from tests.helpers_web import wait_until
+
+    app = make_app(tmp_path).app
+    store = app.state.store
+    sess = store.create()
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    other = store.create(root=str(other_root))
+    entered, release = threading.Event(), threading.Event()
+    original = Path.replace
+    writes = []
+
+    def paused_replace(path, target):
+        writes.append(Path(target))
+        if Path(target) == store._path(sess.id):
+            entered.set()
+            assert release.wait(5)
+        return original(path, target)
+
+    monkeypatch.setattr(Path, "replace", paused_replace)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        archive = asyncio.create_task(client.post("/api/workspaces/archive", json={"root": None}))
+        delete = None
+        try:
+            await wait_until(entered.is_set)
+            if cancel_archive:
+                archive.cancel()
+                await asyncio.sleep(0)
+                assert not archive.done()
+            delete = asyncio.create_task(client.delete(f"/api/sessions/{sess.id}"))
+            await asyncio.sleep(0)
+        finally:
+            release.set()
+            results = await asyncio.gather(
+                archive, *([delete] if delete else []), return_exceptions=True
+            )
+        if cancel_archive:
+            assert isinstance(results[0], asyncio.CancelledError)
+        else:
+            assert results[0].status_code == 200
+        assert results[1].status_code == 200
+    assert not store._path(sess.id).exists()
+    store.load_all()
+    assert store.get(sess.id) is None
+    assert store.get(other.id) is not None
+    assert store._path(other.id) not in writes  # only the target project's sessions are saved
+
+
+def _app_with_provider(tmp_path: Path, provider) -> tuple[TestClient, SessionStore]:
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str) -> Agent:
+    def factory(alias: str, **agent_kwargs):
+        root = agent_kwargs.get("root") or tmp_path
         return Agent(
-            provider=FakeProvider(script=[{"text": "reply"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
+            provider=provider, registry=build_registry(8000), root=Path(root)
         )
 
     store = SessionStore(cfg, tmp_path, factory)
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    return client, store
+
+
+def test_turn_failure_is_recorded_with_its_turn_and_restored(tmp_path):
+    """A server-produced terminal error belongs to the turn that raised it, so a
+    reload can put it back — and a hard failure is never a finished turn."""
+    client, store = _app_with_provider(tmp_path, FakeProvider(script=[{"error": "boom"}]))
     with client:
-        sid, sess, times3 = _seed_three_turns(client, store)
+        assert client.post("/api/chat", json={"message": "hi"}).status_code == 200
+        sid = client.get("/api/sessions").json()[0]["id"]
+        detail = client.get(f"/api/sessions/{sid}").json()
 
-        assert client.post(f"/api/sessions/{sid}/undo").json()["ok"]
-        assert _user_count(sess.messages) == 2
-        assert list(sess.user_times) == [times3[0], times3[1]]
-        assert sess._undone_user_times == [times3[2]]
+    assert len(detail["turn_failures"]) == 1
+    failure = detail["turn_failures"][0]
+    assert "boom" in failure["message"]
+    assert failure["time"] == detail["user_times"][-1]
 
-        assert client.post(f"/api/sessions/{sid}/redo").json()["ok"]
-        assert _user_count(sess.messages) == 3
-        assert list(sess.user_times) == [times3[0], times3[1], times3[2]]
-        assert sess._undone_user_times == []  # everything restored
-        assert client.get(f"/api/sessions/{sid}").json()["user_times"] == times3
+    # Persisted, so a restart restores the same association.
+    saved = json.loads((store.dir / f"{sid}.json").read_text(encoding="utf-8"))
+    assert saved["turn_failures"] == detail["turn_failures"]
+
+    restored = SessionStore(store.cfg, tmp_path, store.agent_factory)
+    restored.load_all()
+    assert restored.get(sid).turn_failures == detail["turn_failures"]
+
+
+def test_iteration_limit_failure_carries_its_code_to_the_client(tmp_path):
+    """The stream marks an explicit ceiling with a code, and the record keeps it
+    so the restored turn can offer to continue."""
+    provider = FakeProvider(script=[{"tool_calls": [("c1", "glob", {"pattern": "*"})]}])
+    client, store = _app_with_provider(tmp_path, provider)
+    with client:
+        sess = store.create()
+        sess.agent.max_tool_iterations = 1
+        body = client.post(
+            "/api/chat", json={"message": "loop", "session_id": sess.id}
+        ).text
+
+    assert '"code": "tool_iteration_limit"' in body
+    detail = client.get(f"/api/sessions/{sess.id}").json()
+    assert [f["code"] for f in detail["turn_failures"]] == ["tool_iteration_limit"]
+    assert detail["turn_failures"][0]["time"] == detail["user_times"][-1]

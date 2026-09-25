@@ -10,11 +10,14 @@ from pydantic import BaseModel, Field
 from easycode.approval import destructive_command_reason
 from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
 from easycode.sandbox import child_env, sandbox_command
+from easycode.tools.registry import json_out, tool_scope
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
 
 class ExecuteShellArgs(BaseModel):
-    command: str = Field(description="shell command to run; pipes, redirects, and globs are supported")
+    command: str = Field(
+        description="shell command to run; pipes, redirects, and globs are supported"
+    )
     timeout: int = Field(120, description="timeout in seconds", ge=1, le=600)
     sandbox_permissions: str = Field(
         "use_default",
@@ -45,10 +48,9 @@ def execute_shell(
     *,
     root: Path,
     ctx: PathContext | None = None,
-    force_allowed: bool = False,
     grant: ToolGrant | None = None,
 ) -> str:
-    scope = ctx or PathContext(primary=root)
+    scope = tool_scope(root, ctx)
     # Under the sandboxed presets (ask / auto-review) a clearly destructive
     # command (rm -rf /, git reset --hard, git clean, git push --force) is
     # denied outright, before any validation or sandbox, and cannot be
@@ -70,7 +72,7 @@ def execute_shell(
                     "in_allowed": False,
                 },
             )
-        # Validate the model's explicit writable_roots declaration (P0-1): invalid
+        # Validate the model's explicit writable_roots declaration: invalid
         # entries (relative / missing / plain file / .git / .easycode / data home)
         # fail closed with a structured error instead of silently dropping them.
         declared, err = validate_writable_roots(args.writable_roots, None)
@@ -83,8 +85,8 @@ def execute_shell(
         # approval grant covers it. Any declared root the grant does NOT cover is
         # rejected, so a shell can never write outside the workspace unprompted.
         if declared:
-            granted = {str(p.resolve()).rstrip("/") for p in (grant.writable_roots if grant else ())}
-            missing = [str(p) for p in declared if str(p).rstrip("/") not in granted]
+            granted = {p.resolve() for p in (grant.writable_roots if grant else ())}
+            missing = [str(p) for p in declared if p not in granted]
             if missing:
                 return json_out(
                     "error",
@@ -98,10 +100,6 @@ def execute_shell(
             ["/bin/sh", "-c", args.command],
             scope,
             grant=grant,
-            # Legacy network-only alias; a precise grant supersedes it and is
-            # never widened by the boolean (P0-1: external writes only from
-            # explicit, validated writable_roots, never by parsing the shell).
-            force_allowed=force_allowed if grant is None else False,
         )
         proc = subprocess.run(
             command,
@@ -127,9 +125,3 @@ def execute_shell(
     if len(stdout) > MAX_OUTPUT_CHARS or len(stderr) > MAX_OUTPUT_CHARS:
         payload["truncated"] = True
     return json_out("ok", payload)
-
-
-def json_out(status: str, payload: dict) -> str:
-    import json
-
-    return json.dumps({"status": status, **payload}, ensure_ascii=False, default=str)
