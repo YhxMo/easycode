@@ -10,11 +10,10 @@ Config shape (``mcp_servers`` in easycode.config.json)::
 Registered tools are named ``mcp__<server>__<tool>``; the agent dispatches them
 to the owning server's session.
 
-Transport note: this module implements the MCP JSON-RPC framing directly
-(stdio subprocess + newline-delimited JSON, or streamable-HTTP via httpx).
-The official ``mcp`` SDK's stdio client deadlocks under Python 3.14 + anyio
-(initialize never completes), while the wire protocol was verified working,
-so we own ~100 lines of transport instead of pulling in that dependency.
+Connections use the official ``mcp`` SDK: a sandboxed stdio child for
+``command`` servers, or streamable-HTTP for ``url`` servers. The SDK's client
+transports are anyio context managers that must be entered and exited in one
+task, so each connection runs in its own task (see :class:`MCPConnection`).
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-import httpx
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -46,218 +44,6 @@ REQUEST_TIMEOUT = 30.0
 
 def mcp_tool_name(server: str, tool: str) -> str:
     return f"{MCP_PREFIX}{server}__{tool}"
-
-
-class _BaseTransport:
-    """Request/response over JSON-RPC 2.0; notifications carry no id."""
-
-    def __init__(self) -> None:
-        self._next_id = 1
-        self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
-        self._write_lock = asyncio.Lock()
-
-    async def start(self) -> None:
-        raise NotImplementedError
-
-    async def _send_line(self, line: str) -> None:
-        raise NotImplementedError
-
-    async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        fut: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-        mid = self._next_id
-        self._next_id += 1
-        self._pending[mid] = fut
-        payload = dict(params) if params else {}
-        payload = {"method": method, "params": payload, "jsonrpc": "2.0", "id": mid}
-        try:
-            await self._send_line(json.dumps(payload, ensure_ascii=False))
-            msg = await asyncio.wait_for(fut, timeout=REQUEST_TIMEOUT)
-            if "error" in msg:
-                raise RuntimeError(f"MCP method {method} failed: {msg['error']}")
-            return msg.get("result", {})
-        finally:
-            self._pending.pop(mid, None)
-
-    async def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
-        payload = {"method": method, "params": params or {}, "jsonrpc": "2.0"}
-        await self._send_line(json.dumps(payload, ensure_ascii=False))
-
-    def _handle_message(self, msg: dict[str, Any]) -> None:
-        mid = msg.get("id")
-        if mid is None:
-            return  # notification from server; ignore
-        fut = self._pending.get(mid)
-        if fut is not None and not fut.done():
-            fut.set_result(msg)
-
-    async def close(self) -> None:
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.cancel()
-        self._pending.clear()
-
-
-class StdioTransport(_BaseTransport):
-    """Newline-delimited JSON over a spawned subprocess."""
-
-    def __init__(
-        self,
-        command: str,
-        args: list[str],
-        env: dict[str, str] | None,
-        cwd: str | None,
-        ctx: PathContext,
-    ) -> None:
-        super().__init__()
-        self.command = command
-        self.args = args
-        self.env = env
-        self.cwd = cwd
-        self.ctx = ctx
-        self.proc: asyncio.subprocess.Process | None = None
-        self._tasks: list[asyncio.Task[None]] = []
-
-    async def start(self) -> None:
-        # Conservative child env: secret-bearing parent variables are stripped,
-        # while the explicit MCP ``env`` config is layered on top and wins.
-        merged_env = child_env(self.env)
-        command = sandbox_command([self.command, *self.args], self.ctx)
-        self.proc = await asyncio.create_subprocess_exec(
-            *command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=merged_env,
-            cwd=self.cwd,
-        )
-        loop = asyncio.get_running_loop()
-        self._tasks = [loop.create_task(self._read_loop()), loop.create_task(self._err_loop())]
-
-    async def _read_loop(self) -> None:
-        proc = self.proc
-        assert proc is not None and proc.stdout is not None
-        while True:
-            line = await proc.stdout.readline()
-            if not line:
-                break
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                self._handle_message(json.loads(raw))
-            except json.JSONDecodeError:
-                log.warning("MCP server sent non-JSON line: %.120s", raw)
-        log.warning("MCP stdio server exited (code=%s); requests will fail", proc.returncode)
-
-    async def _err_loop(self) -> None:
-        proc = self.proc
-        assert proc is not None and proc.stderr is not None
-        while True:
-            line = await proc.stderr.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").rstrip()
-            if text:
-                log.warning("[mcp:stderr] %s", text)
-
-    async def _send_line(self, line: str) -> None:
-        if self.proc is None or self.proc.stdin is None:
-            raise RuntimeError("MCP stdio transport not started")
-        async with self._write_lock:
-            self.proc.stdin.write((line + "\n").encode("utf-8"))
-            await self.proc.stdin.drain()
-
-    async def close(self) -> None:
-        await super().close()
-        proc, self.proc = self.proc, None
-        if proc is None:
-            return
-        try:
-            if proc.stdin is not None:
-                proc.stdin.close()
-        except (BrokenPipeError, OSError):
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            # Even after SIGKILL the process must be reaped, otherwise it
-            # stays a zombie and the pipes stay open.
-            await proc.wait()
-        # Reap the background reader tasks so their pipes/streams are freed.
-        for task in self._tasks:
-            if not task.done():
-                task.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks = []
-
-
-class HttpTransport(_BaseTransport):
-    """MCP streamable HTTP: one JSON-RPC POST per request, SSE/JSON response."""
-
-    def __init__(self, url: str) -> None:
-        super().__init__()
-        self.url = url
-        self._client: httpx.AsyncClient | None = None
-
-    async def start(self) -> None:
-        self._client = httpx.AsyncClient(timeout=REQUEST_TIMEOUT)
-
-    async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        mid = self._next_id
-        self._next_id += 1
-        payload = {"method": method, "jsonrpc": "2.0", "id": mid}
-        if params:
-            payload["params"] = params
-        assert self._client is not None
-        resp = await self._client.post(
-            self.url,
-            json=payload,
-            headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
-        )
-        resp.raise_for_status()
-        text = resp.text
-        msg = self._parse_response(text)
-        if "error" in msg:
-            raise RuntimeError(f"MCP server error: {msg['error']}")
-        return msg.get("result", {})
-
-    @staticmethod
-    def _parse_response(text: str) -> dict[str, Any]:
-        data = text.strip()
-        if data.startswith("data:"):
-            data = data.split("\n")[0].split("data:", 1)[1].strip()
-        if not data:
-            return {}
-        try:
-            return json.loads(data)
-        except json.JSONDecodeError:
-            return {}
-
-    async def _send_line(self, line: str) -> None:
-        raise NotImplementedError("HTTP transport uses request()/notify() directly")
-
-    async def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
-        payload = {"method": method, "params": params or {}, "jsonrpc": "2.0"}
-        assert self._client is not None
-        try:
-            await self._client.post(
-                self.url,
-                json=payload,
-                headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
-            )
-        except httpx.HTTPError:
-            pass  # one-way notification; fire and forget
-
-    async def close(self) -> None:
-        await super().close()
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
 
 
 class MCPConnection:

@@ -13,13 +13,11 @@ Tests are isolated: temporary HOME, scripted FakeProvider, no real service.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,7 +25,6 @@ from fastapi.testclient import TestClient
 from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.credentials import Credential, data_home, new_credential_id, save_credential
-from easycode.mcp import StdioTransport
 from easycode.sandbox import child_env
 from easycode.tools import build_registry
 from easycode.web.main import create_app
@@ -194,45 +191,38 @@ def test_child_env_strips_parent_secrets_but_keeps_runtime_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stdio_mcp_uses_sanitized_env_and_explicit_values(monkeypatch, tmp_path):
+async def test_mcp_child_env_is_sanitized(monkeypatch, tmp_path):
+    """A secret-bearing parent variable must not reach an MCP server process,
+    while explicit ``mcp_servers`` env values are layered on top."""
+    import contextlib
+
+    from easycode import mcp as mcp_module
+
     captured: dict[str, object] = {}
 
-    class DummyTransport:
-        async def write(self, _data):
-            return None
-
-    async def fake_create(*command, **kwargs):
-        captured["command"] = command
-        captured["env"] = kwargs["env"]
-        return SimpleNamespace(
-            stdin=DummyTransport(),
-            stdout=DummyTransport(),
-            stderr=DummyTransport(),
-            returncode=None,
-        )
-
-    async def no_read(self):
-        return None
-
-    async def no_err(self):
-        return None
+    @contextlib.asynccontextmanager
+    async def fake_stdio(params):
+        captured["params"] = params
+        raise RuntimeError("no child process in this test")
+        yield  # pragma: no cover - never reached
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-secret")
     monkeypatch.setenv("MCP_SAFE_PARENT", "kept")
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
+    monkeypatch.setattr(mcp_module, "stdio_client", fake_stdio)
 
-    transport = StdioTransport(
-        command="mcp-server",
-        args=["--stdio"],
-        env={"MCP_EXPLICIT": "configured", "MCP_EXPLICIT_TOKEN": "intentionally-configured"},
-        cwd=None,
-        ctx=PathContext(primary=tmp_path),
+    connection = mcp_module.MCPConnection(
+        "demo",
+        {
+            "command": "mcp-server",
+            "args": ["--stdio"],
+            "env": {"MCP_EXPLICIT": "configured", "MCP_EXPLICIT_TOKEN": "intentionally-configured"},
+        },
+        PathContext(primary=tmp_path),
     )
-    monkeypatch.setattr(transport, "_read_loop", no_read.__get__(transport))
-    monkeypatch.setattr(transport, "_err_loop", no_err.__get__(transport))
+    with pytest.raises(RuntimeError):
+        await connection.start()
 
-    await transport.start()
-    env = captured["env"]
+    env = captured["params"].env
     assert isinstance(env, dict)
     assert "OPENAI_API_KEY" not in env
     assert env["MCP_SAFE_PARENT"] == "kept"
