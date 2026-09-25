@@ -1,9 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { Modal } from "./components/Modal";
 import { useDismiss } from "./lib/useDismiss";
 import type { AddModelBody, ModelsInfo, UpdateModelBody } from "./api";
 import { addModel, deleteModel, fetchModel, fetchModels, switchModel, updateModel } from "./api";
+
+//: Mirrors the design cap on `.model-menu`: the menu never grows past this
+//: even when the trigger has more room above it.
+const MENU_MAX_HEIGHT = 460;
+//: Clearance kept between the menu and the window edges.
+const MENU_MARGIN = 12;
 
 const PROVIDERS = ["bailian", "deepseek", "openox", "rightcode", "openai", "anthropic", "openrouter", "custom"];
 
@@ -199,6 +205,9 @@ export function ModelPicker({
   const [toast, setToast] = useState<{ kind: "success"; text: string } | null>(null);
   const [hasStoredKey, setHasStoredKey] = useState(false);
   const [hovered, setHovered] = useState<{ alias: string; top: number } | null>(null);
+  // Where the menu fits: it is anchored to the trigger, which sits wherever the
+  // composer happens to be, so the room actually available decides its size.
+  const [placement, setPlacement] = useState<{ maxHeight: number; left: number } | null>(null);
   const [editingAlias, setEditingAlias] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuPanelRef = useRef<HTMLDivElement>(null);
@@ -218,6 +227,35 @@ export function ModelPicker({
 
   useDismiss(menuRef, () => setOpen(false), open);
   useDismiss(formatRef, () => setFormatOpen(false), formatOpen);
+
+  const placeMenu = useCallback(() => {
+    const panel = menuPanelRef.current;
+    const anchor = menuRef.current?.getBoundingClientRect();
+    if (!panel || !anchor) return;
+    // Opens upward, so the usable height ends at the top of the window; the
+    // list scrolls inside whatever is left instead of running off-screen.
+    // Floor keeps the header and a row usable on a very short window; below
+    // that the list scrolls rather than the menu spilling off the top.
+    const maxHeight = Math.max(96, Math.min(anchor.top - MENU_MARGIN - 8, MENU_MAX_HEIGHT));
+    const width = panel.offsetWidth;
+    const left = Math.max(
+      MENU_MARGIN,
+      Math.min(anchor.left, window.innerWidth - MENU_MARGIN - width),
+    );
+    setPlacement({ maxHeight, left: left - anchor.left });
+  }, []);
+
+  // Before paint, so the first frame the reader sees is already in place.
+  useLayoutEffect(() => {
+    if (open) placeMenu();
+  }, [open, placeMenu]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => placeMenu();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open, placeMenu]);
 
   useEffect(() => {
     const onFocus = () => fetchModels().then(onChange).catch(() => {});
@@ -408,7 +446,15 @@ export function ModelPicker({
         </button>
 
         {open && (
-          <div className="custom-dropdown-menu model-menu" ref={menuPanelRef}>
+          <div
+            className="custom-dropdown-menu model-menu"
+            ref={menuPanelRef}
+            style={
+              placement
+                ? { maxHeight: placement.maxHeight, left: placement.left }
+                : undefined
+            }
+          >
             <div className="model-menu-list">
               <div className="dropdown-menu-header">
                 <span>切换模型</span>
