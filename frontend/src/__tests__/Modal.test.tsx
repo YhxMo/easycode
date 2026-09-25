@@ -86,6 +86,32 @@ describe("Modal 组件", () => {
     expect(document.activeElement).toBe(c);
   });
 
+  // 回归：弹窗曾直接渲染在触发它的位置，被输入框与聊天卡片的 overflow 裁掉。
+  it("通过 portal 渲染到 body：打开它的容器不再裁剪弹窗", () => {
+    const { container } = render(
+      <div className="chat-card" style={{ overflow: "hidden" }}>
+        <Modal open onClose={vi.fn()} title="添加模型">
+          <p>正文</p>
+        </Modal>
+      </div>,
+    );
+    const dialog = screen.getByRole("dialog");
+    expect(container.contains(dialog)).toBe(false);
+    expect(dialog.parentElement?.parentElement).toBe(document.body);
+  });
+
+  it("只有正文滚动：标题与操作区留在滚动容器之外", () => {
+    render(
+      <Modal open onClose={vi.fn()} title="T" actions={<button type="button">保存</button>}>
+        <p>正文</p>
+      </Modal>,
+    );
+    const body = document.querySelector(".modal-body") as HTMLElement;
+    expect(body.contains(screen.getByText("正文"))).toBe(true);
+    expect(body.contains(screen.getByText("T"))).toBe(false);
+    expect(body.contains(screen.getByRole("button", { name: "保存" }))).toBe(false);
+  });
+
 });
 
 describe("App · 删除会话模态框", () => {

@@ -2908,23 +2908,49 @@
 
 /* ------------------------------------------------------------------- modal */
 
-.modal-backdrop,
+/* A real scrim: fixed over the whole window, above the mobile drawer (310) and
+   the toast (300) so a dialog is never buried under another layer. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: oklch(0% 0 0 / 0.42);
+}
+
 .modal {
   display: flex;
+  flex: none;
   flex-direction: column;
   gap: 12px;
-  width: min(420px, calc(100vw - 40px));
-  max-height: calc(100vh - 48px);
-  overflow-y: auto;
+  width: min(420px, 100%);
   padding: 18px 20px;
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
   background: var(--surface);
   box-shadow: var(--shadow-overlay);
+  /* Second declaration wins where dvh exists; the vh line is the fallback. */
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+}
+
+/* The only scrolling region, so the title above and the actions below stay put
+   while a short window scrolls through the fields. */
+.modal-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .modal h3,
 .modal-title {
+  flex: none;
   margin: 0;
   color: var(--ink);
   font-size: 15px;
@@ -3035,6 +3061,7 @@
 
 .modal-actions {
   display: flex;
+  flex: none;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
