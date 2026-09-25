@@ -91,11 +91,12 @@ function EyeIcon() {
 
 function EyeOffIcon() {
   return (
+    // Same eye as `EyeIcon` with a slash across it: the two states stay the same
+    // shape at a glance, and the slash is what reads at 15px.
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m4.5 4.5 15 15" />
-      <path d="M10.7 5.9c.4-.1.9-.2 1.3-.2 5.8 0 9.5 6.3 9.5 6.3a17.6 17.6 0 0 1-2.5 3.3" />
-      <path d="M6.6 6.7C4 8.7 2.5 12 2.5 12s3.7 6.3 9.5 6.3c1.2 0 2.3-.3 3.3-.7" />
-      <path d="M9.9 10.1a3.1 3.1 0 0 0 4.2 4.2" />
+      <path d="M2.5 12S6.2 5.7 12 5.7 21.5 12 21.5 12 17.8 18.3 12 18.3 2.5 12 2.5 12Z" />
+      <circle cx="12" cy="12" r="3.1" />
+      <path d="m4 4 16 16" />
     </svg>
   );
 }
@@ -627,7 +628,10 @@ export function ModelPicker({
                   aria-label={revealKey ? "隐藏 API Key" : "显示 API Key"}
                   onClick={() => setRevealKey(!revealKey)}
                 >
-                  {revealKey ? <EyeOffIcon /> : <EyeIcon />}
+                  {/* The glyph names the state the field is in: dots are marked by
+                      the struck-through eye, plain text by the open one. The
+                      label names what pressing it does. */}
+                  {revealKey ? <EyeIcon /> : <EyeOffIcon />}
                 </button>
               </span>
             </label>

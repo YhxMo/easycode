@@ -155,6 +155,24 @@ describe("模型表单 · 凭据提示", () => {
     expect("api_key" in body).toBe(false);
   });
 
+  it("眼睛图标跟当前状态一致：圆点配划掉的眼睛，明文才配睁开的眼睛", async () => {
+    const user = userEvent.setup();
+    await openEdit(user);
+
+    // 划掉的那一笔是划掉版与睁开版的唯一区别。
+    const slashCount = (el: HTMLElement) => el.querySelectorAll("path").length;
+
+    const hidden = screen.getByRole("button", { name: "显示 API Key" });
+    expect((screen.getByLabelText("API Key") as HTMLInputElement).type).toBe("password");
+    expect(slashCount(hidden)).toBe(2);
+
+    await user.click(hidden);
+
+    const shown = screen.getByRole("button", { name: "隐藏 API Key" });
+    expect((screen.getByLabelText("API Key") as HTMLInputElement).type).toBe("text");
+    expect(slashCount(shown)).toBe(1);
+  });
+
   it("清除按钮说的是连接凭据：连 Base URL 一起删除", async () => {
     const user = userEvent.setup();
     m.updateModel.mockResolvedValue(MODELS);
