@@ -219,10 +219,6 @@ async def stream_chat_with_approval(
                 yield ("approval", payload)
             elif kind == "agent":
                 ev: AgentEvent = payload
-                if ev.kind == "todo" and ev.content and session is not None:
-                    # The task list is session state: keep the persisted copy in
-                    # step with what the client is being shown.
-                    session.todos = json.loads(ev.content)
                 if ev.kind == "text" and ev.content:
                     buf.append(ev.content)
                     size = sum(len(part) for part in buf)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from easycode.agent.loop import Agent
@@ -52,7 +53,7 @@ def test_update_todos_is_offered_and_needs_no_approval(tmp_path):
     assert needs_approval(call, agent.path_context(), "ask") is False
 
 
-async def test_tool_emits_one_todo_event_after_the_batch(tmp_path):
+async def test_tool_announces_the_list_right_after_its_own_result(tmp_path):
     agent = make_agent(
         tmp_path,
         [
@@ -84,6 +85,81 @@ async def test_tool_emits_one_todo_event_after_the_batch(tmp_path):
     ]
     # the tool result still goes back to the model as a normal tool message
     assert any(ev.kind == "tool_result" for ev in events)
+    # announced after that call's own result, never between a call and its outcome
+    kinds = [ev.kind for ev in events]
+    assert kinds.index("todo") == kinds.index("tool_result") + 1
+    assert agent.todos == [
+        {"text": "读代码", "status": "completed"},
+        {"text": "改代码", "status": "in_progress"},
+    ]
+
+
+async def test_committed_list_survives_a_cancelled_batch(tmp_path):
+    """The reported bug: the list was queued for after the whole batch, so a
+    batch cancelled while waiting on a later approval dropped it even though
+    its own tool result was already a success."""
+    import asyncio
+
+    from tests.conftest import FakeProvider
+    from tests.helpers_history import assert_valid_tool_protocol
+
+    requested = asyncio.Event()
+
+    async def approve(tc, _reason, _key):
+        requested.set()
+        await asyncio.Event().wait()
+
+    agent = Agent(
+        provider=FakeProvider(
+            script=[
+                {
+                    "tool_calls": [
+                        (
+                            "todos",
+                            "update_todos",
+                            {"todos": [{"text": "写代码", "status": "in_progress"}]},
+                        ),
+                        ("write", "write_file", {"path": "out.txt", "content": "x"}),
+                    ]
+                }
+            ]
+        ),
+        registry=build_registry(8000),
+        root=tmp_path,
+        permission_rules={"write_file": "ask"},
+        approval_handler=approve,
+    )
+
+    seen = []
+
+    async def consume():
+        async for event in agent.respond("go"):
+            seen.append(event)
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(requested.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    results = [json.loads(m["content"]) for m in agent.history.messages if m["role"] == "tool"]
+    assert results[0]["status"] == "ok"
+    assert agent.todos == [{"text": "写代码", "status": "in_progress"}]
+    assert [ev.kind for ev in seen if ev.kind == "todo"]
+    assert not (tmp_path / "out.txt").exists()
+    assert_valid_tool_protocol(agent.history.messages)
+
+
+async def test_cleared_list_is_committed_and_announced(tmp_path):
+    agent = make_agent(tmp_path, [])
+    agent.todos = [{"text": "旧的", "status": "pending"}]
+    from easycode.agent.builtin_tools import run_builtin
+    from easycode.agent.loop import ToolCall
+
+    result = await run_builtin(agent, ToolCall(id="c1", name="update_todos", arguments={"todos": []}))
+    assert json.loads(result)["status"] == "ok"
+    assert agent.todos == []
+    assert agent._todos_event("update_todos", result) is not None
 
 
 async def test_invalid_todos_become_a_tool_error_result(tmp_path):
@@ -193,3 +269,71 @@ def test_pin_and_unpin_round_trip(tmp_path):
 def test_pin_unknown_session_is_404(tmp_path):
     client = make_app(tmp_path)
     assert client.post("/api/sessions/nope/pin", json={"pinned": True}).status_code == 404
+
+
+async def test_cancelled_turn_still_persists_the_committed_list(tmp_path):
+    """Cancel while a later call in the same batch waits for approval: the
+    list update_todos already committed must survive the interrupted turn and
+    still be there when the session is reopened."""
+    import asyncio
+
+    import httpx
+
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias="fake-a", **kw):
+        return Agent(
+            provider=FakeProvider(
+                script=[
+                    {
+                        "tool_calls": [
+                            (
+                                "todos",
+                                "update_todos",
+                                {"todos": [{"text": "写代码", "status": "in_progress"}]},
+                            ),
+                            ("write", "write_file", {"path": "out.txt", "content": "x"}),
+                        ]
+                    }
+                ]
+            ),
+            registry=build_registry(8000),
+            root=Path(kw.get("root") or tmp_path),
+            permission_rules={"write_file": "ask"},
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
+    session = store.create(root=str(tmp_path))
+
+    async def scenario() -> str:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as c:
+            chat = asyncio.create_task(
+                c.post("/api/chat", json={"session_id": session.id, "message": "go"})
+            )
+            # wait until the batch reached the approval its second call needs
+            for _ in range(200):
+                await asyncio.sleep(0.01)
+                if session.agent.todos:
+                    break
+            assert session.agent.todos == [{"text": "写代码", "status": "in_progress"}]
+            r = await c.post(f"/api/sessions/{session.id}/cancel")
+            assert r.json()["cancelled"] is True
+            return (await chat).text
+
+    body = await scenario()
+    assert '"type": "cancelled"' in body
+    assert not (tmp_path / "out.txt").exists()
+
+    stored = json.loads((store.dir / f"{session.id}.json").read_text(encoding="utf-8"))
+    assert stored["todos"] == [{"text": "写代码", "status": "in_progress"}]
+
+    reloaded = make_app(tmp_path)
+    assert reloaded.get(f"/api/sessions/{session.id}").json()["todos"] == [
+        {"text": "写代码", "status": "in_progress"}
+    ]

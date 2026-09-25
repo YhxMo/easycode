@@ -88,7 +88,6 @@ class Session:
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
-    todos: list[dict] = field(default_factory=list)  # task list the model maintains
     pinned: bool = False  # kept at the top of the sidebar
     pinned_at: str | None = None  # when it was pinned, for ordering
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
@@ -97,6 +96,11 @@ class Session:
     def permission_mode(self) -> str:
         """The live agent owns the mode; the session only reads it for output."""
         return self.agent.permission_mode
+
+    @property
+    def todos(self) -> list[dict]:
+        """The live agent owns the task list; the session only reads it."""
+        return self.agent.todos
 
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
@@ -321,6 +325,8 @@ class SessionStore:
                     data.get("model_alias") or self.cfg.default_model, **agent_kwargs
                 )
                 agent.permission_mode = data.get("permission_mode") or self.cfg.permission_mode
+                # the task list lives on the agent, so restore it there
+                agent.todos = list(data.get("todos") or [])
                 # The snapshot and the live history must not share one list:
                 # record_exchange replaces the snapshot each turn while the
                 # agent keeps mutating its own history.
@@ -339,7 +345,6 @@ class SessionStore:
                     approval_log=list(data.get("approval_log") or []),
                     user_times=list(data.get("user_times") or []),
                     archived=bool(data.get("archived")),
-                    todos=list(data.get("todos") or []),
                     pinned=bool(data.get("pinned")),
                     pinned_at=data.get("pinned_at"),
                 )
@@ -372,7 +377,7 @@ class SessionStore:
             "approval_log": list(session.approval_log),
             "user_times": list(session.user_times),
             "archived": session.archived,
-            "todos": list(session.todos),
+            "todos": list(session.agent.todos),
         }
         if session.pinned:
             payload["pinned"] = True

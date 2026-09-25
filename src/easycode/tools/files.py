@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ from easycode.workspace import PathContext, ToolGrant
 SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
 MAX_LINE_LEN = 2000
 MAX_READ_BYTES = 50 * 1024
+#: Files larger than this are left out of listings and searches entirely.
+MAX_FILE_BYTES = 2 * 1024 * 1024
 DEFAULT_READ_LIMIT = 2000
 
 
@@ -94,6 +97,9 @@ def read_file(
             "ok",
             {
                 "path": scope.display(p),
+                # The unambiguous target: a display path may be relative to any
+                # of the session's roots, which is not enough to open the file.
+                "absolute_path": str(p),
                 "in_allowed": scope.in_allowed(p),
                 "start_line": 1,
                 "end_line": 0,
@@ -137,6 +143,7 @@ def read_file(
         "ok",
         {
             "path": scope.display(p),
+            "absolute_path": str(p),
             "in_allowed": scope.in_allowed(p),
             "start_line": args.offset,
             "end_line": args.offset + len(selected) - 1,
@@ -368,22 +375,32 @@ def glob(
 
 
 def _iter_files(root: Path, include: str | None = None) -> list[Path]:
+    """Every file under ``root`` the tools may read, in a stable path order.
+
+    Walks directory by directory so ignored directories are pruned before they
+    are entered: ``rglob`` visited every file of ``node_modules`` only to throw
+    it away, which is what made a large tree expensive. The result keeps the
+    previous order (full path, lexicographic), so callers that stop at the
+    first N matches still see the same set.
+    """
     files: list[Path] = []
-    for p in sorted(root.rglob("*")):
-        if not p.is_file() or _is_skipped(p, root):
-            continue
-        if (
-            include
-            and not fnmatch.fnmatch(p.name, include)
-            and not fnmatch.fnmatch(p.relative_to(root).as_posix(), include)
-        ):
-            continue
-        try:
-            if p.stat().st_size > 2 * 1024 * 1024:
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
+        for name in filenames:
+            if name.startswith("._") or name == ".DS_Store":
                 continue
-        except OSError:
-            continue
-        files.append(p)
+            p = Path(dirpath) / name
+            if include and not fnmatch.fnmatch(name, include) and not fnmatch.fnmatch(
+                p.relative_to(root).as_posix(), include
+            ):
+                continue
+            try:
+                if p.stat().st_size > MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            files.append(p)
+    files.sort()
     return files
 
 

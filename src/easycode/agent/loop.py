@@ -112,10 +112,10 @@ class Agent:
     _review_decisions: list[bool] = field(default_factory=list)
     _consecutive_review_denials: int = 0
     _pending_system: list[str] = field(default_factory=list)
-    # (kind, content) pairs a tool wants to report once its batch has finished,
-    # e.g. the task list update_todos committed to. Drained into AgentEvents so
-    # the UI sees them at a point where every tool call already has its result.
-    _pending_events: list[tuple[str, str]] = field(default_factory=list)
+    #: The session's task list. The agent is its owner: ``update_todos``
+    #: replaces it, persistence reads it, and the UI is told about it as it
+    #: changes. No other component keeps a second copy to synchronise.
+    todos: list[dict] = field(default_factory=list)
     mcp_servers: dict[str, dict] = field(default_factory=dict)
     mcp_manager: MCPSessionManager | None = None
     #: True when this agent created its MCP manager (and must close it);
@@ -359,10 +359,6 @@ class Agent:
                 for content in self._pending_system:
                     self.history.add({"role": "system", "content": content})
                 self._pending_system.clear()
-                deferred = list(self._pending_events)
-                self._pending_events.clear()
-            for kind, content in deferred:
-                yield AgentEvent(kind=kind, content=content)
         yield AgentEvent(kind="error", error=f"hit max tool iterations ({MAX_TOOL_ITERATIONS})")
         yield AgentEvent(kind="done")
 
@@ -458,13 +454,31 @@ class Agent:
             result = await self._dispatch_tool(tc, grant=grant)
         if self.permission_mode == PERM_AUTO_REVIEW:
             self._collect_review(tc, result)
+        todo_event = self._todos_event(tc.name, result)
         self.history.add_tool(tc.id, tc.name, self._model_view(tc.name, result))
         yield AgentEvent(kind="tool_result", tool_call=tc, tool_result=result)
+        # The list is already committed in ``self.todos``; this only tells the
+        # UI. It goes out after this call's own result, so the stream never
+        # shows an event between a tool call and its outcome.
+        if todo_event is not None:
+            yield todo_event
         if breaker_tripped:
             yield AgentEvent(
                 kind="error", error="automatic review denial limit reached; turn interrupted"
             )
             yield AgentEvent(kind="done")
+
+    def _todos_event(self, name: str, result: str) -> AgentEvent | None:
+        """The notification for a committed task list, else ``None``."""
+        if name != "update_todos":
+            return None
+        try:
+            data = json.loads(result)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict) or data.get("status") != "ok":
+            return None
+        return AgentEvent(kind="todo", content=json.dumps(self.todos, ensure_ascii=False))
 
     def _collect_review(self, tc: ToolCall, result: str) -> None:
         if change := file_change(tc.name, result):

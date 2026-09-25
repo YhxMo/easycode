@@ -233,3 +233,44 @@ def test_edit_file_escape_blocked(reg, tmp_path):
 def test_empty_tool_selection_exposes_no_tools(reg):
     assert reg.schemas(set()) == []
     assert reg.schemas(None)
+
+
+def test_listing_does_not_enter_ignored_directories(tmp_path, monkeypatch):
+    """Skipped directories are pruned before the walk enters them: the whole
+    point is not paying for their contents at all."""
+    import os
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    for ignored in ("node_modules/dep", ".git", "__pycache__"):
+        d = tmp_path / ignored
+        d.mkdir(parents=True)
+        (d / "hidden.py").write_text("y = 1\n", encoding="utf-8")
+
+    scanned: list[str] = []
+    real_scandir = os.scandir
+
+    def spy(path="."):
+        scanned.append(str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", spy)
+    from easycode.tools.files import _iter_files
+
+    assert [p.name for p in _iter_files(tmp_path)] == ["app.py"]
+    for ignored in ("node_modules", ".git", "__pycache__"):
+        assert not [p for p in scanned if ignored in p], scanned
+
+
+def test_listing_keeps_its_path_order(tmp_path):
+    """Callers stop at the first N results, so the order is part of the contract."""
+    from easycode.tools.files import _iter_files
+
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b" / "z.py").write_text("x\n", encoding="utf-8")
+    (tmp_path / "a" / "y.py").write_text("x\n", encoding="utf-8")
+    (tmp_path / "m.py").write_text("x\n", encoding="utf-8")
+
+    rel = [p.relative_to(tmp_path).as_posix() for p in _iter_files(tmp_path)]
+    assert rel == sorted(rel) == ["a/y.py", "b/z.py", "m.py"]

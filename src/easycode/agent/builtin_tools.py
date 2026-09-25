@@ -236,12 +236,13 @@ async def run_parallel(agent: Agent, tasks: list[TaskSpec], max_parallel: int) -
 async def run_update_todos(agent: Agent, todos: list[TodoItem]) -> str:
     """Runner for the ``update_todos`` tool: publish the session's task list.
 
-    The list is session state, not a file: it is queued as an event the loop
-    emits once the batch of tool results is complete, and the web bridge stores
-    it on the session. Nothing touches the workspace, so it needs no approval.
+    The list is session state, not a file: the agent owns it, so a validated
+    call replaces it outright and the loop then announces the new value to the
+    UI. Nothing touches the workspace, so it needs no approval, and no other
+    component has to write the same state back.
     """
     payload = [{"text": item.text, "status": item.status} for item in todos]
-    agent._pending_events.append(("todo", json.dumps(payload, ensure_ascii=False)))
+    agent.todos = payload
     completed = sum(1 for item in payload if item["status"] == "completed")
     return json.dumps(
         {"status": "ok", "count": len(payload), "completed": completed}, ensure_ascii=False
