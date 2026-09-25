@@ -1,5 +1,5 @@
 // Convert persisted history into chat items.
-import type { ApprovalRecord } from "../api";
+import type { ApprovalRecord, TurnFailure } from "../api";
 import type { Item } from "../types";
 
 export function normalizeToolArgs(value: unknown): Record<string, unknown> {
@@ -51,13 +51,6 @@ export interface HistoryMessage {
   tool_call_id?: string;
   tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
   [key: string]: unknown;
-}
-
-/** A server-produced terminal error, tied to the user turn it ended. */
-export interface TurnFailure {
-  time?: string;
-  message: string;
-  code?: string;
 }
 
 export function historyToItems(
