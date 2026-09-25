@@ -587,6 +587,9 @@
 .sidebar-scroll {
   flex: 1;
   min-height: 0;
+  /* macOS 的滚动条是浮层：不占布局空间，只用 scrollbar-gutter 让不开位置，
+     所以由内容自己让出这一条宽度，行与卡片的背景不再被滚动条压住。 */
+  padding-right: 12px;
   padding-bottom: 8px;
   overflow-y: auto;
   scrollbar-width: thin;
