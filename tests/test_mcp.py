@@ -3,20 +3,35 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 
-def mcp_server_config():
+def mcp_server_config(pidfile: Path | None = None):
     import sys
 
-    return {
-        "demo": {
-            "command": sys.executable,
-            "args": [str(Path(__file__).resolve().parent / "mcp_demo_server.py")],
-        }
+    server = {
+        "command": sys.executable,
+        "args": [str(Path(__file__).resolve().parent / "mcp_demo_server.py")],
     }
+    if pidfile is not None:
+        # The demo server reports its own pid through the configured env, which
+        # is also how the tests see that config ``env`` reaches the child.
+        server["env"] = {"MCP_DEMO_PIDFILE": str(pidfile)}
+    return {"demo": server}
+
+
+def server_pid(pidfile: Path) -> int:
+    return int(pidfile.read_text(encoding="utf-8"))
+
+
+def process_state(pid: int) -> str:
+    """``ps`` state of a pid, or "" once the process is gone."""
+    return subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout.strip()
 
 
 @pytest.mark.asyncio
@@ -174,9 +189,9 @@ async def test_empty_tool_cap_rejects_registered_mcp_tool(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_failed_connect_closes_transport(monkeypatch):
-    """A transport created before a server's init failed must be closed."""
-    from easycode.mcp import MCPSessionManager, StdioTransport
+async def test_failed_connect_closes_connection(monkeypatch):
+    """A connection created before a server's init failed must be closed."""
+    from easycode.mcp import MCPConnection, MCPSessionManager
 
     closed: list[str] = []
 
@@ -184,30 +199,32 @@ async def test_failed_connect_closes_transport(monkeypatch):
         raise RuntimeError("boom")
 
     async def spy_close(self):
-        closed.append(self.command)
+        closed.append(self.name)
 
-    monkeypatch.setattr(StdioTransport, "start", fail_start)
-    monkeypatch.setattr(StdioTransport, "close", spy_close)
+    monkeypatch.setattr(MCPConnection, "start", fail_start)
+    monkeypatch.setattr(MCPConnection, "close", spy_close)
 
     mgr = MCPSessionManager(mcp_server_config())
     await mgr.start()
     assert mgr.tool_schemas() == []
-    assert closed, "the transport created for a failed server must be closed"
+    assert closed, "the connection created for a failed server must be closed"
 
 
 @pytest.mark.asyncio
-async def test_stdio_close_reaps_process_and_reader_tasks():
+async def test_close_reaps_server_process(tmp_path):
     from easycode.mcp import MCPSessionManager
+    from easycode.workspace import PathContext
 
-    mgr = MCPSessionManager(mcp_server_config())
+    pidfile = tmp_path / "mcp.pid"
+    mgr = MCPSessionManager(mcp_server_config(pidfile), PathContext(primary=tmp_path))
     await mgr.start()
-    transport = mgr._sessions["demo"].transport
-    proc = transport.proc
-    assert proc is not None
+    pid = server_pid(pidfile)
+    assert process_state(pid)
+    assert mgr._sessions != {}
 
     await mgr.close()
-    assert proc.returncode is not None, "the MCP child must be reaped"
-    assert all(task.done() for task in transport._tasks)
+    assert process_state(pid) == "", "the MCP child must be reaped"
+    assert mgr._sessions == {}
 
     # Cleanup is idempotent.
     await mgr.close()
@@ -316,12 +333,14 @@ async def test_session_delete_closes_owned_mcp(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
+    pidfile = tmp_path / "mcp.pid"
+
     def factory(alias: str = "fake-a", **_):
         return Agent(
             provider=FakeProvider(model="fake"),
             registry=build_registry(8000),
             root=tmp_path,
-            mcp_servers=mcp_server_config(),
+            mcp_servers=mcp_server_config(pidfile),
         )
 
     store = SessionStore(cfg, tmp_path, factory)
@@ -329,13 +348,12 @@ async def test_session_delete_closes_owned_mcp(tmp_path):
     await sess.agent.init_mcp()
     manager = sess.agent.mcp_manager
     assert manager is not None
-    proc = manager._sessions["demo"].transport.proc
-    assert proc is not None
+    pid = server_pid(pidfile)
 
     assert await store.delete(sess.id) is True
     assert sess.agent.mcp_manager is None
     assert manager._sessions == {}
-    assert proc.returncode is not None
+    assert process_state(pid) == ""
     assert await store.delete(sess.id) is False
 
 
@@ -361,12 +379,14 @@ def test_web_shutdown_closes_owned_mcp(tmp_path):
         {"text": "2"},
     ]
 
+    pidfile = tmp_path / "mcp.pid"
+
     def factory(alias: str = "fake-a", **_):
         return Agent(
             provider=FakeProvider(model="fake", script=list(script)),
             registry=build_registry(8000),
             root=tmp_path,
-            mcp_servers=mcp_server_config(),
+            mcp_servers=mcp_server_config(pidfile),
             permission_mode="allow-all",
         )
 
@@ -379,14 +399,12 @@ def test_web_shutdown_closes_owned_mcp(tmp_path):
         )
         assert r.status_code == 200, r.text
         sess = store.list()[0]
-        manager = sess.agent.mcp_manager
-        assert manager is not None
-        proc = manager._sessions["demo"].transport.proc
-        assert proc is not None
+        assert sess.agent.mcp_manager is not None
+        pid = server_pid(pidfile)
 
     # Context exit ran the lifespan shutdown.
     assert sess.agent.mcp_manager is None
-    assert proc.returncode is not None
+    assert process_state(pid) == ""
 
 
 @pytest.mark.asyncio
@@ -408,12 +426,14 @@ async def test_chat_permission_change_drops_stale_mcp(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
+    pidfile = tmp_path / "mcp.pid"
+
     def factory(alias: str = "fake-a", **_):
         return Agent(
             provider=FakeProvider(model="fake", script=[{"text": "ok"}]),
             registry=build_registry(8000),
             root=tmp_path,
-            mcp_servers=mcp_server_config(),
+            mcp_servers=mcp_server_config(pidfile),
         )
 
     store = SessionStore(cfg, tmp_path, factory)
@@ -423,8 +443,7 @@ async def test_chat_permission_change_drops_stale_mcp(tmp_path):
     await sess.agent.init_mcp()
     manager = sess.agent.mcp_manager
     assert manager is not None
-    proc = manager._sessions["demo"].transport.proc
-    assert proc is not None
+    pid = server_pid(pidfile)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://t"
@@ -437,7 +456,7 @@ async def test_chat_permission_change_drops_stale_mcp(tmp_path):
 
     assert sess.agent.permission_mode == "ask"
     assert sess.agent.mcp_manager is not manager
-    assert proc.returncode is not None
+    assert process_state(pid) == ""
     await sess.agent.close_mcp()
 
 
@@ -500,10 +519,10 @@ def test_mcp_requires_approval_is_fail_closed():
     destructiveHint not True) is auto-allowed. Missing annotations, readOnly
     false, and destructive all require approval; unknown names are not an MCP
     approval scope."""
-    from easycode.mcp import MCPSession, MCPSessionManager
+    from easycode.mcp import MCPConnection, MCPSession, MCPSessionManager
 
     mgr = MCPSessionManager({})
-    sess = MCPSession("demo", None)
+    sess = MCPSession("demo", MCPConnection("demo", {}))
     sess.tools = {
         "mcp__demo__readonly": {
             "name": "readonly",

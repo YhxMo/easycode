@@ -6,6 +6,8 @@ Run: python mcp_demo_server.py
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 
 from mcp import types
 from mcp.server.lowlevel import Server
@@ -55,6 +57,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent] | typ
 
 
 async def main():
+    # Optional handshake with the parent: tests read this file to assert the
+    # child process was reaped, including from a sync TestClient test.
+    pidfile = os.environ.get("MCP_DEMO_PIDFILE")
+    if pidfile:
+        Path(pidfile).write_text(str(os.getpid()), encoding="utf-8")
     async with stdio_server() as (read, write):
         await server.run(read, write, server.create_initialization_options())
 

@@ -81,11 +81,11 @@ async def test_tool_events_are_not_coalesced(tmp_path):
 
 async def test_approval_required_event_carries_manager_reason(tmp_path):
     """The approval prompt uses the reason the loop already computed."""
-    from easycode.mcp import MCPSession, MCPSessionManager, mcp_tool_name
+    from easycode.mcp import MCPConnection, MCPSession, MCPSessionManager, mcp_tool_name
 
     fname = mcp_tool_name("demo", "danger")
     mgr = MCPSessionManager({})
-    sess = MCPSession("demo", None)
+    sess = MCPSession("demo", MCPConnection("demo", {}))
     sess.tools = {
         fname: {
             "name": "danger",
