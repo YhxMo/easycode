@@ -503,6 +503,21 @@ describe("App", () => {
     expect(screen.queryByRole("menu", { name: "选择权限模式" })).toBeNull();
   });
 
+  // 回归：命令/提及/权限浮层都开在聊天卡片里，卡片带 overflow: hidden，窗口一矮
+  // 顶部就被裁掉。composer 把自己上方剩下的空间发布成 --popover-room，浮层用它
+  // 限制高度；jsdom 不排版，所以这里只验证发布的值确实来自测量结果。
+  it("composer 发布 --popover-room，等于上方可用空间（留出边距与间隙）", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: /请求批准/ });
+
+    const box = document.querySelector(".composer") as HTMLElement;
+    expect(box).toBeTruthy();
+    box.getBoundingClientRect = () => ({ top: 300 }) as DOMRect;
+    fireEvent(window, new Event("resize"));
+
+    expect(box.style.getPropertyValue("--popover-room")).toBe("278px");
+  });
+
   it("移动端侧栏抽屉——按钮存在、点击显示、遮罩/Escape 关闭、点会话或新会话关闭", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);

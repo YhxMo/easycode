@@ -1,9 +1,13 @@
+import { useEffect, useRef } from "react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { PermissionPicker } from "../../PermissionPicker";
 import { FIELD_MIN_HEIGHT, useAutoGrow } from "../../lib/useAutoGrow";
 
 /** `.composer-tall .composer-field` starts taller than the docked field. */
 const TALL_MIN_HEIGHT = 72;
+/** Clearance the composer's popovers keep from the top of the window. */
+const POPOVER_GAP = 10;
+const POPOVER_MARGIN = 12;
 
 interface Props {
   /** `tall` is the centred first-run card; `docked` floats over the message stream. */
@@ -64,8 +68,33 @@ export function ComposerBar({
   // heights mirror `.composer-field` / `.composer-tall .composer-field`.
   useAutoGrow(fieldRef, value, variant === "tall" ? TALL_MIN_HEIGHT : FIELD_MIN_HEIGHT);
 
+  // The chat card clips its own overflow, so every panel that opens upward from
+  // here (command, mention, permission) would lose its top on a short window.
+  // The room left above the composer is published as a custom property and each
+  // panel caps its own height with it. Written straight to the node: this has to
+  // keep up with scrolling, and a re-render per scroll frame is not worth it.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const publish = () => {
+      const room = box.getBoundingClientRect().top - POPOVER_GAP - POPOVER_MARGIN;
+      box.style.setProperty("--popover-room", `${Math.max(0, Math.round(room))}px`);
+    };
+    publish();
+    window.addEventListener("resize", publish);
+    window.addEventListener("scroll", publish, true);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(publish);
+    observer?.observe(box);
+    return () => {
+      window.removeEventListener("resize", publish);
+      window.removeEventListener("scroll", publish, true);
+      observer?.disconnect();
+    };
+  }, []);
+
   return (
-    <div className={`composer composer-${variant}`}>
+    <div className={`composer composer-${variant}`} ref={boxRef}>
       <div className="cmd-wrap">
         {menu}
         <textarea
