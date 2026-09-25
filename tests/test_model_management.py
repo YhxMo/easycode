@@ -456,8 +456,8 @@ def test_delete_default_model_falls_back(tmp_path):
     assert r.json()["default"] != "only"
 
 
-def test_switch_model_via_build_provider(tmp_path):
-    """POST /api/models now rebuilds provider with credentials lookup."""
+def test_switch_model_rebuilds_provider_with_credentials(tmp_path):
+    """POST /api/models rebuilds the provider with a credentials lookup."""
     from easycode.credentials import save_credential
 
     save_credential(
@@ -1267,7 +1267,7 @@ async def test_web_approval_timeout_rejects(tmp_path):
     assert not (tmp_path.parent / "p5-t.txt").exists()
 
 
-def test_build_provider_forwards_credentials(tmp_path, monkeypatch):
+def test_provider_kwargs_forwards_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     save_credential(
         Credential(key_id="k1", api_key="sk-cred", base_url="http://x/v1"),
@@ -1278,31 +1278,56 @@ def test_build_provider_forwards_credentials(tmp_path, monkeypatch):
         "keyed", {"model": "gpt-4o", "key_id": "k1", "api_format": "openai_compatible"}
     )
 
-    from easycode.agentfactory import build_provider
+    from easycode.agentfactory import provider_kwargs
 
-    prov = build_provider(cfg, "keyed")
-    assert prov.model == "gpt-4o"
-    assert prov.kwargs["api_key"] == "sk-cred"
-    assert prov.kwargs["api_base"] == "http://x/v1"
-    assert prov.kwargs["custom_llm_provider"] == "openai"
+    model, kwargs = provider_kwargs(cfg, "keyed")
+    assert model == "gpt-4o"
+    assert kwargs["api_key"] == "sk-cred"
+    assert kwargs["api_base"] == "http://x/v1"
+    assert kwargs["custom_llm_provider"] == "openai"
 
     cfg.set_model_alias(
         "prefixed", {"model": "openai/gpt-4o", "key_id": "k1", "api_format": "openai_compatible"}
     )
-    prov2 = build_provider(cfg, "prefixed")
-    assert prov2.model == "gpt-4o"
-    assert prov2.kwargs["custom_llm_provider"] == "openai"
+    model2, kwargs2 = provider_kwargs(cfg, "prefixed")
+    assert model2 == "gpt-4o"
+    assert kwargs2["custom_llm_provider"] == "openai"
 
 
-def test_build_provider_missing_credential_raises(tmp_path, monkeypatch):
+def test_make_agent_binds_provider_from_credentials(tmp_path, monkeypatch):
+    """The assembled agent carries a provider built from the alias credentials."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_credential(
+        Credential(key_id="k1", api_key="sk-cred", base_url="http://x/v1"),
+        path=tmp_path / ".easycode" / "credentials.json",
+    )
+    cfg = Config()
+    cfg.set_model_alias(
+        "keyed", {"model": "gpt-4o", "key_id": "k1", "api_format": "openai_compatible"}
+    )
+
+    from easycode.agentfactory import make_agent
+
+    agent = make_agent(cfg, "keyed", tmp_path)
+    assert agent.provider.model == "gpt-4o"
+    assert agent.provider.kwargs["api_key"] == "sk-cred"
+    assert agent.provider.kwargs["api_base"] == "http://x/v1"
+    assert agent.provider.kwargs["custom_llm_provider"] == "openai"
+    assert agent.model_alias == "keyed"
+
+
+def test_provider_kwargs_missing_credential_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = Config()
     cfg.set_model_alias("keyed", {"model": "gpt-4o", "key_id": "nope"})
 
-    from easycode.agentfactory import build_provider
+    from easycode.agentfactory import make_agent, provider_kwargs
 
     with pytest.raises(ValueError, match="credential 'nope' not found"):
-        build_provider(cfg, "keyed")
+        provider_kwargs(cfg, "keyed")
+    # the same failure surfaces from the production assembly path
+    with pytest.raises(ValueError, match="credential 'nope' not found"):
+        make_agent(cfg, "keyed", tmp_path)
 
 
 def test_apply_api_format_routing():
@@ -1333,7 +1358,7 @@ def test_apply_api_format_overrides_model_prefix():
     )
 
 
-def test_build_provider_forwards_api_format(tmp_path, monkeypatch):
+def test_provider_kwargs_forwards_api_format(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     save_credential(
         Credential(key_id="k1", api_key="sk-cred", base_url="http://x/v1"),
@@ -1344,21 +1369,21 @@ def test_build_provider_forwards_api_format(tmp_path, monkeypatch):
         "keyed", {"model": "gpt-5", "key_id": "k1", "api_format": "openai_responses"}
     )
 
-    from easycode.agentfactory import build_provider
+    from easycode.agentfactory import provider_kwargs
 
-    prov = build_provider(cfg, "keyed")
-    assert prov.model == "responses/gpt-5"
-    assert prov.kwargs["api_key"] == "sk-cred"
-    assert prov.kwargs["api_base"] == "http://x/v1"
-    assert prov.kwargs["custom_llm_provider"] == "openai"
+    model, kwargs = provider_kwargs(cfg, "keyed")
+    assert model == "responses/gpt-5"
+    assert kwargs["api_key"] == "sk-cred"
+    assert kwargs["api_base"] == "http://x/v1"
+    assert kwargs["custom_llm_provider"] == "openai"
 
     # prefixed model: the format wins over the stored prefix
     cfg.set_model_alias(
         "prefixed", {"model": "openai/gpt-5", "key_id": "k1", "api_format": "openai_responses"}
     )
-    prov2 = build_provider(cfg, "prefixed")
-    assert prov2.model == "responses/gpt-5"
-    assert prov2.kwargs["custom_llm_provider"] == "openai"
+    model2, kwargs2 = provider_kwargs(cfg, "prefixed")
+    assert model2 == "responses/gpt-5"
+    assert kwargs2["custom_llm_provider"] == "openai"
 
     # api_format wins over the credential provider for unprefixed models
     save_credential(
@@ -1368,12 +1393,12 @@ def test_build_provider_forwards_api_format(tmp_path, monkeypatch):
     cfg.set_model_alias(
         "gemini", {"model": "gemini-2.0-flash", "key_id": "k2", "api_format": "gemini"}
     )
-    prov3 = build_provider(cfg, "gemini")
-    assert prov3.model == "gemini-2.0-flash"
-    assert prov3.kwargs["custom_llm_provider"] == "gemini"
+    model3, kwargs3 = provider_kwargs(cfg, "gemini")
+    assert model3 == "gemini-2.0-flash"
+    assert kwargs3["custom_llm_provider"] == "gemini"
 
 
-def test_build_provider_format_overrides_prefixed_model(tmp_path, monkeypatch):
+def test_provider_kwargs_format_overrides_prefixed_model(tmp_path, monkeypatch):
     """deepseek-prefixed model + anthropic format must speak Anthropic, not DeepSeek."""
     monkeypatch.setenv("HOME", str(tmp_path))
     save_credential(
@@ -1385,12 +1410,12 @@ def test_build_provider_format_overrides_prefixed_model(tmp_path, monkeypatch):
         "ds", {"model": "deepseek/deepseek-v4-flash", "key_id": "k1", "api_format": "anthropic"}
     )
 
-    from easycode.agentfactory import build_provider
+    from easycode.agentfactory import provider_kwargs
 
-    prov = build_provider(cfg, "ds")
-    assert prov.model == "deepseek-v4-flash"
-    assert prov.kwargs["custom_llm_provider"] == "anthropic"
-    assert prov.kwargs["api_base"] == "https://api.deepseek.com"
+    model, kwargs = provider_kwargs(cfg, "ds")
+    assert model == "deepseek-v4-flash"
+    assert kwargs["custom_llm_provider"] == "anthropic"
+    assert kwargs["api_base"] == "https://api.deepseek.com"
 
 
 def test_delete_builtin_alias_stays_deleted(tmp_path):

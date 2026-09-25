@@ -93,12 +93,6 @@ def provider_kwargs(cfg: Config, alias: str) -> tuple[str, dict]:
     return model, kwargs
 
 
-def build_provider(cfg: Config, alias: str) -> LiteLLMProvider:
-    """Build a provider using the model's explicit credential profile."""
-    model, kwargs = provider_kwargs(cfg, alias)
-    return LiteLLMProvider(model, **kwargs)
-
-
 def bind_agent(agent: Agent, cfg: Config, alias: str) -> Provider:
     """Bind provider/summarizer/reviewer/limits for ``alias`` onto ``agent``.
 
