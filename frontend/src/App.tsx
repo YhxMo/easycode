@@ -752,6 +752,16 @@ export default function App() {
   const tabs: OpenTab[] =
     currentId === null ? [{ id: DRAFT_KEY, title: "新会话", draft: true }, ...sessionTabs] : sessionTabs;
 
+  // Selecting the tab that is already open changes nothing: the draft tab in
+  // particular must never be mistaken for a stored session.
+  const selectTab = useCallback(
+    (id: string | null) => {
+      if (id === currentId) return;
+      openSession(id);
+    },
+    [currentId, openSession],
+  );
+
   const closeTab = useCallback(
     (id: string) => {
       const index = openTabs.indexOf(id);
@@ -1104,7 +1114,7 @@ export default function App() {
               tabs={tabs}
               currentId={currentId}
               activity={activity}
-              onSelect={openSession}
+              onSelect={selectTab}
               onClose={closeTab}
               onNew={newSession}
             />

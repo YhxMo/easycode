@@ -379,3 +379,18 @@ describe("App · 侧栏会话行", () => {
     expect(screen.getByText("归档会话")).toBeTruthy();
   });
 });
+
+describe("App · 草稿标签", () => {
+  it("点击草稿标签不会把草稿键当成会话去加载", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("会话A");
+
+    // The draft tab is already the open view: selecting it changes nothing and
+    // must not request a session named after the draft key.
+    await user.click(screen.getByRole("tab", { name: "新会话" }));
+    expect(m.fetchSession).not.toHaveBeenCalled();
+    expect(screen.queryByText(/会话加载失败/)).toBeNull();
+    expect(activeTitle()).toBe("新会话");
+  });
+});

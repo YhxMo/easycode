@@ -11,7 +11,8 @@ interface Props {
   tabs: OpenTab[];
   currentId: string | null;
   activity: StreamActivityMap;
-  onSelect: (id: string) => void;
+  /** `null` selects the draft: it is a view, not a stored session. */
+  onSelect: (id: string | null) => void;
   onClose: (id: string) => void;
   onNew: () => void;
 }
@@ -32,7 +33,7 @@ export function TabBar({ tabs, currentId, activity, onSelect, onClose, onNew }: 
                 aria-selected={active}
                 className="tab-label"
                 title={tab.title}
-                onClick={() => onSelect(tab.id)}
+                onClick={() => onSelect(tab.draft ? null : tab.id)}
               >
                 <span className={`tab-run${act?.busy ? " on" : ""}`} aria-hidden="true" />
                 <span className="tab-title">{tab.title}</span>
