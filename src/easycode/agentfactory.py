@@ -180,5 +180,10 @@ def make_agent(
         # Restoring a session must not fail because the model currently has no
         # credential; the binding is retried on the first turn (routes 422).
         defer_binding(agent, cfg, model_alias)
-    agent.subagent_factory = lambda alias: make_agent(cfg, alias, root, secondary_roots)
+    # Delegated work runs where its parent runs: the roots are read when a
+    # subtask is built, so a session that changed its workspace (or its
+    # secondary directories) does not hand the subtask the old ones.
+    agent.subagent_factory = lambda alias: make_agent(
+        cfg, alias, agent.root, list(agent.secondary_roots)
+    )
     return agent

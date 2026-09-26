@@ -542,3 +542,51 @@ def test_make_agent_carries_the_configured_iteration_limit_to_subagents(tmp_path
     )
     child = make_subagent(parent, parent.agents.get("writer"))
     assert child.max_tool_iterations == 7
+
+
+def test_subtasks_follow_the_agent_into_its_new_workspace(tmp_path):
+    """Delegated work inherits the agent's *current* workspace.
+
+    The subagent factory is built with the agent, but a session that moved
+    afterwards must not hand its subtasks the directories it left behind.
+    """
+    from easycode.agentfactory import make_agent
+    from easycode.config import Config
+    from easycode.credentials import Credential, save_credential
+
+    proj_a = tmp_path / "a"
+    proj_b = tmp_path / "b"
+    sec_a = tmp_path / "sec_a"
+    sec_b = tmp_path / "sec_b"
+    for d in (proj_a, proj_b, sec_a, sec_b):
+        d.mkdir()
+    (tmp_path / "easycode.config.json").write_text(
+        json.dumps(
+            {
+                "default_model": "fake",
+                "models": {
+                    "fake": {
+                        "model": "openai/fake",
+                        "api_format": "openai_compatible",
+                        "key_id": "k",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    save_credential(Credential(key_id="k", api_key="sk-test"))
+    cfg = Config.load(start=tmp_path)
+    cfg.root = proj_a
+
+    agent = make_agent(cfg, "fake", proj_a, [sec_a])
+    sub = agent.subagent_factory("fake")
+    assert sub.root == proj_a
+    assert [str(p) for p in sub.secondary_roots] == [str(sec_a)]
+
+    # The session moves: everything it delegates from now on runs where it does.
+    agent.root = proj_b
+    agent.secondary_roots = [sec_b]
+    moved = agent.subagent_factory("fake")
+    assert moved.root == proj_b
+    assert [str(p) for p in moved.secondary_roots] == [str(sec_b)]
