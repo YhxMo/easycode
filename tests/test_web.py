@@ -219,11 +219,123 @@ def test_session_delete_reports_file_failure_and_can_retry(tmp_path, monkeypatch
         assert client.delete(f"/api/sessions/{sid}").status_code == 404
 
 
+def test_create_blank_session_is_listed_and_blank_deletable(tmp_path):
+    """「新会话」creates the conversation before anything is sent.
+
+    It is an ordinary empty session from that moment — listed, on disk, and
+    still blank — and closing its tab deletes it for good.
+    """
+    client = make_app(tmp_path)
+    with client:
+        r = client.post("/api/sessions", json={})
+        assert r.status_code == 200, r.text
+        created = r.json()
+        assert created["title"] == "新会话"
+        assert created["started"] is False
+        session_file = tmp_path / ".easycode" / "sessions" / f"{created['id']}.json"
+        assert session_file.exists()
+
+        listed = client.get("/api/sessions").json()
+        assert [s["id"] for s in listed] == [created["id"]]
+        assert listed[0]["started"] is False
+        detail = client.get(f"/api/sessions/{created['id']}").json()
+        assert detail["messages"] == []
+        assert detail["todos"] == []
+
+        closed = client.delete(f"/api/sessions/{created['id']}?blank_only=1")
+        assert closed.status_code == 200
+        assert closed.json()["deleted"] is True
+        assert client.get("/api/sessions").json() == []
+        assert not session_file.exists()
+        # Nothing left to remove is not an error: the caller only closes a view.
+        again = client.delete(f"/api/sessions/{created['id']}?blank_only=1")
+        assert again.status_code == 200
+        assert again.json()["deleted"] is False
+
+
+def test_create_blank_session_inherits_the_project_binding(tmp_path):
+    """A blank conversation created for a project already carries its secondary
+    directories, the same way a chat-created session would get them."""
+    primary = tmp_path / "p"
+    sec = tmp_path / "sec"
+    primary.mkdir()
+    sec.mkdir()
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = primary
+    cfg.workspace_projects = [{"root": str(primary), "secondary": [str(sec)]}]
+
+    def factory(alias: str, **kw):
+        return Agent(
+            provider=FakeProvider(script=[]),
+            registry=build_registry(8000),
+            root=Path(kw.get("root") or primary),
+            secondary_roots=[Path(p) for p in (kw.get("secondary_roots") or [])],
+        )
+
+    store = SessionStore(cfg, primary, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    with client:
+        created = client.post("/api/sessions", json={"root": str(primary)}).json()
+        assert created["root"] == str(primary)
+        assert created["secondary_roots"] == [str(sec)]
+
+
+def test_create_blank_session_rejects_an_invalid_root(tmp_path):
+    """A root the rules refuse is a 422 with no session left behind."""
+    client = make_app(tmp_path)
+    with client:
+        (tmp_path / ".git").mkdir()
+        r = client.post("/api/sessions", json={"root": str(tmp_path / ".git")})
+        assert r.status_code == 422
+        assert client.get("/api/sessions").json() == []
+
+
+def test_blank_delete_keeps_a_session_that_started(tmp_path):
+    """The blank delete is decided by the server: a session whose turn has begun
+    stays exactly where it is, so only the view closes."""
+    client = make_app(tmp_path)
+    with client:
+        client.post("/api/chat", json={"message": "session one"})
+        sid = client.get("/api/sessions").json()[0]["id"]
+
+        r = client.delete(f"/api/sessions/{sid}?blank_only=1")
+        assert r.status_code == 200
+        assert r.json()["deleted"] is False
+        listed = client.get("/api/sessions").json()
+        assert [s["id"] for s in listed] == [sid]
+        assert listed[0]["started"] is True
+
+        # An explicit delete still removes it.
+        assert client.delete(f"/api/sessions/{sid}").json()["deleted"] is True
+        assert client.get("/api/sessions").json() == []
+
+
+@pytest.mark.asyncio
+async def test_blank_delete_leaves_a_running_turn_alone(tmp_path):
+    """A turn in flight means the session has already started: closing its tab
+    must not cancel that turn to find out."""
+    import httpx
+
+    app = make_app(tmp_path).app
+    store = app.state.store
+    sess = store.create()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        async with sess._lock:
+            response = await client.delete(f"/api/sessions/{sess.id}?blank_only=1")
+        assert response.status_code == 200
+        assert response.json()["deleted"] is False
+    assert store.get(sess.id) is sess
+    assert sess._lock.locked() is False
+
+
 def test_empty_message_rejected(tmp_path):
     client = make_app(tmp_path)
     r = client.post("/api/chat", json={"message": "   "})
     assert r.status_code == 422
-
 
 def test_session_persistence(tmp_path, monkeypatch):
     """Session JSON survives store reload (browser refresh)."""

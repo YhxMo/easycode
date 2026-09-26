@@ -35,14 +35,29 @@
     "ok": {
       "status": "ok",
       "matches": [
-        { "file": "src/app.ts", "line": 1, "text": "export const a = 1;" },
-        { "file": "src/app.ts", "line": 2, "text": "export const b = 2;" }
+        {
+          "file": "src/app.ts",
+          "line": 1,
+          "text": "export const a = 1;"
+        },
+        {
+          "file": "src/app.ts",
+          "line": 2,
+          "text": "export const b = 2;"
+        }
       ],
       "truncated": false
     },
     "secondary": {
       "status": "ok",
-      "matches": [{ "file": "note.md", "line": 3, "text": "hello", "root": "/tmp/extra" }],
+      "matches": [
+        {
+          "file": "note.md",
+          "line": 3,
+          "text": "hello",
+          "root": "/tmp/extra"
+        }
+      ],
       "truncated": false
     },
     "empty": {
@@ -54,13 +69,22 @@
   "glob": {
     "ok": {
       "status": "ok",
-      "matches": ["README.md", "src/app.ts"],
+      "matches": [
+        "README.md",
+        "src/app.ts"
+      ],
       "count": 2,
       "truncated": false
     },
     "secondary": {
       "status": "ok",
-      "matches": ["README.md", { "path": "note.md", "root": "/tmp/extra" }],
+      "matches": [
+        "README.md",
+        {
+          "path": "note.md",
+          "root": "/tmp/extra"
+        }
+      ],
       "count": 2,
       "truncated": false
     },
@@ -75,6 +99,7 @@
     "applied": {
       "status": "ok",
       "path": "src/app.ts",
+      "absolute_path": "/tmp/ws/src/app.ts",
       "applied": true,
       "diff": "--- src/app.ts\n+++ src/app.ts\n@@ -1,1 +1,1 @@\n-export const a = 1;\n+export const a = 2;\n",
       "message": "edit applied"
@@ -82,6 +107,7 @@
     "dry_run": {
       "status": "ok",
       "path": "src/app.ts",
+      "absolute_path": "/tmp/ws/src/app.ts",
       "dry_run": true,
       "message": "preview only, file unchanged",
       "diff": "--- src/app.ts\n+++ src/app.ts\n@@ -1,1 +1,1 @@\n-export const a = 1;\n+export const a = 2;\n"

@@ -30,6 +30,26 @@ class Skill:
     source: str = "project"  # project > user on name conflict
 
 
+def personal_skills(user_dir: Path | None = None) -> list[Skill]:
+    """Skills in the personal directory (``~/.easycode/skills`` by default)."""
+    root = user_dir or Path.home() / ".easycode" / "skills"
+    if not root.is_dir():
+        return []
+    return [skill for skill in (_load_skill(d, "user") for d in sorted(root.iterdir())) if skill]
+
+
+def project_skills(roots: list[Path]) -> list[Skill]:
+    """Skills defined under these roots' ``.easycode/skills``, in root order."""
+    out: list[Skill] = []
+    for root in roots:
+        proj = root / ".easycode" / "skills"
+        for d in sorted(proj.iterdir()) if proj.is_dir() else []:
+            skill = _load_skill(d, source="project")
+            if skill:
+                out.append(skill)
+    return out
+
+
 class SkillRegistry:
     """Skills resolved from project + personal directories."""
 
@@ -39,17 +59,8 @@ class SkillRegistry:
     @classmethod
     def discover(cls, roots: list[Path], user_dir: Path | None = None) -> SkillRegistry:
         reg = cls()
-        user = (user_dir or Path.home() / ".easycode" / "skills")
-        for d in sorted(user.iterdir()) if user.is_dir() else []:
-            skill = _load_skill(d, source="user")
-            if skill:
-                reg._skills[skill.name] = skill
-        for root in roots:
-            proj = root / ".easycode" / "skills"
-            for d in sorted(proj.iterdir()) if proj.is_dir() else []:
-                skill = _load_skill(d, source="project")
-                if skill:
-                    reg._skills[skill.name] = skill  # project overrides user
+        for skill in [*personal_skills(user_dir), *project_skills(roots)]:
+            reg._skills[skill.name] = skill  # project overrides user
         return reg
 
     def get(self, name: str) -> Skill | None:

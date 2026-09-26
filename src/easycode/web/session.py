@@ -86,6 +86,11 @@ class Session:
     always_allow: list[str] = field(default_factory=list)  # approval_key() scopes, persists
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
     user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
+    #: Bounded records of the file tools this conversation ran, in call order.
+    #: They outlive the message history they came from (see ``web/artifacts``),
+    #: so the pane can still show the context and diffs of earlier turns after a
+    #: refresh or a context compaction.
+    artifacts: list[dict] = field(default_factory=list)
     #: Terminal errors the server produced, keyed by the user turn that raised
     #: them (``{"time", "message", "code"}``). A user stop and a dropped browser
     #: connection are not failures and never land here.
@@ -115,6 +120,16 @@ class Session:
         """The live agent owns the task list; the session only reads it."""
         return self.agent.todos
 
+    @property
+    def is_blank(self) -> bool:
+        """True while no turn has begun in this session.
+
+        A turn stamps ``user_times`` as it starts, before the model answers, so
+        a stopped or failed turn still counts as started: the definition is
+        "nothing has run here", which is what the blank-delete relies on.
+        """
+        return not self.messages and not self.user_times
+
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
         evt = self.cancel_event
@@ -122,6 +137,22 @@ class Session:
             return False
         evt.set()
         return True
+
+    def record_artifact(self, tool_call, result: str | None) -> None:
+        """Keep one file-tool result for the pane (trimmed, never the whole output)."""
+        from easycode.web.artifacts import build_record
+
+        if not result:
+            return
+        record = build_record(
+            tool_call.id, tool_call.name, tool_call.arguments, result, self._resolve_target
+        )
+        if record is not None:
+            self.artifacts.append(record)
+
+    def _resolve_target(self, display: str) -> Path:
+        """The canonical file a display path names, as of this session's roots."""
+        return self.agent.path_context().resolve(display)
 
     def record_turn_failure(self, message: str, code: str | None) -> None:
         """Attach a server-produced terminal error to the current user turn.
@@ -150,6 +181,7 @@ class Session:
             "sandbox_mode": policy.sandbox_mode,
             "approval_policy": policy.approval_policy,
             "approvals_reviewer": policy.approvals_reviewer,
+            "started": not self.is_blank,
         }
         if self.root:
             out["root"] = self.root
@@ -316,7 +348,7 @@ class SessionStore:
             await self.delete(sid)
         return len(ids)
 
-    async def delete(self, session_id: str) -> bool:
+    async def delete(self, session_id: str, blank_only: bool = False) -> bool:
         """Delete a session: stop its turn, wait it out, then release resources.
 
         Cancellation is signalled first, then the session lock is held while the
@@ -325,12 +357,22 @@ class SessionStore:
         gone), so a successful delete leaves neither store entry nor file. A
         file-removal failure propagates and the session stays tracked and
         retryable; the session-owned MCP process is released afterwards.
+
+        With ``blank_only`` the session is removed only while no turn has begun:
+        a session that started one (or is running one right now) is left exactly
+        as it is, and the caller closes only the view. Checking the lock first
+        matters — cancelling a live turn to discover it had started would kill
+        work the caller only meant to inspect.
         """
         sess = self.get(session_id)
         if sess is None:
             return False
+        if blank_only and sess._lock.locked():
+            return False
         sess.cancel_stream()
         async with sess._lock:
+            if blank_only and not sess.is_blank:
+                return False
             self._path(session_id).unlink(missing_ok=True)
             self._sessions.pop(session_id, None)
         try:
@@ -362,6 +404,13 @@ class SessionStore:
                 # agent keeps mutating its own history.
                 messages = list(data.get("messages") or [])
                 agent.history.messages = list(messages)
+                # A conversation written before records existed is re-read from
+                # its surviving history: what compaction already dropped is gone.
+                artifacts = list(data.get("artifacts") or [])
+                if not artifacts:
+                    from easycode.web.artifacts import records_from_messages
+
+                    artifacts = records_from_messages(messages, agent.path_context().resolve)
                 sess = Session(
                     id=data["id"],
                     title=data.get("title", "新会话"),
@@ -373,6 +422,7 @@ class SessionStore:
                     always_allow=list(data.get("always_allow") or []),
                     approval_log=list(data.get("approval_log") or []),
                     user_times=list(data.get("user_times") or []),
+                    artifacts=artifacts,
                     turn_failures=list(data.get("turn_failures") or []),
                     archived=bool(data.get("archived")),
                     pinned=bool(data.get("pinned")),
@@ -419,6 +469,8 @@ class SessionStore:
         # Omitted while empty so a session that never failed keeps its old shape.
         if session.turn_failures:
             payload["turn_failures"] = list(session.turn_failures)
+        if session.artifacts:
+            payload["artifacts"] = list(session.artifacts)
         if session.root:
             payload["root"] = session.root
         if session.secondary_roots:

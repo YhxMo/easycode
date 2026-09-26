@@ -234,6 +234,9 @@ def write_file(
         "ok",
         {
             "path": scope.display(p),
+            # The unambiguous target, as ``read_file`` reports it: a display path
+            # may be relative to any of the session's roots.
+            "absolute_path": str(p),
             "in_allowed": True,
             "bytes": len(args.content.encode("utf-8")),
             "diff": make_diff(scope.display(p), before, args.content),
@@ -290,6 +293,7 @@ def edit_file(
             "ok",
             {
                 "path": display,
+                "absolute_path": str(p),
                 "dry_run": True,
                 "message": "preview only, file unchanged",
                 "diff": diff,
@@ -300,6 +304,7 @@ def edit_file(
         "ok",
         {
             "path": display,
+            "absolute_path": str(p),
             "applied": True,
             "diff": diff,
             "message": "edit applied",

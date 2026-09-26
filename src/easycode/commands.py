@@ -64,6 +64,55 @@ def build_registry(
     return reg
 
 
+def skill_command(skill) -> Command:
+    """Expose one skill as the ``/name`` command that loads it."""
+    return Command(
+        name=skill.name,
+        description=skill.description,
+        kind="skill",
+        body=skill.body,
+        arg_hint="",
+        source=skill.source,
+    )
+
+
+def read_template(path: Path, source: str) -> Command | None:
+    """One user markdown template, or None when the file cannot be used."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        meta, body = parse_spec(text, default_name=path.stem, required=("description",))
+    except Exception as exc:  # noqa: BLE001 - one bad file must not break discovery
+        log.warning("skip command file %s: %s", path, exc)
+        return None
+    return Command(
+        name=str(meta["name"]).strip().lower(),
+        description=str(meta["description"]).strip(),
+        kind="template",
+        body=body.strip(),
+        arg_hint=str(meta.get("argument-hint") or meta.get("arg_hint") or "").strip(),
+        source=source,
+    )
+
+
+def personal_commands(user_dir: Path | None = None) -> list[Command]:
+    """Personal prompt templates (``~/.easycode/commands`` by default)."""
+    root = user_dir or Path.home() / ".easycode" / "commands"
+    if not root.is_dir():
+        return []
+    return [cmd for cmd in (read_template(p, "user") for p in sorted(root.glob("*.md"))) if cmd]
+
+
+def project_commands(roots: list[Path]) -> list[Command]:
+    """Prompt templates under these roots' ``.easycode/commands``."""
+    out: list[Command] = []
+    for root in roots:
+        proj = root / ".easycode" / "commands"
+        if not proj.is_dir():
+            continue
+        out += [cmd for cmd in (read_template(p, "project") for p in sorted(proj.glob("*.md"))) if cmd]
+    return out
+
+
 class CommandRegistry:
     def __init__(self) -> None:
         self._commands: dict[str, Command] = {}
@@ -109,32 +158,15 @@ class CommandRegistry:
         for skill in skills.list():
             if skill.name in self._reserved:
                 continue
-            self._commands[skill.name] = Command(
-                name=skill.name,
-                description=skill.description,
-                kind="skill",
-                body=skill.body,
-                arg_hint="",
-                source=skill.source,
-            )
+            self._commands[skill.name] = skill_command(skill)
 
     def _add_template(self, path: Path, source: str) -> None:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-            meta, body = parse_spec(text, default_name=path.stem, required=("description",))
-        except Exception as exc:  # noqa: BLE001 - one bad file must not break discovery
-            log.warning("skip command file %s: %s", path, exc)
+        cmd = read_template(path, source)
+        if cmd is None:
             return
-        name = str(meta["name"]).strip().lower()
+        name = cmd.name
         if name in self._reserved:
             return
         if name in self._commands and self._commands[name].kind == "skill":
             return  # skill takes priority
-        self._commands[name] = Command(
-            name=name,
-            description=str(meta["description"]).strip(),
-            kind="template",
-            body=body.strip(),
-            arg_hint=str(meta.get("argument-hint") or meta.get("arg_hint") or "").strip(),
-            source=source,
-        )
+        self._commands[name] = cmd

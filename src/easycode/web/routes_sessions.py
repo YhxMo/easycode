@@ -13,6 +13,14 @@ class PermissionRequest(BaseModel):
     mode: str
 
 
+class CreateSessionRequest(BaseModel):
+    """A new, empty session. ``secondary_roots=None`` inherits the project binding."""
+
+    root: str | None = None
+    secondary_roots: list[str] | None = None
+    permission_mode: str | None = None
+
+
 class ArchiveRequest(BaseModel):
     archived: bool = True
 
@@ -27,6 +35,36 @@ class ApprovalRequest(BaseModel):
 
 
 def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker) -> None:
+    @app.post("/api/sessions")
+    async def create_session(req: CreateSessionRequest) -> dict:
+        """Create an empty session without sending anything.
+
+        The Web UI opens a conversation as soon as the user asks for one, so the
+        tab it shows is backed by a real session from the start. Root rules are
+        the same as a chat-created session's: an invalid root or secondary entry
+        is a 422, and a failed agent build (e.g. no usable default model) leaves
+        no session behind.
+        """
+        from easycode.policy import permission_parse
+        from easycode.web.routes_workspaces import _normalise_root
+
+        kwargs: dict = {}
+        if req.root:
+            kwargs["root"] = _normalise_root(req.root)
+        if req.secondary_roots is not None:
+            kwargs["secondary_roots"] = req.secondary_roots
+        if req.permission_mode:
+            try:
+                kwargs["permission_mode"] = permission_parse(req.permission_mode)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        try:
+            async with store.config_change():
+                sess = store.create(**kwargs)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return sess.summary
+
     @app.get("/api/sessions")
     def list_sessions(archived: int = 0) -> list[dict]:
         """Session summaries. ``archived=1`` returns only archived sessions."""
@@ -38,8 +76,8 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         if sess is None:
             raise HTTPException(404, "session not found")
         # ``messages`` is the last completed-turn snapshot (stable while a turn
-        # runs); ``approvals``/``user_times``/``turn_failures`` are live
-        # per-session lists.
+        # runs); ``approvals``/``user_times``/``turn_failures``/``artifacts`` are
+        # live per-session lists.
         return {
             **sess.summary,
             "messages": sess.messages,
@@ -47,19 +85,47 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
             "user_times": list(sess.user_times),
             "turn_failures": list(sess.turn_failures),
             "todos": list(sess.todos),
+            "artifacts": list(sess.artifacts),
         }
 
+    @app.get("/api/sessions/{session_id}/changes")
+    async def session_changes(session_id: str) -> dict:
+        """Live uncommitted changes in the repositories this session runs in.
+
+        Read from disk on every request: it describes the working tree as it is
+        now, including whatever was already uncommitted before this conversation
+        started, so it is never presented as the session's own work.
+        """
+        import asyncio
+
+        from easycode.web.git import session_changes as collect
+
+        sess = store.get(session_id)
+        if sess is None:
+            raise HTTPException(404, "session not found")
+        return await asyncio.to_thread(collect, sess)
+
     @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: str) -> dict:
+    async def delete_session(session_id: str, blank_only: int = 0) -> dict:
+        """Delete a session; ``blank_only=1`` refuses one that started a turn.
+
+        The blank form is what closing an untouched tab calls: the answer says
+        whether the session was actually removed, and "nothing to remove" — the
+        session is gone, or it has already begun a turn — is reported as such
+        rather than as an error, because the caller only closes a view either
+        way.
+        """
         try:
-            deleted = await store.delete(session_id)
+            deleted = await store.delete(session_id, blank_only=bool(blank_only))
         except OSError as exc:
             # The session file is still on disk: report a failure the caller can
             # retry instead of a success that would resurrect on reload.
             raise HTTPException(500, f"删除会话文件失败: {exc}") from exc
+        if not deleted and blank_only:
+            return {"ok": True, "deleted": False}
         if not deleted:
             raise HTTPException(404, "session not found")
-        return {"ok": True}
+        return {"ok": True, "deleted": True}
 
     @app.post("/api/sessions/{session_id}/archive")
     async def archive_session(session_id: str, req: ArchiveRequest) -> dict:

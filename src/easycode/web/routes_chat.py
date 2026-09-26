@@ -25,7 +25,7 @@ from easycode.web.session import Session, SessionStore
 from easycode.workspace import resolve_workspace_path, root_error
 
 if TYPE_CHECKING:
-    from easycode.commands import CommandRegistry
+    from easycode.commands import Command, CommandRegistry
 
 
 class ChatRequest(BaseModel):
@@ -34,18 +34,10 @@ class ChatRequest(BaseModel):
     secondary_roots: list[str] | None = None
     permission_mode: str | None = None
     root: str | None = None
-
-
-class CommandsRequest(BaseModel):
-    """Command-discovery scope: an existing session, or a new-session draft.
-
-    For a draft, ``secondary_roots=None`` inherits the project's binding and an
-    explicit ``[]`` means "no secondary roots" (the same contract chat uses).
-    """
-
-    session_id: str | None = None
-    root: str | None = None
-    secondary_roots: list[str] | None = None
+    #: Id of the entry the user picked in the ``/`` menu. When present the
+    #: command is resolved from the registered projects rather than from the
+    #: session's own scope; the text is still what gets expanded.
+    command_id: str | None = None
 
 
 def _session_roots(sess: Session, cfg: Config) -> list[Path]:
@@ -91,6 +83,87 @@ def _expand_command(message: str, roots: list[Path], skills) -> str:
     return cmd.expand(rest)
 
 
+def _command_entries(cfg: Config, store: SessionStore) -> list[tuple[dict, Command]]:
+    """Every command the ``/`` menu can offer, with the id that selects it.
+
+    The menu aggregates the personal directory and every registered project, so
+    one name can appear several times (two projects defining it, or a project
+    overriding a personal command); each entry keeps its own id and says where it
+    came from. Resolving an id walks this list again rather than trusting the
+    caller's path, which is what keeps an unregistered project's command from
+    being executed.
+    """
+    from easycode.commands import personal_commands, project_commands, skill_command
+    from easycode.skills import personal_skills, project_skills
+    from easycode.web.routes_workspaces import build_projects
+
+    out: list[tuple[dict, Command]] = []
+
+    def add(command: Command, label: str, root_key: str) -> None:
+        out.append(
+            (
+                {
+                    "id": f"{command.source}:{root_key}:{command.name}",
+                    "name": command.name,
+                    "description": command.description,
+                    "kind": command.kind,
+                    "argument_hint": command.arg_hint,
+                    "source": command.source,
+                    "source_label": label,
+                },
+                command,
+            )
+        )
+
+    for command in personal_commands():
+        add(command, "个人", "")
+    if cfg.skills_enabled:
+        for skill in personal_skills():
+            add(skill_command(skill), "个人", "")
+    # The default workspace is where a new conversation starts even before it is
+    # saved as a project, so it is always a candidate; a saved binding for the
+    # same directory comes first and keeps its own name.
+    candidates = [*build_projects(cfg, store), {"root": None, "secondary": []}]
+    # One entry per directory: the same project can reach this list twice (as the
+    # default workspace and as a saved binding spelled differently), and the menu
+    # must not offer the same command twice.
+    seen: set[str] = set()
+    for project in candidates:
+        resolved = str(Path(project.get("root") or cfg.root).expanduser().resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        label = str(project.get("name") or Path(resolved).name)
+        roots = [Path(resolved), *(Path(p) for p in project.get("secondary") or [])]
+        for command in project_commands(roots):
+            add(command, label, resolved)
+        if cfg.skills_enabled:
+            for skill in project_skills(roots):
+                add(skill_command(skill), label, resolved)
+    # By name, so the same name's entries sit together, each with its source.
+    out.sort(key=lambda item: (item[1].name, item[0]["source_label"]))
+    return out
+
+
+def _expand_by_id(command_id: str, message: str, cfg: Config, store: SessionStore) -> str:
+    """Expand a command the user picked from the menu.
+
+    The id is resolved against the commands registered *now*, so a project that
+    was removed since the menu was fetched no longer expands anything; and the
+    text has to be that command, so an id left over from an edited prompt cannot
+    expand something the user has typed over.
+    """
+    name = message.strip()[1:].partition(" ")[0].strip()
+    for entry, command in _command_entries(cfg, store):
+        if entry["id"] != command_id:
+            continue
+        if command.name != name.lower():
+            raise HTTPException(400, f"command does not match its id: {message.strip()}")
+        _, _, rest = message.strip()[1:].partition(" ")
+        return command.expand(rest.strip())
+    raise HTTPException(400, f"unknown command: {command_id}")
+
+
 def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: ApprovalBroker) -> None:
     """Connect chat and command endpoints to this app's session store."""
     from easycode.web.routes_workspaces import _normalise_root, _session_primary
@@ -128,38 +201,17 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             if request_sec != actual_sec:
                 raise HTTPException(409, "secondary roots do not match session")
 
-    @app.post("/api/commands")
-    def list_commands(req: CommandsRequest) -> dict:
-        """Executable template and skill commands for autocomplete.
+    @app.get("/api/commands")
+    def list_commands() -> dict:
+        """Every command and skill the ``/`` menu offers, with its source.
 
-        Two explicit scopes: an existing ``session_id`` (its own roots and
-        skills, exactly what its chat expansion uses), or a new-session draft
-        described by ``root``/``secondary_roots``. There is no union fallback.
+        The menu is the same for every conversation: all registered projects
+        plus the personal directory. Choosing an entry sends its id back with
+        the message, and the server resolves that id against this same list —
+        so the menu can offer another project's command without the request
+        being able to name an arbitrary path.
         """
-        if req.session_id:
-            sess = store.get(req.session_id)
-            if sess is None:
-                raise HTTPException(404, "session not found")
-            roots, skills = _session_roots(sess, cfg), sess.agent.skills
-        else:
-            try:
-                roots = _draft_roots(req.root, req.secondary_roots, cfg, store)
-            except ValueError as exc:
-                raise HTTPException(422, str(exc)) from exc
-            skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
-        reg = _build_web_commands(roots, skills)
-        return {
-            "commands": [
-                {
-                    "name": c.name,
-                    "description": c.description,
-                    "kind": c.kind,
-                    "argument_hint": c.arg_hint,
-                    "source": c.source,
-                }
-                for c in reg.list()
-            ]
-        }
+        return {"commands": [entry for entry, _ in _command_entries(cfg, store)]}
 
     @app.post("/api/chat")
     async def chat(req: ChatRequest) -> StreamingResponse:
@@ -188,7 +240,14 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             _assert_session_workspace_match(req.session_id, req.root, req.secondary_roots)
         raw_message = req.message
         is_command = raw_message.strip().startswith("/")
-        if is_command and not req.session_id:
+        if req.command_id and not is_command:
+            raise HTTPException(400, "command id needs a /command message")
+        if is_command and req.command_id:
+            # A menu selection is resolved against the registered commands, so
+            # the body can come from another project — while it still runs in
+            # this session's own directory and permission scope.
+            req.message = _expand_by_id(req.command_id, raw_message, cfg, store)
+        elif is_command and not req.session_id:
             # Resolve the command BEFORE creating the session: an unknown command
             # must not leave an empty session behind.
             try:
@@ -225,7 +284,9 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         # serialized (two near-simultaneous starts run, never interleave).
         if sess._lock.locked():
             raise HTTPException(409, "session busy")
-        if is_command and req.session_id:
+        if is_command and req.session_id and not req.command_id:
+            # Typed by hand rather than picked from the menu: the current
+            # project's and the personal commands are what resolve it.
             req.message = _expand_command(
                 req.message, _session_roots(sess, cfg), sess.agent.skills
             )
@@ -269,6 +330,11 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                             # A user stop or a dropped connection is not recorded.
                             if payload.kind == "error" and payload.error:
                                 sess.record_turn_failure(payload.error, payload.code)
+                            # File-tool results are kept on the session so the
+                            # pane can still show them after a refresh or once
+                            # compaction drops them from the history.
+                            if payload.kind == "tool_result" and payload.tool_call:
+                                sess.record_artifact(payload.tool_call, payload.tool_result)
                             yield event_to_sse(payload)
             finally:
                 # Persistence failures must not keep the session lock: release

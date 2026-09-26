@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -114,7 +116,7 @@ Template $ARGUMENTS
     store = SessionStore(cfg, proj, factory)
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
 
-    r = client.post("/api/commands", json={})
+    r = client.get("/api/commands")
     assert r.status_code == 200
     cmds = r.json()["commands"]
     names = [c["name"] for c in cmds]
@@ -204,52 +206,169 @@ async def test_handle_command_smoke_help_agents_model_list(tmp_path, monkeypatch
     assert await cli.handle_command("/model", cfg, agent, cfg.default_model, commands) is None
 
 
-def test_commands_endpoint_scoped_to_session(tmp_path, monkeypatch):
-    """DEC-C8: /api/commands matches what chat expansion sees, with two
-    explicit scopes (session id, or draft root/secondary) and no union fallback."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
-    from tests.conftest import FakeProvider
+def test_commands_menu_lists_every_registered_scope(tmp_path, monkeypatch):
+    """The `/` menu aggregates all registered projects and the personal directory.
 
+    The same name can come from more than one place, so each entry keeps its own
+    id and names where it came from instead of collapsing to a single winner.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
     proj_a = tmp_path / "a"
     proj_b = tmp_path / "b"
-    for proj, name in ((proj_a, "only-a"), (proj_b, "only-b")):
+    for proj in (proj_a, proj_b):
         cmds = proj / ".easycode" / "commands"
         cmds.mkdir(parents=True)
-        (cmds / f"{name}.md").write_text(
-            f"---\ndescription: {name}\n---\nTemplate $ARGUMENTS\n", encoding="utf-8"
+        (cmds / "shared.md").write_text(
+            f"---\ndescription: shared in {proj.name}\n---\nBody of {proj.name}\n",
+            encoding="utf-8",
         )
+    personal = tmp_path / ".easycode" / "commands"
+    personal.mkdir(parents=True)
+    (personal / "personal.md").write_text(
+        "---\ndescription: personal one\n---\nPersonal body\n", encoding="utf-8"
+    )
+    # The default workspace is its own directory, so its commands are listed
+    # alongside the personal ones without being the same file.
+    default = tmp_path / "default"
+    (default / ".easycode" / "commands").mkdir(parents=True)
+    (default / ".easycode" / "commands" / "default-cmd.md").write_text(
+        "---\ndescription: in the default workspace\n---\nDefault body\n", encoding="utf-8"
+    )
     cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg.root = default
 
     def factory(alias: str, **kwargs):
         return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj_a)
 
     store = SessionStore(cfg, tmp_path, factory)
-    sess_a = store.create(root=str(proj_a))
+    store.create(root=str(proj_a))
     store.create(root=str(proj_b))
+
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
 
-    scoped = client.post("/api/commands", json={"session_id": sess_a.id}).json()["commands"]
-    names = [c["name"] for c in scoped]
-    assert "only-a" in names
-    assert "only-b" not in names
+    listing = client.get("/api/commands").json()["commands"]
+    shared = [c for c in listing if c["name"] == "shared"]
+    assert len(shared) == 2
+    assert {c["source_label"] for c in shared} == {"a", "b"}
+    assert len({c["id"] for c in shared}) == 2
+    assert all(c["source"] == "project" for c in shared)
+    assert all(c["id"] for c in listing)
+    assert [c["source_label"] for c in listing if c["name"] == "personal"] == ["个人"]
+    # The default workspace is in the menu even though no session uses it yet.
+    assert [c["source_label"] for c in listing if c["name"] == "default-cmd"] == ["default"]
 
-    # A new-session draft is scoped to its own root, not a union of projects.
-    draft = client.post("/api/commands", json={"root": str(proj_b)}).json()["commands"]
-    draft_names = [c["name"] for c in draft]
-    assert "only-b" in draft_names
-    assert "only-a" not in draft_names
 
-    # An unknown session id is a 404, never a silent global scope.
-    assert client.post("/api/commands", json={"session_id": "nope"}).status_code == 404
+def test_picked_command_expands_from_the_project_it_came_from(tmp_path, monkeypatch):
+    """A menu selection runs the chosen project's command in this session."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj_a = tmp_path / "a"
+    proj_b = tmp_path / "b"
+    proj_a.mkdir()
+    cmds = proj_b / ".easycode" / "commands"
+    cmds.mkdir(parents=True)
+    (cmds / "only-b.md").write_text(
+        "---\ndescription: only in b\n---\nTemplate $ARGUMENTS\n", encoding="utf-8"
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = proj_a
+    cfg.workspace_projects = [{"root": str(proj_b), "secondary": []}]
+
+    def factory(alias: str, **kwargs):
+        root = kwargs.get("root") or proj_a
+        return Agent(
+            provider=FakeProvider(script=[{"text": "ok"}]),
+            registry=build_registry(8000),
+            root=Path(root),
+        )
+
+    store = SessionStore(cfg, proj_a, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    # Created after the app: create_app restores sessions from disk, which would
+    # replace this in-memory one (and its provider) with a copy.
+    sess = store.create(root=str(proj_a))
+
+    entry = next(c for c in client.get("/api/commands").json()["commands"] if c["name"] == "only-b")
+    with client:
+        r = client.post(
+            "/api/chat",
+            json={"message": "/only-b hello", "session_id": sess.id, "command_id": entry["id"]},
+        )
+        assert r.status_code == 200, r.text
+    # The body came from the other project; the turn ran in this session.
+    sent = sess.agent.provider.calls[0][-1]["content"]
+    assert sent == "Template hello"
+
+    # A menu entry is resolved against the commands registered now, and the
+    # text has to still be that command.
+    assert (
+        client.post(
+            "/api/chat",
+            json={"message": "/only-b x", "session_id": sess.id, "command_id": "project:/gone:only-b"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/api/chat",
+            json={"message": "/other x", "session_id": sess.id, "command_id": entry["id"]},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/api/chat",
+            json={"message": "not a command", "session_id": sess.id, "command_id": entry["id"]},
+        ).status_code
+        == 400
+    )
+
+
+def test_typed_command_still_resolves_in_the_session_scope(tmp_path, monkeypatch):
+    """Typing `/name` by hand keeps the current project's and personal rules.
+
+    The menu offers every project's commands, so a name that exists twice is
+    picked from the menu; without a pick, the session's own scope decides.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj = tmp_path / "proj"
+    other = tmp_path / "other"
+    for folder, body in ((proj, "Proj body"), (other, "Other body")):
+        cmds = folder / ".easycode" / "commands"
+        cmds.mkdir(parents=True)
+        (cmds / "run.md").write_text(
+            f"---\ndescription: run here\n---\n{body} $ARGUMENTS\n", encoding="utf-8"
+        )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = proj
+
+    def factory(alias: str, **kwargs):
+        return Agent(
+            provider=FakeProvider(script=[{"text": "ok"}]),
+            registry=build_registry(8000),
+            root=Path(kwargs.get("root") or proj),
+        )
+
+    store = SessionStore(cfg, proj, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    # Created after the app: create_app restores sessions from disk, which would
+    # replace this in-memory one (and its provider) with a copy.
+    sess = store.create(root=str(proj))
+    other_sess = store.create(root=str(other))
+
+    with client:
+        r = client.post("/api/chat", json={"message": "/run now", "session_id": sess.id})
+        assert r.status_code == 200, r.text
+    assert sess.agent.provider.calls[0][-1]["content"] == "Proj body now"
+
+    with client:
+        r = client.post("/api/chat", json={"message": "/run now", "session_id": other_sess.id})
+        assert r.status_code == 200, r.text
+    assert other_sess.agent.provider.calls[0][-1]["content"] == "Other body now"
 
 
 def test_secondary_change_refreshes_agent_skills_and_commands(tmp_path, monkeypatch):
     """Changing a session's secondary roots re-discovers skills/agents and
-    rebuilds the system prompt, so the menu and the agent share one scope."""
+    rebuilds the system prompt, so a typed command and the agent share one scope."""
     monkeypatch.setenv("HOME", str(tmp_path))
 
     from easycode.agent.loop import Agent
@@ -275,15 +394,20 @@ def test_secondary_change_refreshes_agent_skills_and_commands(tmp_path, monkeypa
     cfg.root = proj
 
     def factory(alias: str, **kwargs):
-        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
+        return Agent(
+            provider=FakeProvider(script=[{"text": "ok"}]),
+            registry=build_registry(8000),
+            root=proj,
+        )
 
     store = SessionStore(cfg, proj, factory)
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
 
     with client:
         sess = store.create(root=str(proj), secondary_roots=[])
-        before = client.post("/api/commands", json={"session_id": sess.id}).json()["commands"]
-        assert "sec-cmd" not in [c["name"] for c in before]
+        # The secondary directory's command is not part of this session yet.
+        before = client.post("/api/chat", json={"message": "/sec-cmd x", "session_id": sess.id})
+        assert before.status_code == 400
         assert sess.agent.skills is None or "demo" not in sess.agent.skills.names()
 
         r = client.post(
@@ -292,10 +416,11 @@ def test_secondary_change_refreshes_agent_skills_and_commands(tmp_path, monkeypa
         )
         assert r.status_code == 200, r.text
 
-        after = client.post("/api/commands", json={"session_id": sess.id}).json()["commands"]
-        assert "sec-cmd" in [c["name"] for c in after]
+        after = client.post("/api/chat", json={"message": "/sec-cmd x", "session_id": sess.id})
+        assert after.status_code == 200, after.text
         assert "demo" in sess.agent.skills.names()
         assert "demo skill" in sess.agent.history.payload()[0]["content"]
+    assert sess.agent.provider.calls[-1][-1]["content"] == "Do x"
 
 
 def test_secondary_roots_explicit_empty_vs_inherited(tmp_path, monkeypatch):

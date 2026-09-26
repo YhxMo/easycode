@@ -225,15 +225,15 @@ def test_content_unknown_session_and_missing_file(tmp_path):
     )
 
 
-def test_invalid_secondary_root_is_422_like_commands(tmp_path):
+def test_invalid_secondary_root_is_422_like_chat(tmp_path):
     """A bad draft root is a request error on both endpoints, never a 500."""
     client = make_app(tmp_path)
     body = {"root": str(tmp_path), "secondary_roots": [str(tmp_path / "missing-dir")]}
 
     files = client.post("/api/files", json=body)
-    commands = client.post("/api/commands", json=body)
+    chat = client.post("/api/chat", json={**body, "message": "hi"})
     assert files.status_code == 422, files.text
-    assert commands.status_code == 422, commands.text
+    assert chat.status_code == 422, chat.text
     assert "missing" in files.json()["detail"]
 
 
