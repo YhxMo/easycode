@@ -593,3 +593,182 @@ def test_primary_root_validated_like_other_roots(tmp_path):
     assert root_error(worktree) is None
     sess = store.create(root=str(worktree))
     assert sess.root == str(worktree)
+
+
+# --------------------------------------------------- 空白会话的工作目录
+
+def _project_app(tmp_path, projects=None, script=None):
+    """A store + client whose config carries the given project bindings.
+
+    ``projects`` are workspace entries (``root`` → ``secondary``) as the config
+    persists them, so a session created for one of them inherits its binding the
+    way a real project does.
+    """
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    cfg_file = tmp_path / "easycode.config.json"
+    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
+    cfg = Config.load(start=tmp_path)
+    cfg.root = primary
+    if projects:
+        cfg.workspace_projects = projects
+
+    def factory(alias: str, **kw):
+        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
+        secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
+        return Agent(
+            provider=FakeProvider(script=list(script or [])),
+            registry=build_registry(8000),
+            root=root,
+            secondary_roots=secs,
+        )
+
+    store = SessionStore(cfg, primary, factory)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    return client, store
+
+
+def test_blank_session_moves_and_inherits_the_target_project(tmp_path):
+    """A conversation that has not started may be pointed at another project.
+
+    The move carries that project's bound secondary directories with it (the
+    same binding a session created there would get) and is written to disk, so a
+    reload finds the conversation where it was moved to.
+    """
+    proj_a = tmp_path / "a"
+    proj_b = tmp_path / "b"
+    sec_b = tmp_path / "sec_b"
+    for d in (proj_a, proj_b, sec_b):
+        d.mkdir()
+    client, store = _project_app(
+        tmp_path, projects=[{"root": str(proj_b), "secondary": [str(sec_b)]}]
+    )
+    with client:
+        sess = store.create(root=str(proj_a))
+        r = client.post(f"/api/sessions/{sess.id}/workspace", json={"root": str(proj_b)})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["session"]["root"] == str(proj_b)
+        assert body["session"]["secondary_roots"] == [str(sec_b)]
+        assert body["session"]["started"] is False
+        # The project list is rebuilt, so the sidebar can show the new place.
+        assert any(p["root"] == str(proj_b) for p in body["projects"])
+
+    # The live session and its agent moved together.
+    assert sess.root == str(proj_b)
+    assert sess.secondary_roots == [str(sec_b)]
+    assert str(sess.agent.root) == str(proj_b)
+    assert [str(p) for p in sess.agent.secondary_roots] == [str(sec_b)]
+
+    # Persisted, and restored where it was moved to.
+    raw = json.loads((store.dir / f"{sess.id}.json").read_text(encoding="utf-8"))
+    assert raw["root"] == str(proj_b)
+    assert raw["secondary_roots"] == [str(sec_b)]
+    from easycode.web.session import SessionStore
+
+    restored = SessionStore(store.cfg, store.root, store.agent_factory)
+    restored.dir = store.dir
+    restored.load_all()
+    reloaded = restored.get(sess.id)
+    assert reloaded is not None
+    assert reloaded.root == str(proj_b)
+    assert reloaded.secondary_roots == [str(sec_b)]
+
+
+def test_blank_session_moves_back_to_the_default_project(tmp_path):
+    """``root: null`` is the default project, not a missing value: moving there
+    drops the primary root and takes the default project's own binding."""
+    proj = tmp_path / "a"
+    proj.mkdir()
+    sec = tmp_path / "sec"
+    sec.mkdir()
+    client, store = _project_app(tmp_path, projects=[{"root": None, "secondary": [str(sec)]}])
+    with client:
+        sess = store.create(root=str(proj))
+        r = client.post(f"/api/sessions/{sess.id}/workspace", json={"root": None})
+        assert r.status_code == 200, r.text
+        # A session in the default project has no primary of its own.
+        assert "root" not in r.json()["session"]
+        assert r.json()["session"]["secondary_roots"] == [str(sec)]
+    assert sess.root is None
+    assert str(sess.agent.root) == str(client.app.state.store.cfg.root)
+    raw = json.loads((store.dir / f"{sess.id}.json").read_text(encoding="utf-8"))
+    assert "root" not in raw
+
+
+def test_started_session_refuses_to_move(tmp_path):
+    """Once a turn has run, the conversation's directory is fixed: records,
+    previews and the tree report all describe that one directory."""
+    proj_a = tmp_path / "a"
+    proj_b = tmp_path / "b"
+    proj_a.mkdir()
+    proj_b.mkdir()
+    client, store = _project_app(tmp_path, script=[{"text": "ok"}])
+    with client:
+        sess = store.create(root=str(proj_a))
+        assert client.post(
+            "/api/chat", json={"message": "hi", "session_id": sess.id}
+        ).status_code == 200
+        assert sess.is_blank is False
+
+        r = client.post(f"/api/sessions/{sess.id}/workspace", json={"root": str(proj_b)})
+        assert r.status_code == 409
+        # Nothing was applied: neither in memory nor on disk.
+        assert sess.root == str(proj_a)
+        assert str(sess.agent.root) == str(proj_a)
+        raw = json.loads((store.dir / f"{sess.id}.json").read_text(encoding="utf-8"))
+        assert raw["root"] == str(proj_a)
+
+
+@pytest.mark.asyncio
+async def test_running_session_refuses_to_move(tmp_path):
+    """A turn in flight owns the conversation: the move is refused before
+    anything is written, without cancelling the turn to find out."""
+    import httpx
+
+    proj_b = tmp_path / "b"
+    proj_b.mkdir()
+    client, store = _project_app(tmp_path)
+    app = client.app
+    sess = store.create()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as http:
+        async with sess._lock:
+            r = await http.post(f"/api/sessions/{sess.id}/workspace", json={"root": str(proj_b)})
+        assert r.status_code == 409
+    assert sess.root is None
+    assert store.get(sess.id) is sess
+
+
+def test_move_rejects_a_bad_root_or_secondary_without_partial_update(tmp_path):
+    """Validation happens before anything is written: a refused move leaves the
+    session exactly where it was."""
+    proj = tmp_path / "a"
+    proj.mkdir()
+    (proj / ".git").mkdir()
+    missing = tmp_path / "missing"
+    client, store = _project_app(tmp_path)
+    with client:
+        sess = store.create(root=str(proj))
+        # A protected directory is refused outright.
+        r = client.post(f"/api/sessions/{sess.id}/workspace", json={"root": str(proj / ".git")})
+        assert r.status_code == 422
+        # So is a secondary root that is not there.
+        r2 = client.post(
+            f"/api/sessions/{sess.id}/workspace",
+            json={"root": None, "secondary_roots": [str(missing)]},
+        )
+        assert r2.status_code == 422
+        # Unknown session.
+        r3 = client.post("/api/sessions/nope/workspace", json={"root": None})
+        assert r3.status_code == 404
+
+    assert sess.root == str(proj)
+    assert str(sess.agent.root) == str(proj)
+    assert sess.secondary_roots == []
