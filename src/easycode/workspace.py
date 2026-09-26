@@ -180,12 +180,25 @@ class PathContext:
         return out
 
     def writable_roots(self) -> list[Path]:
-        """Primary, bound secondary roots, temp, data dir, and explicit extra roots."""
+        """Primary, bound secondary roots, temp, data dir, and explicit extra roots.
+
+        A candidate that already sits inside one of these roots is skipped: that
+        root's ``subpath`` rule already covers it. The reverse direction is not
+        coverage — allowing a root never allows its parent — so a candidate that
+        merely *contains* a root is still listed, with one exception: the data
+        dir is dropped when a root lives inside it, so that a managed worktree
+        cannot hand out its siblings. The sandbox narrows its data-dir write deny
+        for that case instead (see ``_secret_policy``).
+        """
         out: list[Path] = [*self.roots]
-        for d in [data_home(), Path(tempfile.gettempdir()), *self.extra_safe_dirs]:
+        data = data_home().resolve()
+        for d in [data, Path(tempfile.gettempdir()), *self.extra_safe_dirs]:
             resolved = d.resolve()
-            if not any(resolved.is_relative_to(p) or p.is_relative_to(resolved) for p in out):
-                out.append(resolved)
+            if any(resolved.is_relative_to(p) for p in out):
+                continue
+            if resolved == data and any(p.is_relative_to(data) for p in out):
+                continue
+            out.append(resolved)
         return out
 
     def protected_paths(self) -> list[Path]:

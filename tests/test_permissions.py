@@ -8,6 +8,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -521,6 +522,47 @@ def test_data_home_state_dirs_need_approval_but_worktrees_stay_writable(tmp_path
     cred.write_text("{}", encoding="utf-8")
     assert ctx.in_allowed(cred) is False
     assert ctx.is_protected_path(cred) is True
+
+
+def test_writable_roots_keep_the_temp_dir_with_a_data_home_inside_it(tmp_path, monkeypatch):
+    """Regression: a data home inside $TMPDIR must not drop the temp dir itself.
+
+    The dedup skipped any candidate that merely *contained* an already-listed
+    root, so ``~/.easycode`` — listed first, and inside $TMPDIR here — removed
+    the temp dir itself. A ``subpath`` allow for ``~/.easycode`` never reaches
+    its parent, so every write to $TMPDIR outside the data home lost its
+    allowance (approval prompt plus a seatbelt denial).
+    """
+    temp_root = tmp_path / "tmproot"
+    home = temp_root / "home"
+    home.mkdir(parents=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    monkeypatch.setenv("HOME", str(home))
+    from easycode.credentials import data_home
+
+    ctx = PathContext(primary=tmp_path / "proj")
+    roots = ctx.writable_roots()
+    assert data_home().resolve() in roots
+    assert temp_root.resolve() in roots
+    assert ctx.in_allowed(temp_root / "scratch.txt") is True
+
+
+def test_writable_roots_drop_the_data_home_when_a_root_lives_inside_it(tmp_path, monkeypatch):
+    """A managed worktree may not hand out the rest of the data home.
+
+    The worktree keeps working through the narrowed data-dir deny instead, so a
+    sibling worktree still needs approval rather than riding on the data home.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.credentials import data_home
+
+    worktree = data_home() / "worktrees" / "repo"
+    worktree.mkdir(parents=True)
+    ctx = PathContext(primary=worktree)
+    roots = ctx.writable_roots()
+    assert worktree.resolve() in roots
+    assert data_home().resolve() not in roots
+    assert ctx.in_allowed(data_home() / "worktrees" / "other" / "f.txt") is False
 
 
 # ------------------------------------------------------------ P0-1 precise ToolGrant

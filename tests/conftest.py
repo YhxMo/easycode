@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -12,8 +13,18 @@ from easycode.models.base import Provider, StreamEvent, ToolCall
 
 @pytest.fixture(autouse=True)
 def _isolate_home(tmp_path, monkeypatch):
-    """Every test runs against a throw-away HOME (never the real ~/.easycode)."""
+    """Every test runs against a throw-away HOME (never the real ~/.easycode).
+
+    The sandbox's temp dir is moved inside ``tmp_path`` as well. Otherwise tests
+    inherit the real ``$TMPDIR``, which *contains* every workspace fixture — and
+    since the temp dir is writable by design, ``tmp_path`` would stop being an
+    "outside the workspace" location. Production never nests a workspace in
+    ``$TMPDIR``, so this restores the production shape for the whole suite.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir(exist_ok=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
 
 
 class FakeProvider(Provider):
