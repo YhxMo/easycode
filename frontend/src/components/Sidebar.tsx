@@ -70,6 +70,8 @@ export interface SidebarProps {
   currentRoot: string | null;
   /** Secondary roots of the draft (new session) or open session. */
   secondary: string[];
+  /** Whether the open conversation may still change its main directory. */
+  rootEditable: boolean;
   onNewSession: () => void;
   /** Project a new conversation joins, for the button's hint. */
   newSessionLabel: string;
@@ -81,6 +83,8 @@ export interface SidebarProps {
   onSetChosenRoot: (root: string | null) => void;
   onSetSecondary: (secondary: string[]) => void;
   onProjects: (projects: WorkspaceProject[]) => void;
+  /** The workspace a saved conversation moved to, as the server confirmed it. */
+  onSessionWorkspace: (session: SessionSummary, projects: WorkspaceProject[]) => void;
   onToggleArchived: () => void;
   onDeleteSession: (session: SessionSummary) => void;
   onTogglePin: (session: SessionSummary) => void;
@@ -105,6 +109,7 @@ export function Sidebar({
   chosenRoot,
   currentRoot,
   secondary,
+  rootEditable,
   onNewSession,
   newSessionLabel,
   onOpenSession,
@@ -115,6 +120,7 @@ export function Sidebar({
   onSetChosenRoot,
   onSetSecondary,
   onProjects,
+  onSessionWorkspace,
   onToggleArchived,
   onDeleteSession,
   onTogglePin,
@@ -265,12 +271,14 @@ export function Sidebar({
                 workspaces={workspaces}
                 loaded={workspacesLoaded}
                 root={currentId === null ? chosenRoot : currentRoot}
-                editable={currentId === null}
+                sessionId={currentId}
+                editable={rootEditable}
                 disabled={busy}
                 viewToken={viewToken}
                 onRoot={onSetChosenRoot}
                 onSecondary={onSetSecondary}
                 onProjects={onProjects}
+                onSession={onSessionWorkspace}
                 onNewChatHere={onNewChatInProject}
                 onError={onError}
               />

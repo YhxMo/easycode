@@ -1,14 +1,4 @@
-/** +/- line counts for a unified diff (headers excluded). */
-function diffStats(diff: string) {
-  let added = 0;
-  let removed = 0;
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) added += 1;
-    else if (line.startsWith("-")) removed += 1;
-  }
-  return { added, removed };
-}
+import { diffStats } from "../../lib/pane";
 
 function lineClass(line: string): string {
   if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ")) return "meta";
@@ -22,6 +12,22 @@ function lineClass(line: string): string {
 function pathFromDiff(diff: string): string | undefined {
   const match = /^\+\+\+ [ab]\/(.+)$/m.exec(diff) ?? /^\+\+\+ (.+)$/m.exec(diff);
   return match?.[1]?.trim() || undefined;
+}
+
+/** Just the diff's lines, for a caller that draws its own file header. */
+export function DiffBody({ diff }: { diff: string }) {
+  return (
+    <pre className="diff-body">
+      {diff
+        .replace(/\n$/, "")
+        .split("\n")
+        .map((line, index) => (
+          <span key={index} className={`diff-line ${lineClass(line)}`}>
+            {line || " "}
+          </span>
+        ))}
+    </pre>
+  );
 }
 
 interface Props {
@@ -48,16 +54,7 @@ export function DiffView({ path, diff, stats, applied = true }: Props) {
           <span className="del">−{counts.removed}</span>
         </span>
       </div>
-      <pre className="diff-body">
-        {diff
-          .replace(/\n$/, "")
-          .split("\n")
-          .map((line, index) => (
-            <span key={index} className={`diff-line ${lineClass(line)}`}>
-              {line || " "}
-            </span>
-          ))}
-      </pre>
+      <DiffBody diff={diff} />
     </div>
   );
 }

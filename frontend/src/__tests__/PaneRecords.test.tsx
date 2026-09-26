@@ -43,6 +43,12 @@ async function openPane(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByRole("tab", { name: "上下文" });
 }
 
+/** Open the change section's summary line, which is what starts collapsed. */
+async function openChanges(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(tab("变更"));
+  await user.click(await screen.findByRole("button", { name: /个文件/ }));
+}
+
 const tab = (name: string) => screen.getByRole("tab", { name });
 
 beforeEach(() => {
@@ -91,8 +97,10 @@ describe("App · 面板记录", () => {
     expect(screen.getByText("12/12 行")).toBeTruthy();
     expect(screen.getByText("1: 内容")).toBeTruthy();
 
-    await user.click(tab("变更"));
+    await openChanges(user);
     expect(screen.getByText("会话操作记录")).toBeTruthy();
+    // The file's counts are on its row; the diff itself is one click below.
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
     expect(screen.getByText(/\+新增/)).toBeTruthy();
 
     await user.click(tab("文件"));
@@ -127,10 +135,10 @@ describe("App · 面板记录", () => {
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await openPane(user);
-    await user.click(tab("变更"));
+    await openChanges(user);
 
     // The session's own record is there...
-    expect(await screen.findByText(/\+新增/)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /src\/app\.ts/ })).toBeTruthy();
     // ...next to the working tree's state, which this session did not cause.
     expect(screen.getByText("当前工作区未提交改动")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("未跟踪")).toBeTruthy());
@@ -149,10 +157,15 @@ describe("App · 面板记录", () => {
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await openPane(user);
-    await user.click(tab("变更"));
 
+    // The summary falls back to what this conversation changed: with no
+    // repository there is no working-tree answer, and the record must not
+    // disappear because of it.
+    await user.click(tab("变更"));
+    expect(screen.getByText("会话改动")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /个文件/ }));
     expect(await screen.findByText("会话所在目录不在 Git 仓库中。")).toBeTruthy();
-    expect(screen.getByText(/\+新增/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /src\/app\.ts/ })).toBeTruthy();
   });
 
   it("搜索命中默认只列一部分，可以展开全部", async () => {

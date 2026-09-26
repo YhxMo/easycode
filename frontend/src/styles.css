@@ -562,6 +562,140 @@
   margin-top: 16px;
 }
 
+/* ------------------------------------------------------- change section */
+
+/* The section's headline: what moved, and by how much. The files and their
+   diffs are one click below it. */
+.change-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.change-summary:hover {
+  background: var(--hover);
+}
+
+.change-caret {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 10px;
+  transition: transform 140ms ease;
+}
+
+.change-caret.open {
+  transform: rotate(90deg);
+}
+
+.change-summary-label {
+  color: var(--ink);
+  font-weight: 550;
+}
+
+.change-summary-files {
+  font-size: 11px;
+}
+
+.change-stats {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.change-stats .add {
+  color: var(--green);
+}
+
+.change-stats .del {
+  color: var(--red);
+}
+
+.change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.change-row:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* A file git cannot describe in lines reports its counts and stops there. */
+.change-row.static {
+  cursor: default;
+}
+
+.change-row.static:hover {
+  background: none;
+  color: var(--ink-2);
+}
+
+.change-path {
+  flex: 1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-meta {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.change-note {
+  margin: 0;
+  padding: 1px 8px 5px 22px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.change-item > .diff-body {
+  margin: 2px 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+}
+
 .ctx-more {
   justify-content: center;
   color: var(--ink-3);

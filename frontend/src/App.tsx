@@ -53,10 +53,18 @@ import { LoadingState } from "./components/primitives/LoadingState";
 import { TabBar, type OpenTab } from "./components/layout/TabBar";
 import { SelectionActions } from "./components/primitives/SelectionActions";
 import { ContextCards } from "./components/primitives/ContextCards";
-import { DiffView } from "./components/primitives/DiffView";
+import { ChangeList } from "./components/primitives/ChangeList";
 import { FileList } from "./components/primitives/FileList";
 import { FilePreview } from "./components/primitives/FilePreview";
-import { fileRows, paneData, sessionFiles, sessionToolItems } from "./lib/pane";
+import {
+  fileRows,
+  paneData,
+  rowStats,
+  sessionChangeRows,
+  sessionFiles,
+  sessionToolItems,
+  workingTreeRows,
+} from "./lib/pane";
 import { TaskRows } from "./components/primitives/TaskRows";
 import { groupSessions } from "./lib/sessionGroups";
 import { applyMention, mentionToken } from "./lib/mention";
@@ -103,6 +111,12 @@ interface PaneState {
   turn: number;
   section: string | null;
   preview: string | null;
+  /**
+   * Whether the change section shows its files and diffs. Per conversation and
+   * not per turn: it describes how the reader is looking at this conversation's
+   * work, which outlives the turn that produced it. Collapsed until opened.
+   */
+  changesOpen?: boolean;
 }
 
 /** Restore the stored tab list: strings only, de-duplicated, never fatal. */
@@ -274,6 +288,9 @@ export default function App() {
   // Resolved ahead of useChatStream so send() can stamp the model name onto the
   // turn's assistant messages (reply meta row).
   const currentSession = sessions.find((s) => s.id === currentId);
+  // The open conversation's own directory; a move (only a blank session can
+  // make one) changes what every directory-derived view below reports.
+  const currentRoot = currentSession?.root ?? null;
   const currentModelName =
     (currentId ? (models.models[currentSession?.model_alias ?? ""]?.model ?? currentSession?.model_alias) : null) ??
     models.models[models.default]?.model ??
@@ -675,6 +692,21 @@ export default function App() {
     setChosenRoot(root);
   }, []);
 
+  // A conversation's main directory may move only before its first turn: once
+  // one has run, its records, previews and tree report all describe a single
+  // directory. The start page's draft holds no session, so it just chooses.
+  const rootEditable = currentId === null || currentSession?.started === false;
+
+  /** Adopt the workspace a blank conversation moved to, as the server confirmed it. */
+  const sessionWorkspaceChanged = useCallback(
+    (updated: SessionSummary, projects: WorkspaceProject[]) => {
+      setSessions((prev) => prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s)));
+      setSecondary(updated.secondary_roots ?? []);
+      setProjects(projects);
+    },
+    [setProjects],
+  );
+
   /**
    * Create the conversation the user just asked for, before anything is sent:
    * the tab that appears is backed by a real session, so an empty one survives
@@ -945,17 +977,20 @@ export default function App() {
     ],
   );
 
-  const currentRoot = currentSession?.root ?? null;
   // The project a new conversation from the sidebar joins: the one on screen,
-  // so the button's hint names what the user will actually get.
+  // so the button's hint names what the user will actually get. A project's own
+  // name comes first — the directory it points at is what the path says.
   const nextSessionRoot = currentId ? currentRoot : chosenRoot;
-  const newSessionLabel = nextSessionRoot ? basename(nextSessionRoot) : DEFAULT_PROJECT;
+  /** What to call a directory: its configured project name, else the folder's. */
+  const projectLabel = useCallback(
+    (root: string | null) =>
+      projectMeta.get(root)?.name ||
+      (root ? basename(root) : workspaces.default ? basename(workspaces.default) : DEFAULT_PROJECT),
+    [projectMeta, workspaces.default],
+  );
+  const newSessionLabel = projectLabel(nextSessionRoot);
   // What the empty stage can promise: the directory this draft would run in.
-  const draftContext = chosenRoot
-    ? basename(chosenRoot)
-    : workspaces.default
-      ? basename(workspaces.default)
-      : DEFAULT_PROJECT;
+  const draftContext = projectLabel(chosenRoot);
   const exploration = useMemo(() => {
     let reads = 0;
     let searches = 0;
@@ -1066,6 +1101,9 @@ export default function App() {
           ? "tasks"
           : "context";
   const preview = paneSelf?.preview ?? null;
+  // The change section opens as a summary line and stays as the reader left it
+  // for this conversation.
+  const changesOpen = paneSelf?.changesOpen ?? false;
   const patchPaneState = useCallback(
     (key: string, patch: Partial<PaneState>) =>
       setPaneState((prev) => {
@@ -1089,6 +1127,11 @@ export default function App() {
       chooseSection("file");
     },
     [setPreview, chooseSection],
+  );
+
+  const toggleChanges = useCallback(
+    () => patchPaneState(draftKey, { changesOpen: !changesOpen }),
+    [patchPaneState, draftKey, changesOpen],
   );
 
   const closePane = useCallback(() => {
@@ -1138,14 +1181,22 @@ export default function App() {
     return () => {
       live = false;
     };
-  }, [currentId, paneWantsGit, busy]);
+  }, [currentId, paneWantsGit, busy, currentRoot]);
 
   const fileEntries = useMemo(() => sessionFiles(pane.context, pane.changes), [pane]);
   const paneFiles = useMemo(() => fileRows(fileEntries, git?.files ?? []), [fileEntries, git]);
-  // The change section lists the working tree on its own terms, session-touched
-  // files included: what is uncommitted and what this conversation did are two
-  // different facts, and both are worth seeing next to each other.
-  const workingTree = useMemo(() => fileRows([], git?.files ?? []), [git]);
+  // The change section lists the two sources as rows of counts: the files this
+  // conversation changed, and the repository's uncommitted state right now.
+  const changeRows = useMemo(() => sessionChangeRows(changeCards), [changeCards]);
+  const treeRows = useMemo(() => workingTreeRows(git?.files ?? []), [git]);
+  // What the collapsed line reports is the working tree — "changes on this
+  // branch" is its answer, not the session's. A directory outside Git has no
+  // tree to report, and this conversation's own record must not vanish with it.
+  const treeKnown = Boolean(git?.repos.length);
+  const changeStats = treeKnown
+    ? { added: git?.added ?? 0, removed: git?.removed ?? 0 }
+    : rowStats(changeRows);
+  const changeFiles = treeKnown ? (git?.files.length ?? 0) : changeRows.length;
 
   // The centred first-run stage replaces the stream until a conversation has
   // something to show; a load in progress is never masked by it.
@@ -1379,6 +1430,7 @@ export default function App() {
         chosenRoot={chosenRoot}
         currentRoot={currentRoot}
         secondary={secondary}
+        rootEditable={rootEditable}
         onNewSession={newSession}
         newSessionLabel={newSessionLabel}
         onOpenSession={openSession}
@@ -1389,6 +1441,7 @@ export default function App() {
         onSetChosenRoot={chooseRoot}
         onSetSecondary={setSecondary}
         onProjects={setProjects}
+        onSessionWorkspace={sessionWorkspaceChanged}
         onToggleArchived={() => setShowArchived(!showArchived)}
         onTogglePin={togglePin}
         onDeleteSession={setDeleteTarget}
@@ -1537,43 +1590,66 @@ export default function App() {
           )}
           {paneSection === "changes" && (
             <>
-              <div className="pane-group-title">
-                会话操作记录
-                <span className="pane-count">{changeCards.length}</span>
-              </div>
-              {changeCards.length ? (
-                changeCards.map((change) => (
-                  <DiffView
-                    key={change.id}
-                    path={change.path}
-                    diff={change.diff}
-                    applied={change.applied}
-                  />
-                ))
-              ) : (
-                <p className="pane-empty">这场会话还没有修改文件。</p>
-              )}
-              <div className="pane-group-title pane-group-next">
-                当前工作区未提交改动
-                <span className="pane-count">{git?.files.length ?? 0}</span>
-              </div>
-              {!git && (
-                <p className="pane-empty">
-                  {currentId ? "正在读取工作区状态…" : "开始会话后可查看工作区状态。"}
-                </p>
-              )}
-              {git?.error && <p className="pane-empty">无法读取 Git 状态：{git.error}</p>}
-              {git && !git.error && !git.repos.length && (
-                <p className="pane-empty">会话所在目录不在 Git 仓库中。</p>
-              )}
-              {git && !git.error && git.repos.length > 0 && !git.files.length && (
-                <p className="pane-empty">工作区没有未提交的改动。</p>
-              )}
-              {workingTree.length > 0 && (
+              {/* The section opens as one line: what moved, and by how much. The
+                  files and their diffs are what the reader opens next. */}
+              <button
+                type="button"
+                className={`change-summary${changesOpen ? " open" : ""}`}
+                aria-expanded={changesOpen}
+                title={
+                  treeKnown
+                    ? "当前工作区相对各仓库 HEAD 的未提交改动"
+                    : "这场会话自己修改的文件"
+                }
+                onClick={toggleChanges}
+              >
+                <span className="change-caret" aria-hidden="true">
+                  ▸
+                </span>
+                <span className="change-summary-label">
+                  {treeKnown ? "当前工作区改动" : "会话改动"}
+                </span>
+                <span className="change-summary-files">{changeFiles} 个文件</span>
+                <span className="change-stats tabular">
+                  <span className="add">+{changeStats.added}</span>
+                  <span className="del">−{changeStats.removed}</span>
+                </span>
+              </button>
+              {changesOpen && (
                 <>
-                  <FileList rows={workingTree} onOpen={openFile} />
-                  {git?.truncated && (
-                    <p className="pane-empty">改动较多，只列出前 {workingTree.length} 个文件。</p>
+                  <div className="pane-group-title">
+                    会话操作记录
+                    <span className="pane-count">{changeRows.length}</span>
+                  </div>
+                  {/* Keyed by conversation: which file a reader opened is about
+                      that conversation, and the same path in another one is not
+                      the same file. */}
+                  {changeRows.length ? (
+                    <ChangeList key={`session:${draftKey}`} rows={changeRows} />
+                  ) : (
+                    <p className="pane-empty">这场会话还没有修改文件。</p>
+                  )}
+                  <div className="pane-group-title pane-group-next">
+                    当前工作区未提交改动
+                    <span className="pane-count">{git?.files.length ?? 0}</span>
+                  </div>
+                  {!git && (
+                    <p className="pane-empty">
+                      {currentId ? "正在读取工作区状态…" : "开始会话后可查看工作区状态。"}
+                    </p>
+                  )}
+                  {git?.error && <p className="pane-empty">无法读取 Git 状态：{git.error}</p>}
+                  {git && !git.error && !git.repos.length && (
+                    <p className="pane-empty">会话所在目录不在 Git 仓库中。</p>
+                  )}
+                  {git && !git.error && git.repos.length > 0 && !git.files.length && (
+                    <p className="pane-empty">工作区没有未提交的改动。</p>
+                  )}
+                  <ChangeList key={`tree:${draftKey}`} rows={treeRows} />
+                  {git?.truncated && treeRows.length > 0 && (
+                    <p className="pane-empty">
+                      改动较多，只列出前 {treeRows.length} 个文件。
+                    </p>
                   )}
                 </>
               )}

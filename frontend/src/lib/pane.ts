@@ -321,6 +321,18 @@ const GIT_CODE: Record<string, string> = {
   T: "类型变更",
 };
 
+/** +/- line counts for a unified diff (headers excluded). */
+export function diffStats(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  return { added, removed };
+}
+
 /** One file's uncommitted state, as the working tree reports it right now. */
 export function gitStateLabel(file: GitFileState): string {
   if (file.untracked) return "未跟踪";
@@ -328,6 +340,63 @@ export function gitStateLabel(file: GitFileState): string {
   if (file.staged) parts.push(`已暂存${GIT_CODE[file.staged] ?? ""}`);
   if (file.unstaged) parts.push(`未暂存${GIT_CODE[file.unstaged] ?? ""}`);
   return parts.join(" · ") || "已修改";
+}
+
+/**
+ * A row of the change section: one file's counts, and its diff underneath.
+ *
+ * The two sources of the section — what this conversation changed, and what the
+ * working tree holds — produce the same rows, so a reader compares them the
+ * same way; only the diff's own provenance differs, and that stays with the
+ * group they are listed under.
+ */
+export interface ChangeRow {
+  key: string;
+  label: string;
+  rootLabel?: string;
+  added: number;
+  removed: number;
+  /** Extra state beside the counts: 未应用 / 未跟踪 / 已删除. */
+  meta?: string;
+  /** The diff to show below the row; absent when there is none to show. */
+  diff?: string;
+  /** Why there is no diff text, shown instead of one. */
+  note?: string;
+}
+
+/** Line totals over a set of rows, for the section's collapsed summary. */
+export function rowStats(rows: ChangeRow[]): { added: number; removed: number } {
+  return rows.reduce(
+    (acc, row) => ({ added: acc.added + row.added, removed: acc.removed + row.removed }),
+    { added: 0, removed: 0 },
+  );
+}
+
+/** The files this conversation changed, newest first, as the store recorded them. */
+export function sessionChangeRows(cards: ChangeCard[]): ChangeRow[] {
+  return cards.map((card) => ({
+    key: card.id,
+    label: card.path,
+    ...diffStats(card.diff),
+    // A `dry_run` patch was previewed, never written.
+    meta: card.applied ? undefined : "未应用",
+    diff: card.diff,
+  }));
+}
+
+/** The working tree's uncommitted files, with the diff each one carries. */
+export function workingTreeRows(files: GitFileState[]): ChangeRow[] {
+  return files.map((file) => ({
+    key: `git:${file.absolute_path}`,
+    label: file.path,
+    rootLabel: basename(file.repo),
+    added: file.added ?? 0,
+    removed: file.removed ?? 0,
+    meta: gitStateLabel(file),
+    // An empty diff says nothing; the row keeps just its counts and state.
+    diff: file.diff || undefined,
+    note: file.diff_note ?? undefined,
+  }));
 }
 
 /** A row of the pane's file list. */

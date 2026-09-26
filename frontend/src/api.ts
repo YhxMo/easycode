@@ -74,6 +74,8 @@ export interface SessionDetail extends SessionSummary {
 export interface GitFileState {
   /** Path relative to the repository. */
   path: string;
+  /** Path it was renamed or copied from, "" when it is not one. */
+  origin?: string;
   absolute_path: string;
   /** Repository top level the entry came from. */
   repo: string;
@@ -84,11 +86,23 @@ export interface GitFileState {
   unstaged: string;
   /** False for a deletion: there is nothing to preview. */
   exists: boolean;
+  /** Lines added against the repository's HEAD (index + worktree). */
+  added?: number;
+  removed?: number;
+  /** Git calls the file binary: its contents are not lines. */
+  binary?: boolean;
+  /** Diff against HEAD; absent when there is nothing usable to show. */
+  diff?: string | null;
+  /** Why the row carries no diff text (binary, deleted, oversized). */
+  diff_note?: string | null;
 }
 
 export interface GitChanges {
   repos: { root: string; name: string }[];
   files: GitFileState[];
+  /** Line totals over every reported file. */
+  added?: number;
+  removed?: number;
   truncated: boolean;
   error?: string | null;
 }
@@ -258,6 +272,22 @@ export function createSession(
 /** Pin or unpin a session; pinned sessions get their own sidebar section. */
 export function pinSession(id: string, pinned: boolean): Promise<{ ok: boolean }> {
   return request(`/api/sessions/${id}/pin`, { method: "POST", body: { pinned } });
+}
+
+/**
+ * Point a session at another project directory. Only a session that has not
+ * started a turn may move; the server answers with the updated summary and the
+ * project list, and refuses (409) anything that already ran something.
+ * Omitting ``secondaryRoots`` inherits the target project's own binding.
+ */
+export function setSessionWorkspace(
+  id: string,
+  root: string | null,
+  secondaryRoots?: string[],
+): Promise<{ session: SessionSummary; projects: WorkspaceProject[] }> {
+  const body: Record<string, unknown> = { root };
+  if (secondaryRoots !== undefined) body.secondary_roots = secondaryRoots;
+  return request(`/api/sessions/${encodeURIComponent(id)}/workspace`, { method: "POST", body });
 }
 
 /**

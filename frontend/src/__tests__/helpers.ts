@@ -29,6 +29,7 @@ export const apiMock = {
   revealInFinder: vi.fn(),
   saveProject: vi.fn(),
   setSessionArchived: vi.fn(),
+  setSessionWorkspace: vi.fn(),
   chooseWorkspace: vi.fn(),
   switchModel: vi.fn(),
   addModel: vi.fn(),
@@ -57,6 +58,10 @@ export function primeApiMock(m: typeof apiMock) {
   m.streamChat.mockResolvedValue(undefined);
   m.createSession.mockResolvedValue(session("new-1", "新会话"));
   m.deleteSession.mockResolvedValue({ deleted: true });
+  m.setSessionWorkspace.mockImplementation(async (id: string, root: string | null) => ({
+    session: { ...session(id, "新会话"), root },
+    projects: [],
+  }));
   m.setSessionPermission.mockImplementation(async (id: string, mode: string) => ({
     id,
     permission_mode: mode,
