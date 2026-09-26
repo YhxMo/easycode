@@ -4,6 +4,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   CommandInfo,
   FileEntry,
+  GitChanges,
   ModelsInfo,
   SessionDetail,
   SessionSummary,
@@ -12,10 +13,12 @@ import type {
 } from "./api";
 import {
   archiveProjectChats,
+  createSession,
   createWorktree,
   deleteSession,
   fetchArchivedSessions,
   fetchCommands,
+  fetchGitChanges,
   fetchModels,
   fetchFiles,
   fetchSession,
@@ -35,10 +38,11 @@ import { MENTION_LIST_ID, MENTION_OPTION_PREFIX, MentionMenu } from "./MentionMe
 import type { MentionAnswer, MentionState } from "./MentionMenu";
 import { ModelPicker } from "./ModelPicker";
 import { currentTurn } from "./chatStream";
-import { historyToItems } from "./lib/history";
-import type { ApprovalState, Item } from "./types";
+import { artifactsToItems, historyToItems } from "./lib/history";
+import type { ApprovalState, Item, ToolItem } from "./types";
 import { COMMAND_LIST_ID, CommandMenu } from "./CommandMenu";
-import { filterCommands, clampCommandIndex, moveCommandCursor } from "./lib/commands";
+import type { CommandMenuState } from "./CommandMenu";
+import { activeCommandId, filterCommands, clampCommandIndex, moveCommandCursor } from "./lib/commands";
 import { Modal } from "./components/Modal";
 import { ChatMessages } from "./components/ChatMessages";
 import { Sidebar } from "./components/Sidebar";
@@ -50,8 +54,9 @@ import { TabBar, type OpenTab } from "./components/layout/TabBar";
 import { SelectionActions } from "./components/primitives/SelectionActions";
 import { ContextCards } from "./components/primitives/ContextCards";
 import { DiffView } from "./components/primitives/DiffView";
+import { FileList } from "./components/primitives/FileList";
 import { FilePreview } from "./components/primitives/FilePreview";
-import { paneData } from "./lib/pane";
+import { fileRows, paneData, sessionFiles, sessionToolItems } from "./lib/pane";
 import { TaskRows } from "./components/primitives/TaskRows";
 import { groupSessions } from "./lib/sessionGroups";
 import { applyMention, mentionToken } from "./lib/mention";
@@ -89,13 +94,13 @@ const PANE_SECTIONS: PaneSection[] = [
 type SessionLoad = { status: "loading" } | { status: "error"; message: string };
 
 /**
- * One conversation's right-pane state. `turn` is the turn the open/section
- * choices were made in, so they expire with that turn and the next one can
- * open the pane again.
+ * One conversation's pane choices. `turn` is the turn they were made in, so
+ * they expire with that turn and the next one can pick its own section again.
+ * The pane switch itself is window-level (see `paneOpen`): only the section and
+ * the open preview describe a single conversation.
  */
 interface PaneState {
   turn: number;
-  open: boolean | null;
   section: string | null;
   preview: string | null;
 }
@@ -111,6 +116,17 @@ function readStoredTabs(): string[] {
   } catch {
     // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
     return [];
+  }
+}
+
+/** The conversation that was on screen, so a refresh comes back to it. */
+const CURRENT_TAB_KEY = "easycode:current_tab";
+
+function readStoredCurrentTab(): string | null {
+  try {
+    return window.localStorage.getItem(CURRENT_TAB_KEY) || null;
+  } catch {
+    return null;
   }
 }
 
@@ -139,10 +155,12 @@ export default function App() {
   // view keeps the old value and sending is blocked, so a turn can never write
   // an unconfirmed mode back to the server.
   const [permissionPending, setPermissionPending] = useState(false);
-  const [commandResult, setCommandResult] = useState<{ scope: string; commands: CommandInfo[] }>({
-    scope: "",
-    commands: [],
-  });
+  const [commandState, setCommandState] = useState<CommandMenuState>({ status: "loading" });
+  // Bumped by the menu's retry, and by a change in the registered projects.
+  const [commandRetry, setCommandRetry] = useState(0);
+  // The menu entry the user picked. It stays only as long as the composer still
+  // holds that command; see `activeCommandId`.
+  const [pickedCommand, setPickedCommand] = useState<{ id: string; name: string } | null>(null);
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdIndex, setCmdIndex] = useState(0);
   // `@` file references: the token under the caret and whether the user
@@ -168,11 +186,22 @@ export default function App() {
   // conversation stays in the sidebar and a running turn keeps streaming into
   // its own slot.
   const [openTabs, setOpenTabs] = useState<string[]>(() => readStoredTabs());
-  // The pane follows the turn: it opens itself once a turn has produced context
-  // or changes, and a choice the user makes (toggle or ✕) holds for that turn
-  // only, so the next turn can open it again. Choices are per conversation, so
-  // one session's open/closed pane never governs another's.
+  // The pane switch is window-level: what the user chose in one conversation
+  // holds when they switch to another, and a background turn never changes it.
+  const [paneOpen, setPaneOpen] = useState(false);
+  // Turn whose auto-open the user refused by closing the pane: new artifacts of
+  // that same turn must not reopen it, while the next turn may.
+  const paneMutedRef = useRef<string | null>(null);
+  // Section and preview are per conversation: they describe that conversation's
+  // work, so one session's choices never govern another's.
   const [paneState, setPaneState] = useState<Record<string, PaneState>>({});
+  // File-tool records per conversation, as fetched with the session. They are
+  // what the pane reads once a refresh (or a compaction) has taken the tool
+  // results out of the message history.
+  const [artifactRecords, setArtifactRecords] = useState<Record<string, ToolItem[]>>({});
+  // The working tree as it is right now, for the pane's change and file
+  // sections. Tagged with the conversation it was read for.
+  const [gitChanges, setGitChanges] = useState<{ session: string; data: GitChanges } | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   // Height of the floating composer: the message stream reserves exactly that
@@ -285,6 +314,17 @@ export default function App() {
     [setCaret, setInput],
   );
 
+  /** Picking a menu entry drops its command into the composer, id and all. */
+  const pickCommand = useCallback(
+    (c: CommandInfo) => {
+      setInput(`/${c.name} `);
+      setPickedCommand({ id: c.id, name: c.name });
+      setCmdOpen(false);
+      setCmdIndex(0);
+    },
+    [setInput],
+  );
+
   const {
     send,
     stop,
@@ -301,6 +341,7 @@ export default function App() {
     chosenRoot,
     secondary,
     permission,
+    commandId: activeCommandId(pickedCommand, input),
     currentModelName,
     sendBlocked,
     getViewToken: () => openSeqRef.current,
@@ -357,30 +398,30 @@ export default function App() {
     fetchModels().then(setModels).catch(() => {});
   }, [refreshSessions]);
 
-  // Command discovery follows the exact foreground scope: an open session's
-  // own roots/skills, or the draft's root + secondary list. A result carries
-  // the scope it was fetched for, so a stale menu disappears the moment the
-  // scope changes and a late reply can never replace the current one.
-  const commandScope = JSON.stringify([currentId, chosenRoot, secondary]);
-  const commands = useMemo(
-    () => (commandResult.scope === commandScope ? commandResult.commands : []),
-    [commandResult, commandScope],
-  );
-  const commandMatches = useMemo(
-    () => (cmdOpen ? filterCommands(commands, input) : []),
-    [cmdOpen, commands, input],
-  );
+  // The menu offers every registered project's commands and skills plus the
+  // personal ones, so it does not depend on the conversation on screen: only a
+  // change in the registered projects (or an explicit retry) re-reads the list.
+  const projectSig = (workspaces.projects ?? []).map((p) => p.root ?? "").join("\u0000");
   useEffect(() => {
-    const scope = JSON.stringify([currentId, chosenRoot, secondary]);
-    const draft = currentId === null ? { root: chosenRoot, secondary } : undefined;
     let live = true;
-    fetchCommands(currentId, draft)
-      .then((r) => live && setCommandResult({ scope, commands: r.commands }))
-      .catch(() => live && setCommandResult({ scope, commands: [] }));
+    fetchCommands()
+      .then((r) => live && setCommandState({ status: "ready", commands: r.commands }))
+      .catch((e: unknown) => {
+        if (!live) return;
+        setCommandState({
+          status: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      });
     return () => {
       live = false;
     };
-  }, [currentId, chosenRoot, secondary]);
+  }, [commandRetry, projectSig]);
+  // A stable list per state: the keyboard handler below depends on it.
+  const commands = useMemo(
+    () => (commandState.status === "ready" ? commandState.commands : []),
+    [commandState],
+  );
 
   // `@` references: fetch the listing for the token under the caret, debounced
   // so typing does not fire a request per keystroke. A reply is used only while
@@ -485,6 +526,14 @@ export default function App() {
     }
   }, [openTabs]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CURRENT_TAB_KEY, currentId ?? "");
+    } catch {
+      // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
+    }
+  }, [currentId]);
+
   // ---- toast (shared by openSession failure + project actions) ----
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
@@ -543,6 +592,13 @@ export default function App() {
           }
           setSecondary(detail.secondary_roots ?? []);
           setPermission(detail.permission_mode ?? "ask");
+          // Records describe the whole conversation, not one turn, so they are
+          // adopted even while a turn runs: the live items fill in whatever the
+          // server had not recorded when this reply was sent.
+          setArtifactRecords((prev) => ({
+            ...prev,
+            [id]: artifactsToItems(detail.artifacts ?? []),
+          }));
           setSessionLoad(null);
         } catch (e) {
           if (openSeqRef.current !== token) return;
@@ -565,6 +621,24 @@ export default function App() {
     },
     [showToast, currentId, busy, sessionLoad, loadHistory, dropEntry, isStreaming, registerTab],
   );
+
+  // Reopen the remembered conversation, but only while the server still lists
+  // it: a session deleted while this page was closed must not come back as a
+  // view of something that is gone. The id is read during the first render —
+  // the effect below writes the current (still empty) view back to the same key
+  // before this check could run, so reading it later would always find "none".
+  const [rememberedTab] = useState(readStoredCurrentTab);
+  const restoredTabRef = useRef(false);
+  useEffect(() => {
+    if (restoredTabRef.current) return;
+    restoredTabRef.current = true;
+    if (!rememberedTab) return;
+    fetchSessions()
+      .then((list) => {
+        if (list.some((s) => s.id === rememberedTab)) openSession(rememberedTab);
+      })
+      .catch(() => {});
+  }, [rememberedTab, openSession]);
 
   // Restore the caret a conversation was left at. The field keeps the focus it
   // has: this only puts the insertion point where the user stopped typing.
@@ -601,12 +675,34 @@ export default function App() {
     setChosenRoot(root);
   }, []);
 
+  /**
+   * Create the conversation the user just asked for, before anything is sent:
+   * the tab that appears is backed by a real session, so an empty one survives
+   * a refresh and closing it can remove it for good.
+   */
+  const createAndOpen = useCallback(
+    async (root: string | null) => {
+      setSidebarOpen(false);
+      try {
+        const created = await createSession(root, permission);
+        // Text typed on the start page was meant for the conversation the user
+        // just asked for, so it comes along instead of being parked on a page
+        // they have left.
+        if (currentId === null) drafts.move(DRAFT_KEY, created.id);
+        refreshSessions();
+        openSession(created.id);
+      } catch (e) {
+        showToast("err", `新建会话失败: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [currentId, drafts, openSession, permission, refreshSessions, showToast],
+  );
+
   const newSession = useCallback(() => {
-    openSession(null);
-    setChosenRoot(null);
-    setSidebarOpen(false);
-    refreshSessions();
-  }, [openSession, refreshSessions]);
+    // Inherit the project on screen: the open session's own project, or the
+    // directory picked on the start page.
+    void createAndOpen(currentId ? (currentSession?.root ?? null) : chosenRoot);
+  }, [createAndOpen, currentId, currentSession, chosenRoot]);
 
   // ---- project row actions (new chat / more menu) ----
   const [editTarget, setEditTarget] = useState<{ root: string | null; name: string } | null>(null);
@@ -681,14 +777,10 @@ export default function App() {
 
   const newChatInProject = useCallback(
     (root: string | null) => {
-      const proj = root ? projectMeta.get(root) : null;
-      openSession(null);
-      setChosenRoot(root);
-      setSecondary(proj?.secondary ?? []);
-      setSidebarOpen(false);
-      refreshSessions();
+      // This row's project is the requested one, whatever is on screen now.
+      void createAndOpen(root);
     },
-    [openSession, projectMeta, refreshSessions],
+    [createAndOpen],
   );
 
   const runProjectAction = useCallback(
@@ -810,22 +902,54 @@ export default function App() {
   );
 
   const closeTab = useCallback(
-    (id: string) => {
+    async (id: string) => {
       const index = openTabs.indexOf(id);
       const remaining = openTabs.filter((t) => t !== id);
+      const target = sessions.find((s) => s.id === id);
+      // A conversation the server reports as never started is not worth
+      // keeping: ask it to remove the session — it re-checks under its own lock,
+      // so a turn that began in the meantime keeps it — and only then drop the
+      // tab. Anything else keeps its slot, so a turn's output is never lost and
+      // the tab can be reopened; an unknown "started" is treated as started,
+      // because only an explicit blank is safe to delete.
+      if (target && target.started === false && !isStreaming(id)) {
+        try {
+          await deleteSession(id, true);
+        } catch (e) {
+          // The session is still there. Keep the tab rather than send the user
+          // back to a sidebar row they thought they had closed.
+          showToast("err", `关闭会话失败: ${e instanceof Error ? e.message : String(e)}`);
+          return;
+        }
+        drafts.clear(id);
+        refreshSessions();
+      }
       setOpenTabs(remaining);
       // Dropping an idle conversation makes reopening it reload from disk; a
-      // running turn keeps its slot (and its draft) so its output is not lost
-      // and the tab can be reopened without cancelling anything.
+      // running turn keeps its slot (and its draft) so its output is not lost.
       dropEntry(id);
       if (id !== currentId) return;
       const neighbour = remaining[index] ?? remaining[index - 1] ?? null;
       openSession(neighbour);
     },
-    [openTabs, currentId, dropEntry, openSession],
+    [
+      openTabs,
+      currentId,
+      sessions,
+      drafts,
+      dropEntry,
+      isStreaming,
+      openSession,
+      refreshSessions,
+      showToast,
+    ],
   );
 
   const currentRoot = currentSession?.root ?? null;
+  // The project a new conversation from the sidebar joins: the one on screen,
+  // so the button's hint names what the user will actually get.
+  const nextSessionRoot = currentId ? currentRoot : chosenRoot;
+  const newSessionLabel = nextSessionRoot ? basename(nextSessionRoot) : DEFAULT_PROJECT;
   // What the empty stage can promise: the directory this draft would run in.
   const draftContext = chosenRoot
     ? basename(chosenRoot)
@@ -862,7 +986,21 @@ export default function App() {
   // Turns are counted by user messages: a choice made in one turn must not
   // carry over to the next.
   const turnNo = useMemo(() => items.filter((it) => it.kind === "user").length, [items]);
-  const pane = useMemo(() => paneData(turn), [turn]);
+  // The pane reads the whole conversation, not just the turn on screen: its
+  // records outlive the message history, and the calls this view holds but the
+  // server has not recorded yet are appended to them.
+  const sessionRecords = useMemo(
+    () => (currentId ? (artifactRecords[currentId] ?? []) : []),
+    [artifactRecords, currentId],
+  );
+  const pane = useMemo(
+    () => paneData(sessionToolItems(sessionRecords, items)),
+    [sessionRecords, items],
+  );
+  // Newest first: this list is the conversation, and the card a turn just
+  // produced is the one worth seeing without scrolling.
+  const contextCards = useMemo(() => [...pane.context].reverse(), [pane]);
+  const changeCards = useMemo(() => [...pane.changes].reverse(), [pane]);
   // The task list is session state: the newest one stays on screen even after
   // its turn ends. Only a list produced by *this* turn may open the pane by
   // itself — an older one must not pop it open the instant a turn starts.
@@ -882,7 +1020,6 @@ export default function App() {
   // written earlier reads as the current progress unless it is labelled. Only a
   // turn that actually ran here counts — a restored list never describes now.
   const listIsStale = todos.length > 0 && !(turnTodos && liveTurn);
-  const hasArtifacts = pane.context.length > 0 || pane.changes.length > 0 || turnTodos;
   // The pane covers the stream once the chat area gets narrow. Measured from
   // the element the CSS container query measures, so the two agree; a narrow
   // pane must not open on its own, since it would hide the reply it describes.
@@ -899,13 +1036,27 @@ export default function App() {
     return () => observer.disconnect();
   }, []);
 
+  // A turn producing its first artifact opens the pane by itself. The trigger is
+  // the artifact count *growing* while one turn is on screen, which is what
+  // keeps switching conversations from opening it: a switch changes the turn,
+  // and a restored conversation's history is not something this view produced.
+  const artifactCount = pane.context.length + pane.changes.length + (turnTodos ? 1 : 0);
+  const paneTurnKey = `${draftKey}#${turnNo}`;
+  const seenArtifactsRef = useRef({ key: paneTurnKey, count: artifactCount });
+  useEffect(() => {
+    const seen = seenArtifactsRef.current;
+    seenArtifactsRef.current = { key: paneTurnKey, count: artifactCount };
+    if (seen.key !== paneTurnKey || artifactCount <= seen.count) return;
+    // Only work that ran in this view counts: a session's restored history
+    // carries artifacts of its own, and they must not pop the pane open.
+    if (!liveTurn) return;
+    // A drawer would cover the reply it describes, and a pane the user closed
+    // in this turn stays closed until the next one.
+    if (chatNarrow || paneMutedRef.current === paneTurnKey) return;
+    setPaneOpen(true);
+  }, [paneTurnKey, artifactCount, chatNarrow, liveTurn]);
+
   const paneSelf = paneState[draftKey];
-  // An explicit choice holds for the turn it was made in; otherwise the pane
-  // opens itself only where it can sit beside the conversation.
-  const paneOpen =
-    paneSelf?.turn === turnNo && paneSelf.open !== null
-      ? paneSelf.open
-      : !chatNarrow && liveTurn && hasArtifacts;
   const paneSection =
     paneSelf?.turn === turnNo && paneSelf.section
       ? paneSelf.section
@@ -918,14 +1069,10 @@ export default function App() {
   const patchPaneState = useCallback(
     (key: string, patch: Partial<PaneState>) =>
       setPaneState((prev) => {
-        const self = prev[key] ?? { turn: 0, open: null, section: null, preview: null };
+        const self = prev[key] ?? { turn: 0, section: null, preview: null };
         return { ...prev, [key]: { ...self, ...patch } };
       }),
     [],
-  );
-  const setPane = useCallback(
-    (open: boolean) => patchPaneState(draftKey, { turn: turnNo, open }),
-    [patchPaneState, draftKey, turnNo],
   );
   const chooseSection = useCallback(
     (section: string) => patchPaneState(draftKey, { turn: turnNo, section }),
@@ -935,12 +1082,23 @@ export default function App() {
     (path: string | null) => patchPaneState(draftKey, { preview: path }),
     [patchPaneState, draftKey],
   );
+  /** Open one file's preview, from whichever section offered it. */
+  const openFile = useCallback(
+    (target: string) => {
+      setPreview(target);
+      chooseSection("file");
+    },
+    [setPreview, chooseSection],
+  );
 
   const closePane = useCallback(() => {
-    setPane(false);
+    setPaneOpen(false);
+    // Closing during a turn is a decision about that turn: it must survive the
+    // artifacts still arriving, and expire with the turn.
+    paneMutedRef.current = paneTurnKey;
     // A drawer that vanishes hands the keyboard back to what opened it.
     if (chatNarrow) paneToggleRef.current?.focus();
-  }, [setPane, chatNarrow]);
+  }, [chatNarrow, paneTurnKey]);
 
   // Escape closes the drawer, the way it closes a modal. The composer keeps its
   // own Escape (its menus use it), so events coming from there are left alone.
@@ -954,6 +1112,40 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [chatNarrow, paneOpen, closePane]);
+
+  // The working tree as it is now, for the sections that report it. Read when
+  // those sections come into view and once more when a turn ends, which is when
+  // the files it touched have finished changing.
+  const git = gitChanges && gitChanges.session === currentId ? gitChanges.data : null;
+  const paneWantsGit = paneOpen && (paneSection === "changes" || paneSection === "file");
+  useEffect(() => {
+    if (!currentId || !paneWantsGit) return;
+    let live = true;
+    fetchGitChanges(currentId)
+      .then((data) => live && setGitChanges({ session: currentId, data }))
+      .catch((e: unknown) => {
+        if (!live) return;
+        setGitChanges({
+          session: currentId,
+          data: {
+            repos: [],
+            files: [],
+            truncated: false,
+            error: e instanceof Error ? e.message : String(e),
+          },
+        });
+      });
+    return () => {
+      live = false;
+    };
+  }, [currentId, paneWantsGit, busy]);
+
+  const fileEntries = useMemo(() => sessionFiles(pane.context, pane.changes), [pane]);
+  const paneFiles = useMemo(() => fileRows(fileEntries, git?.files ?? []), [fileEntries, git]);
+  // The change section lists the working tree on its own terms, session-touched
+  // files included: what is uncommitted and what this conversation did are two
+  // different facts, and both are worth seeing next to each other.
+  const workingTree = useMemo(() => fileRows([], git?.files ?? []), [git]);
 
   // The centred first-run stage replaces the stream until a conversation has
   // something to show; a load in progress is never masked by it.
@@ -1045,11 +1237,7 @@ export default function App() {
           // Same rule as the file menu while it is actually showing something.
           e.preventDefault();
           const pick = filtered[clampCommandIndex(filtered, cmdIndex)];
-          if (pick) {
-            setInput(`/${pick.name} `);
-            setCmdOpen(false);
-            setCmdIndex(0);
-          }
+          if (pick) pickCommand(pick);
           return;
         }
       }
@@ -1064,11 +1252,11 @@ export default function App() {
       input,
       cmdIndex,
       send,
-      setInput,
       mentionOpen,
       mentionMatches,
       mentionIndex,
       pickMention,
+      pickCommand,
     ],
   );
 
@@ -1115,7 +1303,7 @@ export default function App() {
       }}
       onCompositionEnd={(v, nextCaret) => syncComposer(v, nextCaret)}
       fieldRef={fieldRef}
-      menuOpen={mentionOpen || commandMatches.length > 0}
+      menuOpen={mentionOpen || cmdOpen}
       menuId={mentionOpen ? MENTION_LIST_ID : COMMAND_LIST_ID}
       activeOptionId={
         mentionOpen
@@ -1160,15 +1348,12 @@ export default function App() {
           />
         ) : (
           <CommandMenu
-            commands={commands}
+            state={commandState}
             open={cmdOpen}
             query={input}
             index={cmdIndex}
-            onPick={(c) => {
-              setInput(`/${c.name} `);
-              setCmdOpen(false);
-              setCmdIndex(0);
-            }}
+            onPick={pickCommand}
+            onRetry={() => setCommandRetry((n) => n + 1)}
             onClose={() => setCmdOpen(false)}
           />
         )
@@ -1195,6 +1380,7 @@ export default function App() {
         currentRoot={currentRoot}
         secondary={secondary}
         onNewSession={newSession}
+        newSessionLabel={newSessionLabel}
         onOpenSession={openSession}
         onToggleSection={toggleSection}
         onToggleCollapsed={toggleProjectCollapsed}
@@ -1256,7 +1442,7 @@ export default function App() {
                 aria-pressed={paneOpen}
                 title={paneOpen ? "收起面板" : "展开面板"}
                 ref={paneToggleRef}
-                onClick={() => (paneOpen ? closePane() : setPane(true))}
+                onClick={() => (paneOpen ? closePane() : setPaneOpen(true))}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -1308,7 +1494,7 @@ export default function App() {
                   onContinue={continueUnfinished}
                   onOpenTasks={() => {
                     chooseSection("tasks");
-                    setPane(true);
+                    setPaneOpen(true);
                   }}
                 />
                 {busy && !activeTool && !pendingApproval && (
@@ -1347,27 +1533,52 @@ export default function App() {
         >
           {paneSection === "tasks" && <TaskRows todos={todos} stale={listIsStale} />}
           {paneSection === "context" && (
-            <ContextCards
-              cards={pane.context}
-              onOpen={(target) => {
-                setPreview(target);
-                chooseSection("file");
-              }}
-            />
+            <ContextCards cards={contextCards} onOpen={openFile} />
           )}
-          {paneSection === "changes" &&
-            (pane.changes.length ? (
-              pane.changes.map((change) => (
-                <DiffView
-                  key={change.id}
-                  path={change.path}
-                  diff={change.diff}
-                  applied={change.applied}
-                />
-              ))
-            ) : (
-              <p className="pane-empty">这一轮还没有修改文件。</p>
-            ))}
+          {paneSection === "changes" && (
+            <>
+              <div className="pane-group-title">
+                会话操作记录
+                <span className="pane-count">{changeCards.length}</span>
+              </div>
+              {changeCards.length ? (
+                changeCards.map((change) => (
+                  <DiffView
+                    key={change.id}
+                    path={change.path}
+                    diff={change.diff}
+                    applied={change.applied}
+                  />
+                ))
+              ) : (
+                <p className="pane-empty">这场会话还没有修改文件。</p>
+              )}
+              <div className="pane-group-title pane-group-next">
+                当前工作区未提交改动
+                <span className="pane-count">{git?.files.length ?? 0}</span>
+              </div>
+              {!git && (
+                <p className="pane-empty">
+                  {currentId ? "正在读取工作区状态…" : "开始会话后可查看工作区状态。"}
+                </p>
+              )}
+              {git?.error && <p className="pane-empty">无法读取 Git 状态：{git.error}</p>}
+              {git && !git.error && !git.repos.length && (
+                <p className="pane-empty">会话所在目录不在 Git 仓库中。</p>
+              )}
+              {git && !git.error && git.repos.length > 0 && !git.files.length && (
+                <p className="pane-empty">工作区没有未提交的改动。</p>
+              )}
+              {workingTree.length > 0 && (
+                <>
+                  <FileList rows={workingTree} onOpen={openFile} />
+                  {git?.truncated && (
+                    <p className="pane-empty">改动较多，只列出前 {workingTree.length} 个文件。</p>
+                  )}
+                </>
+              )}
+            </>
+          )}
           {paneSection === "file" &&
             (preview && currentId ? (
               // The key carries the conversation as well as the path: the same
@@ -1376,13 +1587,18 @@ export default function App() {
                 key={`${currentId}:${preview}`}
                 sessionId={currentId}
                 path={preview}
-                onBack={() => {
-                  setPreview(null);
-                  chooseSection("context");
-                }}
+                onBack={() => setPreview(null)}
               />
+            ) : paneFiles.length ? (
+              <>
+                <div className="pane-group-title">
+                  会话涉及的文件
+                  <span className="pane-count">{paneFiles.length}</span>
+                </div>
+                <FileList rows={paneFiles} onOpen={openFile} />
+              </>
             ) : (
-              <p className="pane-empty">从「上下文」里打开一个文件查看内容。</p>
+              <p className="pane-empty">这场会话还没有涉及文件。</p>
             ))}
         </RightPane>
         {toast && (

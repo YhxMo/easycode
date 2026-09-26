@@ -26,6 +26,22 @@ export function clampCommandIndex(filtered: CommandInfo[], index: number): numbe
 }
 
 /**
+ * The id a request should send: the entry the user picked, for as long as the
+ * text is still that command. Anything else means they typed over it, and a
+ * leftover id must never expand a prompt it no longer describes.
+ */
+export function activeCommandId(
+  picked: { id: string; name: string } | null,
+  text: string,
+): string | null {
+  if (!picked) return null;
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith(`/${picked.name}`)) return null;
+  const rest = trimmed.slice(picked.name.length + 1);
+  return rest === "" || /^\s/.test(rest) ? picked.id : null;
+}
+
+/**
  * Single source of truth for the command-menu boundary logic. Both the
  * CommandMenu component and App's textarea onKeyDown use this so the ArrowUp /
  * ArrowDown clamp behavior cannot drift between the two implementations.

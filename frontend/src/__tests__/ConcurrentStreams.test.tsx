@@ -142,6 +142,20 @@ describe("App · 并发与新建会话", () => {
         { root: "/repoB", secondary: ["/shared"] },
       ],
     });
+    const createdB = {
+      ...session("B2", "新会话"),
+      root: "/repoB",
+      secondary_roots: ["/shared"],
+      started: false,
+    };
+    m.createSession.mockResolvedValue(createdB);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === "B2"
+          ? { ...createdB, messages: [] }
+          : { ...session(id, id === "A" ? "会话A" : "会话B"), messages: [] },
+      ),
+    );
 
     render(<App />);
     await screen.findByText("会话A");
@@ -157,15 +171,13 @@ describe("App · 并发与新建会话", () => {
     expect(newInB.disabled).toBe(false);
     await user.click(newInB);
 
+    // The new conversation belongs to B and carries B's binding, so the turn
+    // that follows needs no root of its own.
+    await waitFor(() => expect(m.createSession).toHaveBeenCalledWith("/repoB", expect.any(String)));
     await user.type(composerField(), "b turn");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(2));
-    expect(m.streamChat).toHaveBeenLastCalledWith(
-      null,
-      "b turn",
-      expect.any(Function),
-      expect.objectContaining({ root: "/repoB", secondary_roots: ["/shared"] }),
-    );
+    expect(m.streamChat).toHaveBeenLastCalledWith("B2", "b turn", expect.any(Function), expect.anything());
     // A keeps running: nothing was cancelled on its behalf.
     expect(m.cancelSessionChat).not.toHaveBeenCalled();
     await act(async () => streams[0].onEvent({ type: "text", content: "A 仍在输出" }));

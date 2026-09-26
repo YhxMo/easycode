@@ -305,9 +305,9 @@ describe("App", () => {
     const user = userEvent.setup();
     m.fetchCommands.mockResolvedValue({
       commands: [
-        { name: "a", description: "", kind: "skill" },
-        { name: "b", description: "", kind: "template" },
-        { name: "c", description: "", kind: "skill" },
+        { id: "user::a", name: "a", description: "", kind: "skill" },
+        { id: "user::b", name: "b", description: "", kind: "template" },
+        { id: "user::c", name: "c", description: "", kind: "skill" },
       ],
     });
 
@@ -440,60 +440,44 @@ describe("App", () => {
     expect(screen.getAllByRole("button", { name: "允许一次" })).toHaveLength(1);
   });
 
-  it("打开会话后按会话范围刷新命令（DEC-C8）", async () => {
+  it("命令菜单列出所有项目的同名命令并标明来源", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
+    m.fetchCommands.mockResolvedValue({
+      commands: [
+        {
+          id: "project:/a:shared",
+          name: "shared",
+          description: "在 A",
+          kind: "template",
+          source: "project",
+          source_label: "A 项目",
+        },
+        {
+          id: "project:/b:shared",
+          name: "shared",
+          description: "在 B",
+          kind: "template",
+          source: "project",
+          source_label: "B 项目",
+        },
+      ],
+    });
 
     render(<App />);
     await screen.findByText("会话A");
+    const before = m.fetchCommands.mock.calls.length;
 
     await user.click(sidebarRow("会话A"));
-
-    await waitFor(() => expect(m.fetchCommands).toHaveBeenLastCalledWith("s1", undefined));
-  });
-
-  it("命令范围快速切换时旧响应不覆盖新范围", async () => {
-    const user = userEvent.setup();
-    m.fetchSessions.mockResolvedValue([session("s1", "会话A"), session("s2", "会话B")]);
-    m.fetchSession.mockImplementation((id: string) =>
-      Promise.resolve(id === "s1" ? detail("s1", "会话A", []) : detail("s2", "会话B", [])),
-    );
-    const pending: Array<{
-      sessionId: string | null;
-      resolve: (v: { commands: api.CommandInfo[] }) => void;
-    }> = [];
-    m.fetchCommands.mockImplementation(
-      (sessionId?: string | null) =>
-        new Promise<{ commands: api.CommandInfo[] }>((resolve) => {
-          pending.push({ sessionId: sessionId ?? null, resolve });
-        }),
-    );
-
-    render(<App />);
-    await screen.findByText("会话A");
-    await screen.findByText("会话B");
-    await user.click(sidebarRow("会话A"));
-    await user.click(sidebarRow("会话B"));
-
-    const callFor = (id: string) => pending.filter((p) => p.sessionId === id).at(-1)!;
-    await waitFor(() => expect(callFor("s2")).toBeTruthy());
-
-    // B (current scope) resolves first, then A's stale response arrives late.
-    await act(async () => {
-      callFor("s2").resolve({
-        commands: [{ name: "only-b", description: "", kind: "template" }],
-      });
-    });
-    await act(async () => {
-      callFor("s1").resolve({
-        commands: [{ name: "only-a", description: "", kind: "template" }],
-      });
-    });
-
     await user.type(composerField(), "/");
-    await screen.findByText("/only-b");
-    expect(screen.queryByText("/only-a")).toBeNull();
+
+    // The same name from two projects is two entries, each naming its source.
+    expect(await screen.findAllByText("/shared")).toHaveLength(2);
+    expect(screen.getByText("A 项目")).toBeTruthy();
+    expect(screen.getByText("B 项目")).toBeTruthy();
+    // ...and the menu does not depend on which conversation is on screen.
+    expect(m.fetchCommands.mock.calls.length).toBe(before);
   });
 
   it("新会话发送显式携带次目录列表（空列表表示明确不使用）", async () => {

@@ -151,7 +151,7 @@ describe("App · 标签生命周期", () => {
     // Deleting a session this page no longer knows the title of must not leave
     // a nameless "会话" tab behind.
     m.fetchSessions.mockResolvedValue([session("B", "会话B")]);
-    m.deleteSession.mockResolvedValue(undefined);
+    m.deleteSession.mockResolvedValue({ deleted: true });
     await waitFor(() => expect(sidebarRow("会话B")).toBeTruthy());
     await user.click(within(sessionRow("会话B")).getByTitle("删除"));
     await user.click(screen.getByRole("button", { name: "确认删除" }));
@@ -196,16 +196,51 @@ describe("App · 草稿归属", () => {
     expect(composer().value).toBe("只给 A 的草稿");
   });
 
-  it("关闭标签后重开仍能恢复草稿", async () => {
+  it("关闭已有回合的标签只收起视图，重开仍能恢复草稿", async () => {
     const user = userEvent.setup();
+    m.fetchSession.mockImplementation(async (id: string) =>
+      detail(id, "会话A", [{ role: "user", content: "hi" }, { role: "assistant", content: "内容" }]),
+    );
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
     await user.type(composer(), "还没发");
     await user.click(screen.getByRole("button", { name: "关闭 会话A" }));
 
+    // The conversation had already run, so the tab close is view-only.
+    expect(m.deleteSession).not.toHaveBeenCalled();
     await user.click(sidebarRow("会话A"));
     expect(composer().value).toBe("还没发");
+  });
+
+  it("关闭空白标签会连同会话一起删除", async () => {
+    const user = userEvent.setup();
+    // The server creates it, then lists it: the tab only survives because the
+    // list carries it, which is how a real blank session behaves.
+    let created: api.SessionSummary | null = null;
+    m.fetchSessions.mockImplementation(async () => [
+      session("A", "会话A"),
+      ...(created ? [created] : []),
+    ]);
+    m.createSession.mockImplementation(async () => {
+      created = { ...session("new-1", "新会话"), started: false };
+      return created;
+    });
+    m.fetchSession.mockImplementation(async (id: string) =>
+      id === "new-1" && created ? { ...created, messages: [] } : detail(id, "会话A", []),
+    );
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await waitFor(() => expect(m.createSession).toHaveBeenCalled());
+    await waitFor(() => expect(tabTitles()).toEqual(["新会话"]));
+
+    await user.click(screen.getByRole("button", { name: "关闭 新会话" }));
+
+    // The server confirmed it never started a turn, which is what allows the
+    // tab close to remove it instead of only hiding the view.
+    await waitFor(() => expect(m.deleteSession).toHaveBeenCalledWith("new-1", true));
+    await waitFor(() => expect(tabTitles()).toEqual([]));
   });
 
   it("前台发送并立即切走，回合结束不清空另一个会话的输入", async () => {
@@ -251,7 +286,7 @@ describe("App · 草稿归属", () => {
 });
 
 describe("App · 面板归属", () => {
-  it("一个会话手动关闭面板，不影响另一个会话的自动打开", async () => {
+  it("面板开关属于整个窗口：切换会话不改变它，新产物仍会自动展开", async () => {
     const user = userEvent.setup();
     const streams = captureStreams();
 
@@ -268,8 +303,12 @@ describe("App · 面板归属", () => {
     await closePane(user);
     expect(paneOpen()).toBe(false);
 
-    // B is at its own first turn: A's closed pane must not hold it back.
+    // Switching conversations is not by itself a reason to open the pane again.
     await user.click(sidebarRow("会话B"));
+    await waitFor(() => expect(activeTitle()).toBe("会话B"));
+    expect(paneOpen()).toBe(false);
+
+    // B's own new artifacts do open it: the automatic opening is per turn.
     await user.type(composer(), "b1");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(2));
@@ -277,9 +316,10 @@ describe("App · 面板归属", () => {
     await act(async () => streams[1].resolve());
     await waitFor(() => expect(paneOpen()).toBe(true));
 
-    // A keeps its own choice.
+    // One switch serves the whole window: A now shows the open pane too.
     await user.click(sidebarRow("会话A"));
-    expect(paneOpen()).toBe(false);
+    await waitFor(() => expect(activeTitle()).toBe("会话A"));
+    expect(paneOpen()).toBe(true);
   });
 
   it("上一轮的清单不会让新回合一发送就弹开面板", async () => {

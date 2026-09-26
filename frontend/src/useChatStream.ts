@@ -17,6 +17,8 @@ export interface UseChatStreamParams {
   secondary: string[];
   /** Permission mode of the session being composed (draft) or viewed. */
   permission: string;
+  /** Id of the `/` menu entry the composer is holding, if any. */
+  commandId: string | null;
   /** Model name at send time, stamped onto the turn's assistant messages for the reply meta row. */
   currentModelName: string;
   /** Foreground session is loading or failed to load: composing is not allowed. */
@@ -151,6 +153,7 @@ export function useChatStream(params: UseChatStreamParams) {
       opts.secondary_roots = c.secondary;
     }
     opts.permission_mode = c.permission;
+    if (c.commandId) opts.command_id = c.commandId;
     opts.signal = request.controller.signal;
     const patches: Item[] = [
       // Stamp the time at send: rendering must not fall back to the clock.

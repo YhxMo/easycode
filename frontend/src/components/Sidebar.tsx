@@ -38,6 +38,16 @@ function Caret({ open }: { open: boolean }) {
   );
 }
 
+/** New conversation in this project: a square with a pencil over its corner. */
+function ComposeIcon() {
+  return (
+    <svg className="side-compose" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M13.6 5.6H6.3a2.6 2.6 0 0 0-2.6 2.6v9.5a2.6 2.6 0 0 0 2.6 2.6h9.5a2.6 2.6 0 0 0 2.6-2.6v-7.3" />
+      <path d="M17.3 3.5l3.2 3.2-7.2 7.2-3.9.7.7-3.9z" />
+    </svg>
+  );
+}
+
 export interface SidebarProps {
   currentId: string | null;
   /** Per-session running/approval state, for row badges. */
@@ -61,6 +71,8 @@ export interface SidebarProps {
   /** Secondary roots of the draft (new session) or open session. */
   secondary: string[];
   onNewSession: () => void;
+  /** Project a new conversation joins, for the button's hint. */
+  newSessionLabel: string;
   onOpenSession: (id: string) => void;
   onToggleSection: (key: string) => void;
   onToggleCollapsed: (key: string) => void;
@@ -94,6 +106,7 @@ export function Sidebar({
   currentRoot,
   secondary,
   onNewSession,
+  newSessionLabel,
   onOpenSession,
   onToggleSection,
   onToggleCollapsed,
@@ -186,6 +199,11 @@ export function Sidebar({
             )}
           </button>
           <div className="group-head-actions">
+            <ProjectMenu
+              pinned={g.pinned}
+              running={g.sessions.some((s) => activity[s.id]?.busy)}
+              onAction={(action) => onProjectAction(g.root, action)}
+            />
             <button
               type="button"
               className="group-new-btn"
@@ -196,13 +214,8 @@ export function Sidebar({
                 onNewChatInProject(g.root);
               }}
             >
-              <span aria-hidden="true">＋</span>
+              <ComposeIcon />
             </button>
-            <ProjectMenu
-              pinned={g.pinned}
-              running={g.sessions.some((s) => activity[s.id]?.busy)}
-              onAction={(action) => onProjectAction(g.root, action)}
-            />
           </div>
         </div>
         {!collapsed && g.sessions.map(sessionRow)}
@@ -275,11 +288,11 @@ export function Sidebar({
             <button
               className="new-btn"
               type="button"
-              title="在默认工作区新建会话"
+              title={`在「${newSessionLabel}」新建会话`}
               onClick={onNewSession}
             >
               <span aria-hidden="true">＋</span> 新会话
-              <small className="new-btn-hint">默认工作区</small>
+              <small className="new-btn-hint">{newSessionLabel}</small>
             </button>
           </>,
         )}

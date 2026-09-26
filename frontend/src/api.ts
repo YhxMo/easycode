@@ -29,6 +29,8 @@ export interface SessionSummary {
   secondary_roots?: string[];
   pinned?: boolean;
   pinned_at?: string | null;
+  /** False until a turn has begun: what the blank-tab close relies on. */
+  started?: boolean;
 }
 
 export type ApprovalDecision = Exclude<ApprovalState, "pending">;
@@ -50,12 +52,45 @@ export interface TurnFailure {
   code?: string;
 }
 
+/** One persisted file-tool result, in the shape the pane already reads. */
+export interface ArtifactRecord {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result?: string;
+}
+
 export interface SessionDetail extends SessionSummary {
   messages: HistoryMessage[];
   approvals?: ApprovalRecord[];
   user_times?: string[];
   turn_failures?: TurnFailure[];
   todos?: TodoItem[];
+  /** File-tool records of the whole conversation; see lib/pane. */
+  artifacts?: ArtifactRecord[];
+}
+
+/** One file with uncommitted changes in a repository this session runs in. */
+export interface GitFileState {
+  /** Path relative to the repository. */
+  path: string;
+  absolute_path: string;
+  /** Repository top level the entry came from. */
+  repo: string;
+  untracked: boolean;
+  /** Index (staged) status letter from `git status`, "" when clean. */
+  staged: string;
+  /** Worktree (unstaged) status letter, "" when clean. */
+  unstaged: string;
+  /** False for a deletion: there is nothing to preview. */
+  exists: boolean;
+}
+
+export interface GitChanges {
+  repos: { root: string; name: string }[];
+  files: GitFileState[];
+  truncated: boolean;
+  error?: string | null;
 }
 
 export type ModelEntry = { model: string; key_id?: string };
@@ -88,35 +123,31 @@ export interface ChatOptions {
   root?: string;
   secondary_roots?: string[];
   permission_mode?: string;
+  /** Id of the `/` menu entry this message picked, when it came from the menu. */
+  command_id?: string;
   /** Abort the in-flight chat stream (e.g. on session switch / explicit stop). */
   signal?: AbortSignal;
 }
 
 export interface CommandInfo {
+  /** Stable id of this entry, sent back with the message that picks it. */
+  id: string;
   name: string;
   description: string;
   kind: "builtin" | "template" | "skill";
   argument_hint?: string;
   source?: "builtin" | "project" | "user";
+  /** Where this entry came from, for display: the personal directory, or a project. */
+  source_label?: string;
 }
 
-/** New-session command scope: `secondary: null` inherits the project binding. */
-export interface DraftCommandScope {
-  root: string | null;
-  secondary: string[] | null;
-}
-
-export function fetchCommands(
-  sessionId?: string | null,
-  draft?: DraftCommandScope,
-): Promise<{ commands: CommandInfo[] }> {
-  return request<{ commands: CommandInfo[] }>("/api/commands", {
-    method: "POST",
-    body: {
-      session_id: sessionId ?? null,
-      ...(draft ? { root: draft.root, secondary_roots: draft.secondary } : {}),
-    },
-  });
+/**
+ * Every command the `/` menu offers: all registered projects plus the personal
+ * directory, each entry naming its own source. The same name can appear more
+ * than once, so a request that picks from the menu sends the entry's id.
+ */
+export function fetchCommands(): Promise<{ commands: CommandInfo[] }> {
+  return request("/api/commands");
 }
 
 export interface AddModelBody {
@@ -203,13 +234,40 @@ export function fetchSession(id: string): Promise<SessionDetail> {
   return request(`/api/sessions/${id}`);
 }
 
+/** Live uncommitted changes of the repositories this session works in. */
+export function fetchGitChanges(sessionId: string): Promise<GitChanges> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/changes`);
+}
+
+/**
+ * Create an empty session up front, so "新会话" opens a real conversation
+ * instead of a not-yet-existing one. Omitting ``secondaryRoots`` inherits the
+ * project's own binding, exactly as a chat-created session would.
+ */
+export function createSession(
+  root: string | null,
+  permissionMode?: string,
+  secondaryRoots?: string[],
+): Promise<SessionSummary> {
+  const body: Record<string, unknown> = { root };
+  if (permissionMode) body.permission_mode = permissionMode;
+  if (secondaryRoots !== undefined) body.secondary_roots = secondaryRoots;
+  return request("/api/sessions", { method: "POST", body });
+}
+
 /** Pin or unpin a session; pinned sessions get their own sidebar section. */
 export function pinSession(id: string, pinned: boolean): Promise<{ ok: boolean }> {
   return request(`/api/sessions/${id}/pin`, { method: "POST", body: { pinned } });
 }
 
-export function deleteSession(id: string): Promise<void> {
-  return request(`/api/sessions/${id}`, { method: "DELETE" });
+/**
+ * Delete a session. ``blankOnly`` asks the server to remove it only while no
+ * turn has begun and answers whether it did; a session that started one is
+ * left alone, which is what closing an untouched tab has to rule out.
+ */
+export function deleteSession(id: string, blankOnly = false): Promise<{ deleted: boolean }> {
+  const query = blankOnly ? "?blank_only=1" : "";
+  return request(`/api/sessions/${id}${query}`, { method: "DELETE" });
 }
 
 export function fetchWorkspaces(): Promise<WorkspacesInfo> {
@@ -357,6 +415,7 @@ export async function streamChat(
   // array means "no secondary roots", so the check is presence, not length.
   if (opts.secondary_roots !== undefined) body.secondary_roots = opts.secondary_roots;
   if (opts.permission_mode) body.permission_mode = opts.permission_mode;
+  if (opts.command_id) body.command_id = opts.command_id;
   const resp = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

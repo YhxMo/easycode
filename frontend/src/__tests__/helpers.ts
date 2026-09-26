@@ -14,10 +14,12 @@ export const apiMock = {
   fetchModels: vi.fn(),
   fetchCommands: vi.fn(),
   fetchFileContent: vi.fn(),
+  fetchGitChanges: vi.fn(),
   setSessionPermission: vi.fn(),
   streamChat: vi.fn(),
   submitApproval: vi.fn(),
   cancelSessionChat: vi.fn(),
+  createSession: vi.fn(),
   deleteSession: vi.fn(),
   archiveProjectChats: vi.fn(),
   createWorktree: vi.fn(),
@@ -44,6 +46,7 @@ export function primeApiMock(m: typeof apiMock) {
   m.fetchWorkspaces.mockResolvedValue({ projects: [] });
   m.fetchCommands.mockResolvedValue({ commands: [] });
   m.fetchFiles.mockResolvedValue({ files: [], total: 0 });
+  m.fetchGitChanges.mockResolvedValue({ repos: [], files: [], truncated: false });
   m.fetchFileContent.mockResolvedValue({
     path: "",
     text: "",
@@ -52,6 +55,8 @@ export function primeApiMock(m: typeof apiMock) {
     truncated: false,
   });
   m.streamChat.mockResolvedValue(undefined);
+  m.createSession.mockResolvedValue(session("new-1", "新会话"));
+  m.deleteSession.mockResolvedValue({ deleted: true });
   m.setSessionPermission.mockImplementation(async (id: string, mode: string) => ({
     id,
     permission_mode: mode,

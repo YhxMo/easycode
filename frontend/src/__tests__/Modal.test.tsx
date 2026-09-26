@@ -155,7 +155,7 @@ describe("App · 删除会话模态框", () => {
   it("流进行中删除当前会话：停止流、清空视图并恢复空闲", async () => {
     const user = userEvent.setup();
     m.cancelSessionChat.mockResolvedValue(undefined);
-    m.deleteSession.mockResolvedValue(undefined);
+    m.deleteSession.mockResolvedValue({ deleted: true });
     const stream = abortableStream();
 
     render(<App />);
@@ -194,9 +194,9 @@ describe("App · 删除会话模态框", () => {
       }),
     );
     m.cancelSessionChat.mockResolvedValue(undefined);
-    let resolveDelete!: () => void;
+    let resolveDelete!: (v: { deleted: boolean }) => void;
     m.deleteSession.mockReturnValue(
-      new Promise<void>((resolve) => {
+      new Promise<{ deleted: boolean }>((resolve) => {
         resolveDelete = resolve;
       }),
     );
@@ -215,7 +215,7 @@ describe("App · 删除会话模态框", () => {
     await screen.findByText("B-内容");
 
     await act(async () => {
-      resolveDelete();
+      resolveDelete({ deleted: true });
     });
 
     // B stays the foreground view: the stale delete must not blank it.

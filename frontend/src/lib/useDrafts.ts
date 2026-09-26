@@ -1,5 +1,5 @@
 // Unsent composer text, one record per conversation.
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 export interface Draft {
   text: string;
@@ -8,6 +8,40 @@ export interface Draft {
 }
 
 const EMPTY: Draft = { text: "", caret: 0 };
+
+/** Browser-local store of unsent text, keyed like the stream entries. */
+export const DRAFTS_KEY = "easycode:drafts";
+
+/** Restore the saved drafts: strings only, never fatal. */
+function readStoredDrafts(): Map<string, Draft> {
+  try {
+    const saved = window.localStorage.getItem(DRAFTS_KEY);
+    if (!saved) return new Map();
+    const parsed: unknown = JSON.parse(saved);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Map();
+    const out = new Map<string, Draft>();
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const draft = value as { text?: unknown; caret?: unknown };
+      if (!key || typeof draft?.text !== "string") continue;
+      out.set(key, {
+        text: draft.text,
+        caret: typeof draft.caret === "number" ? draft.caret : 0,
+      });
+    }
+    return out;
+  } catch {
+    // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
+    return new Map();
+  }
+}
+
+function storeDrafts(map: Map<string, Draft>): void {
+  try {
+    window.localStorage.setItem(DRAFTS_KEY, JSON.stringify(Object.fromEntries(map)));
+  } catch {
+    // 同上：写不进去时草稿仍在本页内存里，不影响这次会话
+  }
+}
 
 export interface DraftStore {
   get: (key: string) => Draft;
@@ -19,13 +53,20 @@ export interface DraftStore {
 
 /**
  * Per-conversation drafts, keyed exactly like the stream entries (session id,
- * or the draft key before the backend names it).
+ * or the draft key of a not-yet-started conversation).
  *
- * Deliberately memory-only: an unsent private message is not written to
- * browser storage, so a refresh starts with empty composers.
+ * They live in this browser's localStorage so a refresh keeps what was typed;
+ * sending or deleting the conversation clears its entry, and the text never
+ * reaches the server as a draft.
  */
 export function useDrafts(): DraftStore {
-  const [map, setMap] = useState<Map<string, Draft>>(() => new Map());
+  const [map, setMap] = useState<Map<string, Draft>>(() => readStoredDrafts());
+
+  // Persist after the commit, so a keystroke's draft is on disk before the
+  // next one arrives and no reducer runs a side effect.
+  useEffect(() => {
+    storeDrafts(map);
+  }, [map]);
 
   const update = useCallback((key: string, patch: (draft: Draft) => Draft) => {
     setMap((prev) => {

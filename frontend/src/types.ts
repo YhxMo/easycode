@@ -41,3 +41,6 @@ export type Item =
   /** A terminal error. `code` marks one the server produced deliberately (e.g. a
    *  configured iteration ceiling), which is a turn that can be continued. */
   | { kind: "error"; text: string; code?: string };
+
+/** A tool call's item: what the pane reads, live or from a session record. */
+export type ToolItem = Extract<Item, { kind: "tool" }>;

@@ -45,30 +45,36 @@ describe("App · 会话归属", () => {
   it("流进行中点「新会话」后，旧流的 finally 不得把前台 currentId 劫持回已完成的会话", async () => {
     const user = userEvent.setup();
     const stream = controllableStream();
+    const created = session("N", "新会话");
+    m.createSession.mockResolvedValue(created);
+    m.fetchSessions.mockResolvedValue([session("A", "会话A"), created]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve({ ...session(id, id === "N" ? "新会话" : "会话A"), messages: [] }),
+    );
 
     render(<App />);
-    // Sidebar shows the existing session; foreground is still the blank
-    // new session (currentId === null -> header "新会话").
+    // Sidebar shows the existing session; foreground is still the start page.
     await screen.findByText("会话A");
     expect(activeTitle()).toBe("新会话");
 
-    // Send from the new session (sessionId = null); stream stays in flight and
-    // crucially has NOT emitted a "session" event yet.
+    // Send from the start page (sessionId = null); the stream stays in flight
+    // and crucially has NOT emitted a "session" event yet.
     await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
-    // Navigation invalidates the old stream even before its session event arrives.
-    await user.click(screen.getByRole("button", { name: /新会话/ }));
+    // 「新会话」opens a real, still empty conversation of its own.
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await waitFor(() => expect(m.createSession).toHaveBeenCalled());
     expect(activeTitle()).toBe("新会话");
 
     await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
     await stream.finish();
 
     // The completed (old) stream must refresh the list but must NOT take over
-    // the view: the user's blank session stays the foreground owner.
+    // the view: the conversation the user just opened owns the foreground.
     await waitFor(() => expect(activeTitle()).toBe("新会话"));
-    expect(document.querySelector(".session-item.active")).toBeNull();
+    expect(document.querySelector(".session-item.active")?.textContent).toContain("新会话");
   });
 
   it("新会话选择完全访问后，session 事件后仍保持，下一轮发送 permission_mode=allow-all", async () => {
@@ -104,24 +110,40 @@ describe("App · 会话归属", () => {
     );
   });
 
-  it("新会话选择的次目录在 session 事件后仍显示", async () => {
+  it("项目行新建的会话继承该项目的次目录，并在回合开始后仍显示", async () => {
     const user = userEvent.setup();
-    m.fetchSessions.mockResolvedValue([{ ...session("old", "旧会话"), root: "/p" }]);
+    const created = {
+      ...session("N", "新会话"),
+      root: "/p",
+      secondary_roots: ["/s1", "/s2"],
+    };
+    m.fetchSessions.mockResolvedValue([{ ...session("old", "旧会话"), root: "/p" }, created]);
     m.fetchWorkspaces.mockResolvedValue({
       projects: [{ root: "/p", secondary: ["/s1", "/s2"] }],
     });
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve(id === "N" ? { ...created, messages: [] } : { ...session(id, "旧会话"), messages: [] }),
+    );
+    m.createSession.mockResolvedValue(created);
     const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("旧会话");
     await user.click(screen.getByRole("button", { name: "在此项目下新建会话" }));
-    expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain("已连接 2 个目录");
+    // The new conversation asks for this row's project; the server binds that
+    // project's secondary directories, which is what comes back.
+    await waitFor(() => expect(m.createSession).toHaveBeenCalledWith("/p", expect.any(String)));
+    await waitFor(() =>
+      expect(document.querySelector(".secondary-editor .dir-card small")?.textContent).toContain(
+        "已连接 2 个目录",
+      ),
+    );
 
     await user.type(composerField(), "go");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(stream.get()).toBeTruthy());
 
-    await act(async () => stream.get()?.({ type: "session", session_id: "A" }));
+    await act(async () => stream.get()?.({ type: "session", session_id: "N" }));
     await stream.finish();
 
     await waitFor(() =>

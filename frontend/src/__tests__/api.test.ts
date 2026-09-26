@@ -78,27 +78,10 @@ describe("api 请求层", () => {
     expect(fn).toHaveBeenCalledWith("/api/sessions/s1", { method: "DELETE" });
   });
 
-  it("fetchCommands 区分未传与显式空 secondary_roots", async () => {
+  it("fetchCommands 读取汇总列表（没有会话范围参数）", async () => {
     const fn = mockFetch({ ok: true, status: 200, json: async () => ({ commands: [] }) });
-
-    await fetchCommands(null, { root: "/p", secondary: [] });
-    expect(fn).toHaveBeenLastCalledWith("/api/commands", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: null, root: "/p", secondary_roots: [] }),
-    });
-
-    await fetchCommands(null, { root: "/p", secondary: null });
-    expect(JSON.parse((fn.mock.calls.at(-1)?.[1] as RequestInit).body as string)).toEqual({
-      session_id: null,
-      root: "/p",
-      secondary_roots: null,
-    });
-
-    await fetchCommands("s1");
-    expect(JSON.parse((fn.mock.calls.at(-1)?.[1] as RequestInit).body as string)).toEqual({
-      session_id: "s1",
-    });
+    await fetchCommands();
+    expect(fn).toHaveBeenLastCalledWith("/api/commands", { method: "GET" });
   });
 });
 

@@ -6,6 +6,16 @@ import { useRevealActive } from "./lib/useRevealActive";
 /** Id of the listbox the composer field points at with aria-controls. */
 export const COMMAND_LIST_ID = "composer-command-list";
 
+/**
+ * The command list as the menu shows it. "Still loading", "nothing matched" and
+ * "the request failed" are separate states on purpose: a menu that simply
+ * disappears cannot tell the reader which of them happened.
+ */
+export type CommandMenuState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; commands: CommandInfo[] };
+
 function SkillIcon() {
   return (
     <svg className="command-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -26,26 +36,32 @@ function CommandIcon() {
 }
 
 export function CommandMenu({
-  commands,
+  state,
   open,
   query,
   index,
   onPick,
+  onRetry,
   onClose,
 }: {
-  commands: CommandInfo[];
+  state: CommandMenuState;
   open: boolean;
   query: string;
   index: number;
   onPick: (c: CommandInfo) => void;
+  onRetry: () => void;
   onClose: () => void;
 }) {
+  const commands = useMemo(
+    () => (state.status === "ready" ? state.commands : []),
+    [state],
+  );
   const filtered = useMemo(() => filterCommands(commands, query), [commands, query]);
   const boxRef = useRef<HTMLDivElement>(null);
   const idx = clampCommandIndex(filtered, index);
   useRevealActive(boxRef, ".command-item.active", `${idx}:${filtered.length}`);
 
-  if (!open || filtered.length === 0) return null;
+  if (!open) return null;
 
   // filterCommands returns the list grouped by kind (skill → template →
   // builtin), which is exactly the section order below; the cursor index
@@ -64,13 +80,13 @@ export function CommandMenu({
           {items.map((c) => {
             const itemIdx = globalCounter++;
             const isActive = itemIdx === idx;
-            const sourceLabel = c.source === "user" ? "个人" : c.source === "project" ? "项目" : "";
+            const source = c.source_label ?? (c.source === "user" ? "个人" : c.source === "project" ? "项目" : "");
             return (
               <button
                 type="button"
                 role="option"
                 aria-selected={isActive}
-                key={c.name}
+                key={c.id ?? `${c.kind}:${c.name}`}
                 className={`command-item ${isActive ? "active" : ""}`}
                 onMouseDown={(e) => {
                   e.preventDefault();
@@ -85,7 +101,11 @@ export function CommandMenu({
                     {c.description}
                   </span>
                 </div>
-                {sourceLabel && <div className="command-source">{sourceLabel}</div>}
+                {source && (
+                  <div className="command-source" title={c.source_label}>
+                    {source}
+                  </div>
+                )}
               </button>
             );
           })}
@@ -99,6 +119,29 @@ export function CommandMenu({
       <div className="command-menu-scroll" ref={boxRef} id={COMMAND_LIST_ID} role="listbox" aria-label="可用命令">
         {renderSection("技能", skills)}
         {renderSection("命令", templates)}
+        {state.status === "loading" && (
+          <div className="command-empty" role="status">
+            正在加载命令…
+          </div>
+        )}
+        {state.status === "error" && (
+          <div className="command-empty error" role="alert">
+            <span>命令加载失败：{state.message}</span>
+            <button
+              type="button"
+              className="command-retry"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={onRetry}
+            >
+              重试
+            </button>
+          </div>
+        )}
+        {state.status === "ready" && filtered.length === 0 && (
+          <div className="command-empty">
+            {commands.length ? "没有匹配的命令" : "还没有可用的命令或 Skill"}
+          </div>
+        )}
       </div>
       <div className="command-scrim" onClick={onClose} />
     </div>

@@ -1,6 +1,6 @@
 // Convert persisted history into chat items.
-import type { ApprovalRecord, TurnFailure } from "../api";
-import type { Item } from "../types";
+import type { ApprovalRecord, ArtifactRecord, TurnFailure } from "../api";
+import type { Item, ToolItem } from "../types";
 
 export function normalizeToolArgs(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -116,4 +116,22 @@ export function historyToItems(
   }
   flushFailure();
   return items;
+}
+
+/**
+ * The session's file-tool records as tool items.
+ *
+ * They are the same shape a live turn produces, so the pane reads both through
+ * one path; unlike a history message they survive a context compaction, which
+ * is what keeps earlier turns' cards and diffs on screen.
+ */
+export function artifactsToItems(records: ArtifactRecord[]): ToolItem[] {
+  return records.map((record) => ({
+    kind: "tool" as const,
+    id: record.id,
+    name: record.name,
+    args: normalizeToolArgs(record.args),
+    result: record.result,
+    done: true,
+  }));
 }

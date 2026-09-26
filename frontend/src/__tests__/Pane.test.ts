@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { MAX_HITS, paneData } from "../lib/pane";
-import type { Item } from "../types";
+import {
+  MAX_HITS,
+  fileRows,
+  gitStateLabel,
+  paneData,
+  sessionFiles,
+  sessionToolItems,
+} from "../lib/pane";
+import type { GitFileState } from "../api";
+import type { Item, ToolItem } from "../types";
 import fixtures from "./fixtures/toolResults.json";
 
 // The samples come from the real Python tools; tests/test_tool_result_contract.py
@@ -204,5 +212,151 @@ describe("paneData · 变更", () => {
       tool("2", "write_file", { path: "b.ts" }, JSON.stringify({ status: "error", message: "x" })),
     ]);
     expect(write.changes).toHaveLength(0);
+  });
+});
+
+describe("会话记录与实时改动", () => {
+  const toolItem = (
+    id: string,
+    name: string,
+    args: Record<string, unknown>,
+    result: string,
+  ): ToolItem => ({ kind: "tool", id, name, args, result, done: true });
+
+  it("记录按调用顺序排在前面，还没记录的调用接在后面", () => {
+    const records = [
+      toolItem("1", "read_file", { path: "a.ts" }, readOk),
+      toolItem("2", "read_file", { path: "b.ts" }, readOk),
+    ];
+    const live = [
+      tool("1", "read_file", { path: "a.ts" }, readOk),
+      tool("3", "read_file", { path: "c.ts" }, readOk),
+    ];
+    const merged = sessionToolItems(records, live);
+    expect(merged.map((it) => it.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("历史里被裁剪的结果由会话记录替代", () => {
+    // Compaction leaves a stub behind; the record still has the diff, which is
+    // the only reason the change card can be rebuilt after a refresh.
+    const trimmed = tool(
+      "2",
+      "edit_file",
+      { path: "src/app.ts" },
+      JSON.stringify({ status: "ok", path: "src/app.ts" }),
+    );
+    const record = toolItem(
+      "2",
+      "edit_file",
+      { path: "src/app.ts" },
+      JSON.stringify({
+        status: "ok",
+        path: "src/app.ts",
+        diff: "+x",
+        absolute_path: "/ws/src/app.ts",
+      }),
+    );
+    const merged = sessionToolItems([record], [trimmed]);
+    expect(merged).toHaveLength(1);
+    expect(JSON.parse(merged[0].result ?? "").diff).toBe("+x");
+  });
+
+  it("会话涉及的文件按最近使用排序，同名的两个根各自成条", () => {
+    const pane = paneData([
+      tool("1", "read_file", { path: "src/app.ts" }, readOk),
+      tool("2", "read_file", { path: "/tmp/extra/src/app.ts" }, JSON.stringify({
+        status: "ok",
+        path: "src/app.ts",
+        absolute_path: "/tmp/extra/src/app.ts",
+        total_lines: 1,
+        lines: 1,
+        content: "1: x",
+      })),
+    ]);
+    const files = sessionFiles(pane.context, pane.changes);
+    expect(files.map((f) => f.target)).toEqual([
+      "/tmp/extra/src/app.ts",
+      "/tmp/ws/src/app.ts",
+    ]);
+    expect(files.map((f) => f.rootLabel)).toEqual(["extra", "ws"]);
+    expect(files[0].reads).toBe(1);
+  });
+
+  it("glob 列出的整棵树不算这次会话涉及的文件", () => {
+    const pane = paneData([tool("1", "glob", { pattern: "*.md" }, globOk)]);
+    expect(sessionFiles(pane.context, pane.changes)).toEqual([]);
+  });
+
+  it("修改过的文件进入文件列表，并带上是哪一次改的", () => {
+    const pane = paneData([tool("1", "edit_file", { path: "src/app.ts" }, editApplied)]);
+    const files = sessionFiles(pane.context, pane.changes);
+    expect(files).toHaveLength(1);
+    expect(files[0].changes).toBe(1);
+    // The result's own target, not the relative argument it was called with.
+    expect(files[0].target).toBe("/tmp/ws/src/app.ts");
+  });
+
+  it("工作区改动与会话操作分开：只有 git 改动的文件排在后面", () => {
+    const pane = paneData([tool("1", "read_file", { path: "src/app.ts" }, readOk)]);
+    const files = sessionFiles(pane.context, pane.changes);
+    const dirty: GitFileState[] = [
+      {
+        path: "src/app.ts",
+        absolute_path: "/tmp/ws/src/app.ts",
+        repo: "/tmp/ws",
+        untracked: false,
+        staged: "M",
+        unstaged: "",
+        exists: true,
+      },
+      {
+        path: "notes.md",
+        absolute_path: "/tmp/ws/notes.md",
+        repo: "/tmp/ws",
+        untracked: true,
+        staged: "",
+        unstaged: "",
+        exists: true,
+      },
+    ];
+    const rows = fileRows(files, dirty);
+    expect(rows.map((r) => r.label)).toEqual(["src/app.ts", "notes.md"]);
+    expect(rows[0].meta).toBe("读 1");
+    // The state comes from the working tree, never from this conversation.
+    expect(rows[0].git).toBe("已暂存修改");
+    expect(rows[1].meta).toBe("");
+    expect(rows[1].git).toBe("未跟踪");
+    expect(rows[1].rootLabel).toBe("ws");
+  });
+
+  it("删除的文件不给预览入口，但仍报出它被删了", () => {
+    const rows = fileRows([], [
+      {
+        path: "gone.ts",
+        absolute_path: "/tmp/ws/gone.ts",
+        repo: "/tmp/ws",
+        untracked: false,
+        staged: "",
+        unstaged: "D",
+        exists: false,
+      },
+    ]);
+    expect(rows[0].target).toBeUndefined();
+    expect(rows[0].git).toBe("未暂存删除");
+  });
+
+  it("未提交状态按已暂存与未暂存分别说明", () => {
+    const base: GitFileState = {
+      path: "a.ts",
+      absolute_path: "/ws/a.ts",
+      repo: "/ws",
+      untracked: false,
+      staged: "",
+      unstaged: "",
+      exists: true,
+    };
+    expect(gitStateLabel({ ...base, staged: "M", unstaged: "M" })).toBe("已暂存修改 · 未暂存修改");
+    expect(gitStateLabel({ ...base, staged: "A" })).toBe("已暂存新增");
+    expect(gitStateLabel(base)).toBe("已修改");
   });
 });

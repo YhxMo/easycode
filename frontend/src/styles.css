@@ -523,6 +523,50 @@
   color: var(--ink-3);
 }
 
+/* The pane's file list: what the conversation used, and what git reports. */
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A row that names no openable file stays a row: it reports, it does not link. */
+.ctx-source.static {
+  cursor: default;
+}
+
+.ctx-source.static:hover {
+  background: var(--inset);
+  color: var(--ink-2);
+}
+
+.file-uses {
+  margin-left: 6px;
+  color: var(--ink-3);
+  font-family: var(--font-sans);
+}
+
+/* Uncommitted state: a fact about the working tree, not about this session. */
+.file-git {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* The live working tree is a second, separate fact under the session's own. */
+.pane-group-next {
+  margin-top: 16px;
+}
+
+.ctx-more {
+  justify-content: center;
+  color: var(--ink-3);
+}
+
 .file-preview {
   display: flex;
   flex-direction: column;
@@ -608,15 +652,15 @@
   border: 0;
   border-radius: var(--r-sm);
   background: none;
-  color: var(--ink-3);
-  font-size: 11.5px;
-  font-weight: 550;
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 700;
   cursor: pointer;
   transition: color 120ms;
 }
 
 .side-head:hover {
-  color: var(--ink-2);
+  color: var(--ink);
 }
 
 .side-head-label {
@@ -625,7 +669,9 @@
 }
 
 .side-count {
+  color: var(--ink-3);
   font-size: 11px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1184,9 +1230,21 @@
   color: var(--ink);
 }
 
-.group-more-btn span {
-  font-size: 12px;
-  letter-spacing: 1px;
+/* The more trigger is an ellipsis, so its dots are filled rather than drawn. */
+.group-more-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.group-new-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .project-menu-wrap {

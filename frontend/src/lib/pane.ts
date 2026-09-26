@@ -4,7 +4,8 @@
 // Cards are built from what the tools actually returned, never from the call
 // arguments alone: a search pattern is not a file, and a call that has not
 // answered yet has produced no context.
-import type { Item } from "../types";
+import type { GitFileState } from "../api";
+import type { Item, ToolItem } from "../types";
 import { basename } from "./paths";
 import { num, parseResult, resultStatus, str } from "./toolResult";
 
@@ -50,6 +51,8 @@ export interface ChangeCard {
   diff: string;
   /** False for a `dry_run` preview: the patch was never written. */
   applied: boolean;
+  /** Canonical file the patch touched, so the file list can open it. */
+  target?: string;
 }
 
 export interface PaneData {
@@ -135,6 +138,7 @@ export function paneData(turn: Item[]): PaneData {
         diff,
         // `dry_run` returns a patch preview and leaves the file untouched.
         applied: data?.dry_run !== true,
+        target: targetOf(data, item.args),
       });
       continue;
     }
@@ -225,4 +229,157 @@ export function paneData(turn: Item[]): PaneData {
     }
   }
   return { context, changes };
+}
+
+/**
+ * The pane's source for a conversation: its persisted tool records, plus the
+ * calls this view holds that are not recorded yet.
+ *
+ * A record stands in for the live item of the same call: the message history's
+ * copy may already have been trimmed by a compaction — which is exactly what
+ * the record is kept for — and it always carries the file's canonical path,
+ * while a live write/edit result names it only relatively.
+ */
+export function sessionToolItems(records: ToolItem[], items: Item[]): ToolItem[] {
+  const recorded = new Set(records.map((record) => record.id));
+  const out = [...records];
+  for (const item of items) {
+    if (item.kind === "tool" && !recorded.has(item.id)) out.push(item);
+  }
+  return out;
+}
+
+/** One file the conversation touched, deduplicated by its canonical target. */
+export interface SessionFile {
+  key: string;
+  /** What a preview opens; empty when nothing can be opened. */
+  target: string;
+  label: string;
+  rootLabel?: string;
+  reads: number;
+  searches: number;
+  changes: number;
+  /** Position of the last mention: the most recent files come first. */
+  last: number;
+}
+
+/**
+ * Files a conversation read, searched or changed, newest use first.
+ *
+ * Global file listings are deliberately left out: a `glob` names everything
+ * that matches a pattern, which is not the same as the session having used it.
+ */
+export function sessionFiles(cards: ContextCard[], changes: ChangeCard[]): SessionFile[] {
+  const files = new Map<string, SessionFile>();
+  let order = 0;
+  const touch = (
+    label: string,
+    target: string | undefined,
+    rootLabel: string | undefined,
+    use: "read" | "search" | "change",
+  ) => {
+    if (!label) return;
+    // One canonical target identifies a file; without one, the display path
+    // plus its root is all there is (the same relative name can exist twice).
+    const key =
+      target && target.startsWith("/") ? target : `${rootLabel ?? ""}\u0000${label}`;
+    let file = files.get(key);
+    if (!file) {
+      file = { key, target: "", label, rootLabel, reads: 0, searches: 0, changes: 0, last: 0 };
+      files.set(key, file);
+    }
+    order += 1;
+    file.last = order;
+    if (target && (!file.target || (target.startsWith("/") && !file.target.startsWith("/")))) {
+      file.target = target;
+    }
+    if (rootLabel && !file.rootLabel) file.rootLabel = rootLabel;
+    if (use === "read") file.reads += 1;
+    else if (use === "search") file.searches += 1;
+    else file.changes += 1;
+  };
+
+  for (const card of cards) {
+    if (card.kind === "search") {
+      for (const hit of card.hits ?? []) touch(hit.label, hit.target, hit.rootLabel, "search");
+      continue;
+    }
+    if (card.kind === "read" && !card.hits?.length) {
+      touch(card.sourceLabel, card.previewTarget, card.rootLabel, "read");
+    }
+  }
+  for (const change of changes) touch(change.path, change.target, undefined, "change");
+  return [...files.values()].sort((a, b) => b.last - a.last);
+}
+
+const GIT_CODE: Record<string, string> = {
+  M: "修改",
+  A: "新增",
+  D: "删除",
+  R: "重命名",
+  C: "复制",
+  T: "类型变更",
+};
+
+/** One file's uncommitted state, as the working tree reports it right now. */
+export function gitStateLabel(file: GitFileState): string {
+  if (file.untracked) return "未跟踪";
+  const parts: string[] = [];
+  if (file.staged) parts.push(`已暂存${GIT_CODE[file.staged] ?? ""}`);
+  if (file.unstaged) parts.push(`未暂存${GIT_CODE[file.unstaged] ?? ""}`);
+  return parts.join(" · ") || "已修改";
+}
+
+/** A row of the pane's file list. */
+export interface FileRow {
+  key: string;
+  label: string;
+  rootLabel?: string;
+  /** How the session used it, empty for a file only the working tree changed. */
+  meta: string;
+  target?: string;
+  /** Uncommitted state, when the file is in one of the session's repositories. */
+  git?: string;
+}
+
+/**
+ * The file section: what the conversation touched, plus what is uncommitted.
+ *
+ * The two are not the same claim, so a file that only appears in the working
+ * tree's changes is listed after the ones this session used, with its git state
+ * as the reason it is there.
+ */
+export function fileRows(files: SessionFile[], gitFiles: GitFileState[]): FileRow[] {
+  const dirty = new Map<string, GitFileState>();
+  for (const file of gitFiles) dirty.set(file.absolute_path, file);
+  const claimed = new Set<string>();
+  const rows: FileRow[] = files.map((file) => {
+    const state = file.target.startsWith("/") ? dirty.get(file.target) : undefined;
+    if (state) claimed.add(state.absolute_path);
+    const uses: string[] = [];
+    if (file.reads) uses.push(`读 ${file.reads}`);
+    if (file.searches) uses.push(`命中 ${file.searches}`);
+    if (file.changes) uses.push(`改 ${file.changes}`);
+    return {
+      key: file.key,
+      label: file.label,
+      rootLabel: file.rootLabel,
+      meta: uses.join(" · "),
+      target: file.target || undefined,
+      git: state ? gitStateLabel(state) : undefined,
+    };
+  });
+  for (const file of gitFiles) {
+    if (claimed.has(file.absolute_path)) continue;
+    rows.push({
+      key: `git:${file.absolute_path}`,
+      label: file.path,
+      rootLabel: basename(file.repo),
+      meta: "",
+      // A deleted file has nothing to open; the row still says it is gone.
+      target: file.exists ? file.absolute_path : undefined,
+      git: gitStateLabel(file),
+    });
+  }
+  return rows;
 }
