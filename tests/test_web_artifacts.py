@@ -243,6 +243,141 @@ def test_changes_reports_the_working_tree_as_it_is(tmp_path):
 
 
 @requires_git
+def test_changes_count_lines_against_head_for_every_state(tmp_path):
+    """The counts describe each file against HEAD: staged, unstaged, untracked.
+
+    A file that cannot be described in lines — a binary file — keeps its counts
+    and says why it has no diff instead of offering an empty one.
+    """
+    # The config file the app is built with stays outside the repository, so
+    # every file the report names is one this test put there.
+    workspace = tmp_path / "ws"
+    root = workspace / "repo"
+    root.mkdir(parents=True)
+    git(root, "init", "-q")
+    (root / "tracked.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    (root / "binary.dat").write_bytes(b"\x00\x01\x02")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "add", ".")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    # unstaged: one line changed, one added
+    (root / "tracked.txt").write_text("one\nTWO\nthree\nfour\n", encoding="utf-8")
+    # staged: a new file, entirely new lines
+    (root / "staged.txt").write_text("s1\ns2\n", encoding="utf-8")
+    git(root, "add", "staged.txt")
+    # untracked: the whole file is new
+    (root / "loose.txt").write_text("u1\nu2\nu3\n", encoding="utf-8")
+    (root / "binary.dat").write_bytes(b"\x00\xff\x03")
+
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(root))
+        data = client.get(f"/api/sessions/{sess.id}/changes").json()
+
+    by_path = {f["path"]: f for f in data["files"]}
+    assert set(by_path) == {"tracked.txt", "staged.txt", "loose.txt", "binary.dat"}
+    assert (by_path["tracked.txt"]["added"], by_path["tracked.txt"]["removed"]) == (2, 1)
+    assert (by_path["staged.txt"]["added"], by_path["staged.txt"]["removed"]) == (2, 0)
+    assert (by_path["loose.txt"]["added"], by_path["loose.txt"]["removed"]) == (3, 0)
+    # Totals are the working tree's answer for the whole session's directories.
+    assert (data["added"], data["removed"]) == (7, 1)
+
+    # A diff is offered per file, and it is the diff against HEAD.
+    tracked_diff = by_path["tracked.txt"]["diff"]
+    assert "-two" in tracked_diff and "+TWO" in tracked_diff and "+four" in tracked_diff
+    assert by_path["staged.txt"]["diff"].startswith("diff --git")
+    # An untracked file has no HEAD to compare against: its whole body is new.
+    assert by_path["loose.txt"]["diff"] == "+u1\n+u2\n+u3\n"
+
+    # A binary file keeps its state and is not given a preview it cannot use.
+    assert by_path["binary.dat"]["binary"] is True
+    assert by_path["binary.dat"]["diff"] is None
+    assert by_path["binary.dat"]["diff_note"] == "二进制文件"
+
+
+@requires_git
+def test_changes_sums_every_bound_repository(tmp_path):
+    """A session's secondary directory is a repository of its own: its changes
+    count into the same totals and keep their own root."""
+    workspace = tmp_path / "ws"
+    primary = workspace / "primary"
+    secondary = workspace / "secondary"
+    for repo, name in ((primary, "a.txt"), (secondary, "b.txt")):
+        repo.mkdir(parents=True)
+        git(repo, "init", "-q")
+        (repo / name).write_text("base\n", encoding="utf-8")
+        git(repo, "-c", "user.email=t@e", "-c", "user.name=t", "add", ".")
+        git(repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    (primary / "a.txt").write_text("base\nmore\n", encoding="utf-8")
+    (secondary / "b.txt").write_text("base\nmore\nand more\n", encoding="utf-8")
+
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(
+            root=str(primary), secondary_roots=[str(secondary)]
+        )
+        data = client.get(f"/api/sessions/{sess.id}/changes").json()
+
+    assert sorted(r["name"] for r in data["repos"]) == ["primary", "secondary"]
+    assert {f["repo"] for f in data["files"]} == {str(primary), str(secondary)}
+    assert {f["path"]: f["added"] for f in data["files"]} == {"a.txt": 1, "b.txt": 2}
+    assert data["added"] == 3
+    assert data["removed"] == 0
+
+
+@requires_git
+def test_changes_keeps_a_diff_past_the_size_cap_out_of_the_response(tmp_path):
+    """One enormous file must not dominate the response: its counts arrive, its
+    preview does not, and the entry says which of the two happened."""
+    from easycode.web.git import MAX_DIFF_CHARS
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q")
+    (root / "huge.txt").write_text("base\n", encoding="utf-8")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "add", ".")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    (root / "huge.txt").write_text("x" * (MAX_DIFF_CHARS + 100) + "\n", encoding="utf-8")
+
+    client = make_app(root)
+    with client:
+        sess = client.app.state.store.create(root=str(root))
+        data = client.get(f"/api/sessions/{sess.id}/changes").json()
+
+    entry = data["files"][0]
+    assert entry["added"] == 1  # the count is still exact
+    assert entry["diff"] is None
+    assert entry["diff_note"] == "改动过大，未生成预览"
+
+
+@requires_git
+def test_changes_diff_a_rename_against_its_old_path(tmp_path):
+    """A renamed file is diffed with both of its paths: restricted to the new
+    one alone, git would report the whole file as added next to a “1 changed
+    line” count."""
+    workspace = tmp_path / "ws"
+    root = workspace / "repo"
+    root.mkdir(parents=True)
+    git(root, "init", "-q")
+    (root / "old.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "add", ".")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    git(root, "mv", "old.txt", "new.txt")
+    (root / "new.txt").write_text("a\nB\nc\n", encoding="utf-8")
+
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(root))
+        data = client.get(f"/api/sessions/{sess.id}/changes").json()
+
+    entry = data["files"][0]
+    assert entry["path"] == "new.txt"
+    assert entry["origin"] == "old.txt"
+    assert (entry["added"], entry["removed"]) == (1, 1)
+    assert "-b" in entry["diff"] and "+B" in entry["diff"]
+    assert "new file mode" not in entry["diff"]
+
+
+@requires_git
 def test_changes_lists_nothing_for_a_directory_outside_git(tmp_path):
     root = tmp_path / "plain"
     root.mkdir()
@@ -252,4 +387,6 @@ def test_changes_lists_nothing_for_a_directory_outside_git(tmp_path):
         data = client.get(f"/api/sessions/{sess.id}/changes").json()
         assert data["repos"] == []
         assert data["files"] == []
+        assert data["added"] == 0
+        assert data["removed"] == 0
         assert data["error"] is None
