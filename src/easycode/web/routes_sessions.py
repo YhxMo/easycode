@@ -13,6 +13,9 @@ from easycode.web.session import SessionStore, idle_sessions, run_mutation
 
 class PermissionRequest(BaseModel):
     mode: str
+    #: Required to enter ``allow-all``: the client states the user confirmed the
+    #: risk dialog, so a misclick cannot reach full host access on its own.
+    confirm_full_access: bool = False
 
 
 class CreateSessionRequest(BaseModel):
@@ -21,6 +24,7 @@ class CreateSessionRequest(BaseModel):
     root: str | None = None
     secondary_roots: list[str] | None = None
     permission_mode: str | None = None
+    confirm_full_access: bool = False
 
 
 class SessionWorkspaceRequest(BaseModel):
@@ -55,7 +59,7 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         is a 422, and a failed agent build (e.g. no usable default model) leaves
         no session behind.
         """
-        from easycode.policy import permission_parse
+        from easycode.policy import permission_parse, require_full_access_consent
         from easycode.web.routes_workspaces import _normalise_root
 
         kwargs: dict = {}
@@ -65,9 +69,11 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
             kwargs["secondary_roots"] = req.secondary_roots
         if req.permission_mode:
             try:
-                kwargs["permission_mode"] = permission_parse(req.permission_mode)
+                mode = permission_parse(req.permission_mode)
+                require_full_access_consent(mode, req.confirm_full_access)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
+            kwargs["permission_mode"] = mode
         try:
             async with store.config_change():
                 sess = store.create(**kwargs)
@@ -213,7 +219,7 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
 
     @app.post("/api/sessions/{session_id}/permission")
     async def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
-        from easycode.policy import permission_parse
+        from easycode.policy import permission_parse, require_full_access_consent
 
         sess = store.get(session_id)
         if sess is None:
@@ -221,9 +227,10 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         async with idle_sessions([sess]):
             try:
                 mode = permission_parse(req.mode)
+                require_full_access_consent(mode, req.confirm_full_access)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
-            sess.agent.permission_mode = mode
+            sess.set_permission_mode(mode)
             # The MCP process was launched with the old sandbox; drop it so the
             # next turn reconnects under the new mode.
             await sess.agent.invalidate_mcp_if_context_changed()

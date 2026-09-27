@@ -229,6 +229,11 @@ class PathContext:
                 out.append(resolved)
         return out
 
+    @property
+    def full_access(self) -> bool:
+        """True under ``danger-full-access``: no boundary but the OS user's own."""
+        return self.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS
+
     def is_protected(self, path: Path) -> bool:
         """Tool secrets that must never be read, written, or listed.
 
@@ -236,7 +241,14 @@ class PathContext:
         ``.git``), these paths are blocked across *every* tool operation —
         read, write, and enumeration — and cannot be bypassed by
         an approval grant (approval never grants credential access).
+
+        ``danger-full-access`` removes this firewall: the user asked for the
+        whole host, credentials included, and an in-process rule they did not
+        ask for would only be a hidden landmine. Explicit ``permission_rules``
+        remain the way to keep a tool away from them.
         """
+        if self.full_access:
+            return False
         p = path.resolve()
         for secret in secret_paths():
             sp = secret.resolve()
@@ -250,8 +262,12 @@ class PathContext:
         Covers credentials plus every authorization root's
         ``.git``/``.easycode``/``easycode.config.json`` (primary, secondary,
         extra_safe_dirs). An approval grant can never lift this — it is checked
-        by the file tools and by ``grant_granted``.
+        by the file tools and by ``grant_granted`` — but the full-access preset
+        does, since it is the user's own decision to drop the boundary rather
+        than an approval for one call.
         """
+        if self.full_access:
+            return False
         p = path.resolve()
         if self.is_protected(p):
             return True
@@ -259,6 +275,8 @@ class PathContext:
 
     def is_model_state(self, path: Path) -> bool:
         """True for data-home state dirs whose writes require approval."""
+        if self.full_access:
+            return False
         dh = data_home().resolve()
         return any(path.is_relative_to(dh / sub) for sub in DATA_HOME_STATE_DIRS)
 
@@ -289,7 +307,7 @@ class PathContext:
     def in_allowed(self, path: Path) -> bool:
         """True if ``path`` is writable without sandbox escalation."""
         p = path.resolve()
-        if self.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
+        if self.full_access:
             return True
         if self.sandbox_mode != SANDBOX_WORKSPACE_WRITE:
             return False

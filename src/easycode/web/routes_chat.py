@@ -33,6 +33,9 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     secondary_roots: list[str] | None = None
     permission_mode: str | None = None
+    #: Required alongside ``permission_mode="allow-all"``: see
+    #: ``policy.require_full_access_consent``.
+    confirm_full_access: bool = False
     root: str | None = None
     #: Id of the entry the user picked in the ``/`` menu. When present the
     #: command is resolved from the registered projects rather than from the
@@ -219,12 +222,13 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             raise HTTPException(422, "empty message")
         if req.root and not Path(req.root).expanduser().is_dir():
             raise HTTPException(422, f"workspace root is not a directory: {req.root}")
-        from easycode.policy import permission_parse
+        from easycode.policy import permission_parse, require_full_access_consent
 
         perm_mode: str | None = None
         if req.permission_mode:
             try:
                 perm_mode = permission_parse(req.permission_mode)
+                require_full_access_consent(perm_mode, req.confirm_full_access)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
         kwargs: dict = {}
@@ -307,7 +311,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 # Mutations belong under the lock so they cannot race a concurrent
                 # permission change (which is rejected with 409 while busy).
                 if perm_mode:
-                    sess.agent.permission_mode = perm_mode
+                    sess.set_permission_mode(perm_mode)
                     # A chat-requested mode change must drop MCP started under
                     # the previous sandbox, same as the permission endpoint.
                     await sess.agent.invalidate_mcp_if_context_changed()

@@ -962,3 +962,239 @@ def test_system_prompt_mentions_writable_roots(tmp_path):
     low = prompt.lower()
     assert "infer writable paths" in low
     assert "command and writable_roots" in low
+
+
+# ---------------------------------------------------- danger-full-access 语义
+# 官方 Codex 文档：``danger-full-access`` 移除文件系统与网络沙箱边界，并配合
+# ``approval_policy=never`` 关闭审批。EasyCode 的完全访问采用同一范围——包括
+# ``.git``、``.easycode``、项目配置、凭据、会话数据和工作区之外的绝对路径；
+# 操作系统权限、组织策略与显式 ``permission_rules`` 仍然生效。
+
+
+def _full_access_ctx(primary: Path, **kw) -> PathContext:
+    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+
+    return PathContext(primary=primary, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS, **kw)
+
+
+def test_full_access_reports_no_protected_paths(tmp_path, monkeypatch):
+    """保护判定随模式变化：完全访问下没有任何永久边界，模式之外一律保留。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.credentials import data_home
+    from easycode.workspace import CONFIG_FILENAME
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".git").mkdir()
+    (proj / ".easycode").mkdir()
+    sessions = data_home() / "sessions"
+    sessions.mkdir(parents=True)
+    cred = data_home() / "credentials.json"
+
+    sandboxed = PathContext(primary=proj)
+    full = _full_access_ctx(proj)
+    # 沙箱模式下的硬保护写入边界：项目元数据与项目配置。
+    for target in (
+        proj / ".git" / "config",
+        proj / ".easycode" / "state.json",
+        proj / CONFIG_FILENAME,
+    ):
+        assert sandboxed.is_protected_path(target) is True, target
+    for target in (
+        proj / ".git" / "config",
+        proj / ".easycode" / "state.json",
+        proj / CONFIG_FILENAME,
+        sessions / "s.json",
+        cred,
+        tmp_path / "outside" / "file.txt",
+    ):
+        assert sandboxed.in_allowed(target) is False, target
+        assert full.is_protected(target) is False, target
+        assert full.is_protected_path(target) is False, target
+        assert full.is_model_state(target) is False, target
+        assert full.in_allowed(target) is True, target
+
+
+def test_full_access_file_tools_read_and_write_protected_paths(tmp_path, monkeypatch):
+    """`.git`、`.easycode`、项目配置、凭据、会话文件与工作区外绝对路径都可读写。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.credentials import data_home
+    from easycode.workspace import CONFIG_FILENAME
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".git").mkdir()
+    (proj / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    (proj / ".easycode").mkdir()
+    (proj / CONFIG_FILENAME).write_text("{}", encoding="utf-8")
+    sessions = data_home() / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "s.json").write_text('{"id":"s"}', encoding="utf-8")
+    cred = data_home() / "credentials.json"
+    cred.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    ctx = _full_access_ctx(proj)
+    reg = build_registry(8000)
+
+    for target in (
+        proj / ".git" / "config",
+        proj / ".easycode" / "state.json",
+        proj / CONFIG_FILENAME,
+        sessions / "s.json",
+        cred,
+        outside / "new.txt",
+    ):
+        written = json.loads(
+            reg.execute("write_file", {"path": str(target), "content": "value"}, proj, ctx)
+        )
+        assert written["status"] == "ok", (target, written)
+        read = json.loads(reg.execute("read_file", {"path": str(target)}, proj, ctx))
+        assert read["status"] == "ok", (target, read)
+        assert "value" in read["content"], target
+
+    edited = json.loads(
+        reg.execute(
+            "edit_file",
+            {
+                "path": str(proj / CONFIG_FILENAME),
+                "old_string": "value",
+                "new_string": "edited",
+            },
+            proj,
+            ctx,
+        )
+    )
+    assert edited["status"] == "ok"
+    assert (proj / CONFIG_FILENAME).read_text(encoding="utf-8") == "edited"
+
+
+def test_full_access_grep_and_glob_reach_the_git_dir(tmp_path):
+    """搜索与列举在完全访问下进入 `.git`；沙箱模式下仍然跳过。"""
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    (proj / ".git" / "config").write_text("[core]\n  marker = yes\n", encoding="utf-8")
+    (proj / "src.py").write_text("marker = 1\n", encoding="utf-8")
+    reg = build_registry(8000)
+
+    sandboxed = PathContext(primary=proj)
+    full = _full_access_ctx(proj)
+    for ctx, expect_git in ((sandboxed, False), (full, True)):
+        found = json.loads(reg.execute("grep", {"pattern": "marker"}, proj, ctx))
+        assert found["status"] == "ok"
+        files = {m["file"] for m in found["matches"]}
+        assert (".git/config" in files) is expect_git
+        listed = json.loads(reg.execute("glob", {"pattern": "**/config"}, proj, ctx))
+        paths = {m if isinstance(m, str) else m["path"] for m in listed["matches"]}
+        assert (".git/config" in paths) is expect_git
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_full_access_shell_runs_unwrapped_on_every_platform(tmp_path, monkeypatch, platform):
+    """完全访问不再套 Seatbelt（其他平台本来也只有这一种可执行方式），
+    ``child_env`` 的密钥清洗仍然保留。"""
+    import easycode.sandbox.macos as macos
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-secret")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.credentials import data_home
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    cred = data_home() / "credentials.json"
+    cred.parent.mkdir(parents=True, exist_ok=True)
+    cred.write_text('{"api_key":"sk-shell-secret"}', encoding="utf-8")
+    (proj / ".git").mkdir()
+    ctx = _full_access_ctx(proj)
+
+    assert macos.sandbox_command(["/bin/sh", "-c", "true"], ctx) == ["/bin/sh", "-c", "true"]
+
+    result = json.loads(
+        build_registry(8000).execute(
+            "execute_shell",
+            {"command": f"cat {cred} && printf x > {proj / '.git' / 'hook'}"},
+            proj,
+            ctx,
+        )
+    )
+    assert result["status"] == "ok"
+    assert result["exit_code"] == 0, result
+    assert "sk-shell-secret" in result["stdout"]
+    assert (proj / ".git" / "hook").read_text(encoding="utf-8") == "x"
+
+
+def test_full_access_does_not_prompt_or_deny(tmp_path, monkeypatch):
+    """完全访问下不生成 ToolGrant、不触发审批 handler，也不被破坏性命令拦截。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from easycode.approval import definitive_deny_reason, grant_for_toolcall, needs_approval
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".git").mkdir()
+    ctx = _full_access_ctx(proj)
+    calls = [
+        ToolCall(
+            id="c1",
+            name="write_file",
+            arguments={"path": str(proj / ".git" / "config"), "content": "x"},
+        ),
+        ToolCall(
+            id="c2",
+            name="write_file",
+            arguments={"path": str(tmp_path / "outside.txt"), "content": "x"},
+        ),
+        ToolCall(id="c3", name="execute_shell", arguments={"command": "curl https://example.com"}),
+    ]
+    for tc in calls:
+        assert needs_approval(tc, ctx, "allow-all") is False, tc.name
+        assert definitive_deny_reason(tc, ctx) is None, tc.name
+        assert grant_for_toolcall(tc, ctx) == ToolGrant(), tc.name
+
+    destructive = ToolCall(id="c4", name="execute_shell", arguments={"command": "rm -rf /"})
+    assert definitive_deny_reason(destructive, ctx) is None
+
+
+@pytest.mark.asyncio
+async def test_full_access_turn_writes_protected_path_without_asking(tmp_path, monkeypatch):
+    """端到端：完全访问回合直接写入 `.git/config`，审批 handler 一次都不调用。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    git_dir = proj / ".git"
+    git_dir.mkdir()
+    target = git_dir / "config"
+    script = [
+        {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "[core]\n"})]},
+        {"text": "done"},
+    ]
+    agent = Agent(
+        FakeProvider(script=script),
+        build_registry(8_000),
+        proj,
+        permission_mode="allow-all",
+    )
+    asked: list[str] = []
+
+    async def approval(tc, _reason, _key):
+        asked.append(tc.name)
+        return True
+
+    agent.approval_handler = approval
+    events = [event async for event in agent.respond("write the git config")]
+    result = next(event.tool_result for event in events if event.kind == "tool_result")
+
+    assert asked == []
+    assert json.loads(result)["status"] == "ok"
+    assert target.read_text(encoding="utf-8") == "[core]\n"
+
+
+def test_require_full_access_consent_gate():
+    from easycode.policy import require_full_access_consent
+
+    require_full_access_consent("ask", False)
+    require_full_access_consent("auto-review", False)
+    require_full_access_consent("allow-all", True)
+    with pytest.raises(ValueError):
+        require_full_access_consent("allow-all", False)

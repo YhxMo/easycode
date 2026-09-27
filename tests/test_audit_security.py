@@ -153,9 +153,15 @@ def test_approved_shell_still_cannot_write_credentials(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
-@pytest.mark.parametrize("sandbox_mode", ["workspace-write", "danger-full-access"])
-def test_shell_cannot_read_credentials_in_any_mode(tmp_path, monkeypatch, sandbox_mode):
-    """The shell path must not bypass the file-tool credential firewall."""
+def test_shell_cannot_read_credentials_in_workspace_write(tmp_path, monkeypatch):
+    """The shell path must not bypass the file-tool credential firewall.
+
+    ``danger-full-access`` is deliberately absent here: it drops the firewall
+    for every tool at once (see
+    ``test_file_tools_and_shell_reach_protected_paths_under_allow_all``), and a
+    mode where the shell is open but the tools are not would be the surprising
+    combination, not this one.
+    """
     _, home = make_home_ctx(tmp_path)
     monkeypatch.setenv("HOME", str(home))
     proj = tmp_path / "proj"
@@ -164,7 +170,7 @@ def test_shell_cannot_read_credentials_in_any_mode(tmp_path, monkeypatch, sandbo
     cred.parent.mkdir(parents=True, exist_ok=True)
     cred.write_text('{"api_key":"sk-shell-secret"}', encoding="utf-8")
 
-    ctx = PathContext(primary=proj, sandbox_mode=sandbox_mode)
+    ctx = PathContext(primary=proj)
     result = json.loads(
         build_registry(8000).execute(
             "execute_shell", {"command": f"cat {cred}"}, proj, ctx
@@ -332,15 +338,14 @@ def test_normal_shell_commands_are_not_in_destructive_denylist(tmp_path):
     assert destructive_command_reason("pytest tests/test_permissions.py -q") is None
 
 
-def test_file_tools_keep_protected_paths_closed_under_allow_all(tmp_path):
-    """`danger-full-access` is not an approval: it opens the sandbox, never the
-    permanent write boundaries."""
-    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+def test_file_tools_keep_protected_paths_closed_in_workspace_write(tmp_path):
+    """The sandboxed presets keep the permanent write boundaries: neither a
+    workspace-write context nor an approval grant may open them."""
     from easycode.workspace import CONFIG_FILENAME
 
     (tmp_path / ".git").mkdir()
     (tmp_path / ".easycode").mkdir()
-    ctx = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
+    ctx = PathContext(primary=tmp_path)
     registry = build_registry(8000)
 
     for rel in (".git/config", ".easycode/blocked.txt", CONFIG_FILENAME):
@@ -684,10 +689,10 @@ def test_managed_worktree_root_is_usable_in_every_mode(tmp_path, monkeypatch, sa
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
-@pytest.mark.parametrize("sandbox_mode", ["workspace-write", "danger-full-access"])
-def test_worktree_exception_keeps_state_dirs_denied(tmp_path, monkeypatch, sandbox_mode):
+def test_worktree_exception_keeps_state_dirs_denied(tmp_path, monkeypatch):
     """The worktree exception must not open sessions, global extensions or
-    credentials to model-originated shells."""
+    credentials to model-originated shells (full access, which drops the whole
+    firewall by design, is covered in ``test_permissions``)."""
     _, home = make_home_ctx(tmp_path)
     monkeypatch.setenv("HOME", str(home))
     worktree = data_home() / "worktrees" / "repo"
@@ -697,7 +702,7 @@ def test_worktree_exception_keeps_state_dirs_denied(tmp_path, monkeypatch, sandb
     (sessions / "s.json").write_text('{"secret":"session-record"}', encoding="utf-8")
     cred = data_home() / "credentials.json"
     cred.write_text('{"api_key":"sk-worktree-secret"}', encoding="utf-8")
-    ctx = PathContext(primary=worktree, sandbox_mode=sandbox_mode)
+    ctx = PathContext(primary=worktree)
     registry = build_registry(8000)
 
     for command, needle in (
@@ -952,3 +957,35 @@ async def test_read_file_external_allowed_after_approval(tmp_path, monkeypatch):
 
     assert json.loads(result)["status"] == "ok"
     assert "top-secret" in result
+
+
+@pytest.mark.asyncio
+async def test_mcp_command_follows_the_session_sandbox_mode(monkeypatch, tmp_path):
+    """MCP 子进程走与 Shell 相同的 ``sandbox_command``：沙箱模式包 Seatbelt，
+    完全访问按原命令启动（环境清洗两边都在）。"""
+    import contextlib
+
+    from easycode import mcp as mcp_module
+    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+
+    captured: list = []
+
+    @contextlib.asynccontextmanager
+    async def fake_stdio(params):
+        captured.append(params)
+        raise RuntimeError("no child process in this test")
+        yield  # pragma: no cover - never reached
+
+    monkeypatch.setattr(mcp_module, "stdio_client", fake_stdio)
+    conf = {"command": "mcp-server", "args": ["--stdio"]}
+
+    full = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
+    with pytest.raises(RuntimeError):
+        await mcp_module.MCPConnection("demo", conf, full).start()
+    assert captured[-1].command == "mcp-server"
+    assert captured[-1].args == ["--stdio"]
+
+    if sys.platform == "darwin":
+        with pytest.raises(RuntimeError):
+            await mcp_module.MCPConnection("demo", conf, PathContext(primary=tmp_path)).start()
+        assert captured[-1].command.endswith("sandbox-exec")

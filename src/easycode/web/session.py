@@ -17,6 +17,7 @@ from typing import Any
 from easycode.agent.loop import Agent
 from easycode.credentials import data_home
 from easycode.models.base import DeferredProvider
+from easycode.policy import PERM_ALLOW_ALL, PERM_ASK
 from easycode.workspace import normalise_secondary, root_error
 
 log = logging.getLogger("easycode.web.session")
@@ -98,7 +99,21 @@ class Session:
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
     pinned: bool = False  # kept at the top of the sidebar
     pinned_at: str | None = None  # when it was pinned, for ordering
+    #: True when this session's ``allow-all`` mode is a confirmed choice. A
+    #: session file that records full access without it was written before the
+    #: preset was gated, so restoring it comes back in the asking mode instead.
+    full_access_confirmed: bool = False
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+
+    def set_permission_mode(self, mode: str) -> None:
+        """Apply a permission mode the caller has already authorized.
+
+        The confirmation flag says this session's full access was an explicit
+        choice, which is what makes it restorable; leaving the mode clears it
+        again, so re-entering asks for consent a second time.
+        """
+        self.agent.permission_mode = mode
+        self.full_access_confirmed = mode == PERM_ALLOW_ALL
 
     @property
     def permission_mode(self) -> str:
@@ -254,7 +269,6 @@ class SessionStore:
         # The agent owns the alias; the store stamps the one it asked for so a
         # replaced agent factory cannot leave the session without one.
         agent.model_alias = alias
-        agent.permission_mode = permission_mode or self.cfg.permission_mode
         sess = Session(
             id=sid,
             title="新会话",
@@ -263,6 +277,10 @@ class SessionStore:
             root=root,
             secondary_roots=[str(p) for p in secondary],
         )
+        # ``permission_mode`` reaching the store has already passed the
+        # confirmation gate at the route/CLI that supplied it; the inherited
+        # config default is the user's own standing setting.
+        sess.set_permission_mode(permission_mode or self.cfg.permission_mode)
         self._sessions[sid] = sess
         self._flush(sess)
         return sess
@@ -396,7 +414,13 @@ class SessionStore:
                 alias = data.get("model_alias") or self.cfg.default_model
                 agent = self.restore_factory(alias, **agent_kwargs)
                 agent.model_alias = alias
-                agent.permission_mode = data.get("permission_mode") or self.cfg.permission_mode
+                mode = data.get("permission_mode") or self.cfg.permission_mode
+                confirmed = bool(data.get("full_access_confirmed"))
+                # Full access saved without a recorded consent predates the
+                # confirmation gate: it comes back asking, and the downgrade is
+                # written out below so the user is asked exactly once.
+                downgraded = mode == PERM_ALLOW_ALL and not confirmed
+                agent.permission_mode = PERM_ASK if downgraded else mode
                 # the task list lives on the agent, so restore it there
                 agent.todos = list(data.get("todos") or [])
                 # The snapshot and the live history must not share one list:
@@ -427,8 +451,11 @@ class SessionStore:
                     archived=bool(data.get("archived")),
                     pinned=bool(data.get("pinned")),
                     pinned_at=data.get("pinned_at"),
+                    full_access_confirmed=mode == PERM_ALLOW_ALL and confirmed,
                 )
                 self._sessions[sess.id] = sess
+                if downgraded:
+                    self._flush(sess)
             except (OSError, KeyError, ValueError, json.JSONDecodeError):
                 continue
 
@@ -471,6 +498,9 @@ class SessionStore:
             payload["turn_failures"] = list(session.turn_failures)
         if session.artifacts:
             payload["artifacts"] = list(session.artifacts)
+        # Absent means "not confirmed": a file without it is read back asking.
+        if session.full_access_confirmed:
+            payload["full_access_confirmed"] = True
         if session.root:
             payload["root"] = session.root
         if session.secondary_roots:

@@ -1,6 +1,7 @@
 """CLI entry-point smoke test without a real model or interactive terminal."""
 
 import json
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -110,3 +111,98 @@ def test_main_rejects_sensitive_root(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "sensitive directory" in result.output
+
+
+# ------------------------------------------------------------ 完全访问启动确认
+# danger-full-access 会关闭沙箱与审批，因此启动时要说出来：交互式问一次，
+# 没有终端可用时必须显式传 --confirm-full-access，否则拒绝启动。
+
+
+def _stub_repl(monkeypatch):
+    agent = Agent(provider=FakeProvider(), registry=build_registry(8000), root=Path.cwd())
+    monkeypatch.setattr(cli, "make_agent", lambda *args, **kwargs: agent)
+    started: list[str] = []
+
+    async def repl(cfg, active_agent, current, commands):
+        # ``make_agent`` is stubbed out, so the resolved config is what says
+        # which mode the run would have started in.
+        started.append(cfg.permission_mode)
+
+    monkeypatch.setattr(cli, "repl_loop", repl)
+    return started
+
+
+def test_main_full_access_needs_confirmation_without_a_terminal(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_can_prompt", lambda: False)
+    started = _stub_repl(monkeypatch)
+
+    result = CliRunner().invoke(cli.app, ["main", "--root", str(tmp_path), "--permission", "allow-all"])
+
+    assert result.exit_code == 1
+    assert "--confirm-full-access" in result.output
+    assert started == []
+
+
+def test_main_confirm_full_access_flag_starts(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_can_prompt", lambda: False)
+    started = _stub_repl(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["main", "--root", str(tmp_path), "--permission", "allow-all", "--confirm-full-access"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert started == ["allow-all"]
+    # 该参数只确认本次运行，不会把模式写回配置文件。
+    cfg_path = tmp_path / "easycode.config.json"
+    assert not cfg_path.exists() or "allow-all" not in cfg_path.read_text(encoding="utf-8")
+
+
+def test_main_interactive_full_access_asks_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_can_prompt", lambda: True)
+    started = _stub_repl(monkeypatch)
+
+    declined = CliRunner().invoke(
+        cli.app, ["main", "--root", str(tmp_path), "--permission", "allow-all"], input="n\n"
+    )
+    assert declined.exit_code == 1
+    assert started == []
+
+    accepted = CliRunner().invoke(
+        cli.app, ["main", "--root", str(tmp_path), "--permission", "allow-all"], input="y\n"
+    )
+    assert accepted.exit_code == 0, accepted.output
+    assert started == ["allow-all"]
+
+
+def test_main_full_access_from_config_file_needs_the_flag(tmp_path, monkeypatch):
+    """配置文件里写 allow-all 与命令行选择同等对待：没有终端确认就要这个参数。"""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_can_prompt", lambda: False)
+    (tmp_path / "easycode.config.json").write_text(
+        json.dumps({"permission": "allow-all"}), encoding="utf-8"
+    )
+    started = _stub_repl(monkeypatch)
+
+    refused = CliRunner().invoke(cli.app, ["main", "--root", str(tmp_path)])
+    assert refused.exit_code == 1
+    assert started == []
+
+    allowed = CliRunner().invoke(cli.app, ["main", "--root", str(tmp_path), "--confirm-full-access"])
+    assert allowed.exit_code == 0, allowed.output
+    assert started == ["allow-all"]
+
+
+def test_main_sandboxed_modes_never_ask(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(cli, "_can_prompt", lambda: False)
+    started = _stub_repl(monkeypatch)
+
+    for mode in ("ask", "auto-review"):
+        result = CliRunner().invoke(cli.app, ["main", "--root", str(tmp_path), "--permission", mode])
+        assert result.exit_code == 0, (mode, result.output)
+    assert started == ["ask", "auto-review"]

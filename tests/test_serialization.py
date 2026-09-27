@@ -106,7 +106,11 @@ def test_inflight_chat_permission_archive_409(tmp_path) -> None:
             await wait_until(store.get(sid)._lock.locked)
 
             for method, url, body in (
-                ("POST", f"/api/sessions/{sid}/permission", {"mode": "allow-all"}),
+                (
+                    "POST",
+                    f"/api/sessions/{sid}/permission",
+                    {"mode": "allow-all", "confirm_full_access": True},
+                ),
                 ("POST", f"/api/sessions/{sid}/archive", {"archived": True}),
                 ("POST", "/api/chat", {"message": "x", "session_id": sid}),
             ):

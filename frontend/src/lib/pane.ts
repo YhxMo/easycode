@@ -120,8 +120,16 @@ function errorText(data: Record<string, unknown> | null, raw: string | undefined
   return str(data?.message) || raw || "工具执行失败";
 }
 
-/** Read/search calls become context cards; edits become change cards. */
-export function paneData(turn: Item[]): PaneData {
+/**
+ * Read/search calls become context cards; edits become change cards.
+ *
+ * ``fullAccess`` reports whether the session currently runs in full access.
+ * The preview follows the same boundary as the tools: a host path a
+ * full-access read could open is previewable too, while a sandboxed session
+ * keeps the excerpt-only card for anything outside its roots (the read-only
+ * preview API refuses those).
+ */
+export function paneData(turn: Item[], opts: { fullAccess?: boolean } = {}): PaneData {
   const context: ContextCard[] = [];
   const changes: ChangeCard[] = [];
   for (const item of turn) {
@@ -146,9 +154,10 @@ export function paneData(turn: Item[]): PaneData {
       const failed = isError(data);
       const display = str(data?.path) || str(item.args.path);
       // An absolute display path means the file is under no root of this
-      // session: the read-only preview API would refuse it, so the card keeps
-      // the excerpt but must not offer a link that can only fail.
-      const outside = display.startsWith("/");
+      // session. A sandboxed session's preview API refuses those, so the card
+      // keeps the excerpt and must not offer a link that can only fail; full
+      // access previews exactly what its reads may open.
+      const outside = display.startsWith("/") && !opts.fullAccess;
       const root = outside ? "" : rootOf(str(data?.absolute_path), display);
       context.push({
         id: item.id,

@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatEvent } from "../api";
-import { deleteSession, fetchCommands, fetchSessions, saveProject, streamChat } from "../api";
+import {
+  createSession,
+  deleteSession,
+  fetchCommands,
+  fetchSessions,
+  saveProject,
+  setSessionPermission,
+  streamChat,
+} from "../api";
 
 function mockFetch(response: { ok: boolean; status: number; json: () => Promise<unknown> }) {
   const fn = vi.fn().mockResolvedValue(response);
@@ -82,6 +90,51 @@ describe("api 请求层", () => {
     const fn = mockFetch({ ok: true, status: 200, json: async () => ({ commands: [] }) });
     await fetchCommands();
     expect(fn).toHaveBeenLastCalledWith("/api/commands", { method: "GET" });
+  });
+});
+
+// 完全访问是唯一会被服务端拒绝的模式：请求必须带上确认字段，其它模式不带。
+describe("完全访问的确认字段", () => {
+  function bodyOf(fn: ReturnType<typeof mockFetch>, call = 0) {
+    const init = fn.mock.calls[call][1] as { body: string };
+    return JSON.parse(init.body);
+  }
+
+  it("setSessionPermission 只有确认时才声明 confirm_full_access", async () => {
+    const fn = mockFetch({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: "s1", permission_mode: "allow-all" }),
+    });
+    await setSessionPermission("s1", "allow-all", true);
+    expect(bodyOf(fn)).toEqual({ mode: "allow-all", confirm_full_access: true });
+
+    await setSessionPermission("s1", "ask");
+    expect(bodyOf(fn, 1)).toEqual({ mode: "ask", confirm_full_access: false });
+  });
+
+  it("createSession 以完全访问新建会话时带上确认", async () => {
+    const fn = mockFetch({ ok: true, status: 200, json: async () => ({ id: "s1" }) });
+    await createSession("/p", "allow-all");
+    expect(bodyOf(fn)).toEqual({ root: "/p", permission_mode: "allow-all", confirm_full_access: true });
+
+    await createSession("/p", "auto-review");
+    expect(bodyOf(fn, 1)).toEqual({ root: "/p", permission_mode: "auto-review" });
+  });
+
+  it("streamChat 的完全访问回合带上确认", async () => {
+    for (const mode of ["allow-all", "auto-review"]) {
+      streamFetch(['data: {"type":"done"}\n\n']);
+      const fn = vi.mocked(fetch);
+      await streamChat("s1", "hi", () => {}, { permission_mode: mode });
+      const init = fn.mock.calls[0][1] as { body: string };
+      expect(JSON.parse(init.body)).toEqual({
+        message: "hi",
+        session_id: "s1",
+        permission_mode: mode,
+        ...(mode === "allow-all" ? { confirm_full_access: true } : {}),
+      });
+    }
   });
 });
 

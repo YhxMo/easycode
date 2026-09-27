@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 from easycode.credentials import data_home
-from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
 from easycode.workspace import (
     CONFIG_FILENAME,
     DATA_HOME_STATE_DIRS,
@@ -30,23 +29,6 @@ BASE_POLICY = """(version 1)
 {network_policy}
 {write_policy}
 {protected_policy}
-{secret_policy}
-"""
-
-#: allow-all (``danger-full-access``) still keeps the secret firewall: the
-#: sandbox relaxes file writes, reads and network, but the application data dir
-#: (``~/.easycode`` — credentials, sessions) remains off-limits to child procs.
-FULL_ACCESS_POLICY = """(version 1)
-(deny default)
-(allow file-read*)
-(allow file-write*)
-(allow network*)
-(allow process-exec)
-(allow process-fork)
-(allow signal (target same-sandbox))
-(allow sysctl-read)
-(allow mach-lookup)
-(allow ipc-posix*)
 {secret_policy}
 """
 
@@ -91,9 +73,8 @@ def _secret_policy(include_write: bool, *, protect_all_data_home: bool = True) -
     ``(allow file-read*)`` in the base policy is the confirmed gap — a child
     could cat ``~/.easycode/credentials.json``. We close it by denying the whole
     data dir for model-originated processes. ``include_write`` is set whenever
-    the sandbox hands out any file-write allowance (``danger-full-access`` and
-    the normal workspace-write path alike), so the data dir is never a shell
-    write target either.
+    the sandbox hands out any file-write allowance, so the data dir is never a
+    shell write target either.
     """
     if not protect_all_data_home:
         return _state_deny_policy(include_write)
@@ -118,24 +99,20 @@ def sandbox_command(
     *,
     grant: ToolGrant | None = None,
 ) -> list[str]:
-    """Apply workspace isolation, with explicit network and write grants."""
-    protect_all = not _root_in_data_home(ctx)
-    if ctx.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
-        # allow-all: full access, but retain the secret firewall (narrowed to
-        # the data-home state dirs when the workspace itself is a managed
-        # worktree inside the data home).
-        if sys.platform != "darwin" or not SEATBELT_EXECUTABLE.is_file():
-            return command  # no Seatbelt available; env sanitization still applies
-        policy = FULL_ACCESS_POLICY.format(
-            secret_policy=_secret_policy(
-                include_write=True, protect_all_data_home=protect_all
-            )
-        )
-        args = [str(SEATBELT_EXECUTABLE), "-p", policy]
-        return [*args, "--", *command]
+    """Apply workspace isolation, with explicit network and write grants.
+
+    ``danger-full-access`` wraps nothing: the preset means the child runs as an
+    ordinary host process, so Seatbelt's default-deny profile — and with it the
+    data-home firewall — is not applied at all. ``child_env`` still sanitizes
+    the environment, because that protects the parent's secrets rather than
+    bounding the child.
+    """
+    if ctx.full_access:
+        return command
     if sys.platform != "darwin" or not SEATBELT_EXECUTABLE.is_file():
         raise RuntimeError("workspace sandbox is currently supported only on macOS")
 
+    protect_all = not _root_in_data_home(ctx)
     writable = list(ctx.writable_roots())
     if grant:
         for r in grant.writable_roots:

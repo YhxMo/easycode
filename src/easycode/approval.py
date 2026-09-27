@@ -18,7 +18,7 @@ import shlex
 from pathlib import Path
 
 from easycode.models.base import ToolCall
-from easycode.policy import PERM_ALLOW_ALL, SANDBOX_DANGER_FULL_ACCESS
+from easycode.policy import PERM_ALLOW_ALL
 from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
 NETWORK_HINTS = (
@@ -183,7 +183,12 @@ def grant_for_toolcall(tc: ToolCall, ctx: PathContext) -> ToolGrant:
       writable root (a precise target grant, not the whole ``/dir/*`` scope);
       when the target is already inside an allowed directory no grant is needed.
     - anything else (MCP, builtins): an empty grant.
+
+    ``danger-full-access`` never prompts, so nothing here is ever added to a
+    sandbox that no longer has a write boundary: the grant is empty.
     """
+    if ctx.full_access:
+        return ToolGrant()
     if tc.name in FILE_EDIT_TOOLS:
         path = str(tc.arguments.get("path", "")).strip()
         if not path:
@@ -305,22 +310,23 @@ def definitive_deny_reason(tc: ToolCall, ctx: PathContext) -> str | None:
     A file write into a permanent protected boundary (``.git``/``.easycode``/
     ``easycode.config.json`` of any authorization root, plus the credential
     files) is refused here so no approval is ever offered for a call that could
-    not succeed: those boundaries are hard protection, and asking the user to
-    approve one only produces a decision that the file tool must ignore.
+    not succeed: under the sandboxed presets those boundaries are hard
+    protection, and asking the user to approve one only produces a decision that
+    the file tool must ignore.
 
     ``execute_shell`` is denied for clearly destructive commands. Under
-    ``danger-full-access`` (the ``allow-all`` preset) that denylist is off,
+    ``danger-full-access`` (the ``allow-all`` preset) both gates are off,
     matching Codex's ``danger-full-access`` semantics: the sandbox and approvals
-    are already gone, so no in-process denylist remains. Selective limits under
-    allow-all are the job of ``permission_rules``. File-tool protection is not
-    part of that preset — protected paths stay denied in every mode.
+    are already gone, so neither an in-process denylist nor a path firewall
+    remains. Selective limits under allow-all are the job of
+    ``permission_rules``.
     """
+    if ctx.full_access:
+        return None
     if tc.name in FILE_EDIT_TOOLS:
         path = str(tc.arguments.get("path", "")).strip()
         if path and ctx.is_protected_path(ctx.resolve(path)):
             return f"受保护路径不可写（.git/.easycode/项目配置/凭据）: {path}"
-        return None
-    if ctx.sandbox_mode == SANDBOX_DANGER_FULL_ACCESS:
         return None
     if tc.name != "execute_shell":
         return None

@@ -88,6 +88,24 @@ describe("paneData · 读取", () => {
     expect(card.rootLabel).toBeUndefined();
   });
 
+  it("完全访问下工作区外读取同样可以预览", () => {
+    // 预览与工具的边界一致：完全访问的读取能打开宿主机路径，面板也给出入口，
+    // 不再显示「工作区之外」的说明。
+    const pane = paneData(
+      [tool("1", "read_file", { path: "/tmp/other/note.txt" }, readOutside)],
+      { fullAccess: true },
+    );
+    const card = pane.context[0];
+    expect(card.previewTarget).toBe("/tmp/other/note.txt");
+    expect(card.previewBlocked).toBeUndefined();
+    expect(card.excerpt).toContain("external note");
+    // 同样的记录在沙箱模式下仍然只给摘录：一张卡片不会因为预览放行就改口。
+    const sandboxed = paneData([
+      tool("1", "read_file", { path: "/tmp/other/note.txt" }, readOutside),
+    ]);
+    expect(sandboxed.context[0].previewTarget).toBeUndefined();
+  });
+
   it("没有 absolute_path 的历史结果回退到绝对工具参数", () => {
     const result = JSON.stringify({ status: "ok", path: "src/app.ts", chars: 3, content: "abc" });
     const pane = paneData([tool("1", "read_file", { path: "/ws/src/app.ts" }, result)]);

@@ -264,7 +264,12 @@ export function createSession(
   secondaryRoots?: string[],
 ): Promise<SessionSummary> {
   const body: Record<string, unknown> = { root };
-  if (permissionMode) body.permission_mode = permissionMode;
+  if (permissionMode) {
+    body.permission_mode = permissionMode;
+    // The current conversation already carries this consent; the server still
+    // refuses an unconfirmed full-access session, so it is stated here.
+    if (permissionMode === "allow-all") body.confirm_full_access = true;
+  }
   if (secondaryRoots !== undefined) body.secondary_roots = secondaryRoots;
   return request("/api/sessions", { method: "POST", body });
 }
@@ -422,10 +427,11 @@ export function submitApproval(approvalId: string, approve: boolean, always = fa
 export function setSessionPermission(
   sessionId: string,
   mode: string,
+  confirmFullAccess = false,
 ): Promise<{ permission_mode: string }> {
   return request(`/api/sessions/${encodeURIComponent(sessionId)}/permission`, {
     method: "POST",
-    body: { mode },
+    body: { mode, confirm_full_access: confirmFullAccess },
   });
 }
 
@@ -444,7 +450,12 @@ export async function streamChat(
   // A missing field means "inherit the project binding"; an explicit empty
   // array means "no secondary roots", so the check is presence, not length.
   if (opts.secondary_roots !== undefined) body.secondary_roots = opts.secondary_roots;
-  if (opts.permission_mode) body.permission_mode = opts.permission_mode;
+  if (opts.permission_mode) {
+    body.permission_mode = opts.permission_mode;
+    // A conversation that already shows full access has been through the risk
+    // dialog, and the server refuses an unconfirmed full-access turn.
+    if (opts.permission_mode === "allow-all") body.confirm_full_access = true;
+  }
   if (opts.command_id) body.command_id = opts.command_id;
   const resp = await fetch("/api/chat", {
     method: "POST",

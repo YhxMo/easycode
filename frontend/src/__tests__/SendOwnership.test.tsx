@@ -87,6 +87,7 @@ describe("App · 会话归属", () => {
 
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
     await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    await user.click(screen.getByRole("button", { name: "确认完全访问" }));
 
     await user.type(composerField(), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));

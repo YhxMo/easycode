@@ -90,3 +90,17 @@ def cap_permission(parent: str, requested: str | None) -> str:
     parent_mode = permission_parse(parent)
     child_mode = permission_parse(requested)
     return child_mode if ranks[child_mode] <= ranks[parent_mode] else parent_mode
+
+
+def require_full_access_consent(mode: str, confirmed: bool) -> None:
+    """Refuse to enter ``danger-full-access`` without an explicit confirmation.
+
+    Full access is the one preset that drops every boundary the app can
+    enforce, so no entry point reaches it implicitly: a session's mode change,
+    a chat request that carries one, and the CLI's startup mode each state the
+    consent they act on. The check is misclick protection rather than a
+    security boundary — the caller decides how to refuse (HTTP 422, or a
+    refusal to start), so this stays a plain ``ValueError``.
+    """
+    if mode == PERM_ALLOW_ALL and not confirmed:
+        raise ValueError("完全访问需要显式确认（confirm_full_access）后才能启用")

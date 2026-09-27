@@ -20,7 +20,12 @@ from pydantic import BaseModel, Field
 from easycode.tools.registry import json_out, tool_scope
 from easycode.workspace import PathContext, ToolGrant
 
-SKIP_DIRS = {".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
+#: Dependency, cache and build directories: skipped in every mode, because
+#: descending into them is cost without content.
+SKIP_DIRS = {".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
+#: The repository database is skipped as well while the sandbox is on — it is
+#: protected metadata there. Under full access it is simply a readable path.
+GIT_DIR = ".git"
 MAX_LINE_LEN = 2000
 MAX_READ_BYTES = 50 * 1024
 #: Files larger than this are left out of listings and searches entirely.
@@ -34,8 +39,10 @@ def _write_denied(scope: PathContext, p: Path, raw: str, grant: ToolGrant | None
     Shared by write_file and edit_file: the credential hard-deny first, then the
     permanent write boundaries, then the allowed/granted authorization check.
     The protected boundaries are checked before ``in_allowed`` on purpose —
-    ``danger-full-access`` makes everything else writable, but it is not an
-    approval and must never open a protected path.
+    under the sandboxed presets they are hard protection that no approval can
+    lift, so a grant must never open them. ``danger-full-access`` is not an
+    approval either: it is the user's decision to drop the boundaries
+    altogether, and ``PathContext`` reports them as unprotected there.
     """
     if scope.is_protected(p):
         return json_out(
@@ -339,7 +346,7 @@ def grep(
     scope = tool_scope(root, ctx)
     matches: list[dict] = []
     for r in scope.roots:
-        for p in _iter_files(r, include=args.include):
+        for p in _iter_files(r, include=args.include, skip_dirs=_search_skip_dirs(scope)):
             if scope.is_protected(p):
                 continue
             try:
@@ -375,12 +382,13 @@ def glob(
             tag = str(r)
         results.add((rel, tag))
 
+    skip_dirs = _search_skip_dirs(scope)
     for r in scope.roots:
         for pat in (args.pattern, f"**/{args.pattern}"):
             for p in r.glob(pat):
                 if (
                     p.is_file()
-                    and not _is_skipped(p, r)
+                    and not _is_skipped(p, r, skip_dirs)
                     and not _is_meta(p)
                     and not scope.is_protected(p)
                 ):
@@ -394,7 +402,24 @@ def glob(
     )
 
 
-def _iter_files(root: Path, include: str | None = None) -> list[Path]:
+#: What a listing skips unless the caller says otherwise: the performance
+#: ignores plus the repository database.
+DEFAULT_SKIP_DIRS = SKIP_DIRS | {GIT_DIR}
+
+
+def _search_skip_dirs(scope: PathContext) -> set[str]:
+    """Directories a search under ``scope`` never descends into.
+
+    Dependency and cache directories are a cost question, not a boundary, so
+    they stay skipped in every mode; ``.git`` is skipped only while the sandbox
+    is on — under full access it is an ordinary readable path.
+    """
+    return SKIP_DIRS if scope.full_access else DEFAULT_SKIP_DIRS
+
+
+def _iter_files(
+    root: Path, include: str | None = None, skip_dirs: set[str] = DEFAULT_SKIP_DIRS
+) -> list[Path]:
     """Every file under ``root`` the tools may read, in a stable path order.
 
     Walks directory by directory so ignored directories are pruned before they
@@ -405,7 +430,7 @@ def _iter_files(root: Path, include: str | None = None) -> list[Path]:
     """
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
+        dirnames[:] = sorted(name for name in dirnames if name not in skip_dirs)
         for name in filenames:
             if name.startswith("._") or name == ".DS_Store":
                 continue
@@ -424,8 +449,8 @@ def _iter_files(root: Path, include: str | None = None) -> list[Path]:
     return files
 
 
-def _is_skipped(p: Path, root: Path) -> bool:
-    return any(part in SKIP_DIRS for part in p.relative_to(root).parts) or _is_meta(p)
+def _is_skipped(p: Path, root: Path, skip_dirs: set[str]) -> bool:
+    return any(part in skip_dirs for part in p.relative_to(root).parts) or _is_meta(p)
 
 
 def _is_meta(p: Path) -> bool:

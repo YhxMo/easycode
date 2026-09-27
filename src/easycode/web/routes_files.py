@@ -4,7 +4,8 @@ The scope is the same one a turn would execute in — a session's own roots, or
 the roots a new session would be created with — so the menu can only ever offer
 files the agent could actually read. Nothing here needs approval: it is a
 read-only listing inside the workspace, and credential / write-boundary paths
-are excluded outright.
+are excluded outright (a full-access session has neither boundary, and its
+previews may reach any host path its tools could).
 
 POST rather than GET for the same reason as ``/api/commands``: the query has to
 distinguish "no secondary roots given, inherit the project binding" from
@@ -227,6 +228,10 @@ def register_files(app: FastAPI, cfg, store) -> None:
         budget is the tool's ``MAX_READ_BYTES`` so a preview cannot pull in more
         than a read would.
 
+        The preview follows the session's own boundary: under full access any
+        host path a tool could read is previewable, while the sandboxed presets
+        stay inside the roots that session works in.
+
         ``offset``/``limit`` keep their historical tolerance — any integer is
         accepted, a non-positive ``limit`` means "to the end", and an offset
         past the end returns an empty window rather than an error.
@@ -240,7 +245,7 @@ def register_files(app: FastAPI, cfg, store) -> None:
             raise HTTPException(403, "path is protected")
         # `resolve` passes absolute paths through: containment is what keeps the
         # preview inside the roots the session may actually work in.
-        if not any(target.is_relative_to(root) for root in ctx.roots):
+        if not ctx.full_access and not any(target.is_relative_to(root) for root in ctx.roots):
             raise HTTPException(403, "path is outside the workspace")
         if not target.is_file():
             raise HTTPException(404, "not a file")

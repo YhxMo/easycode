@@ -395,7 +395,12 @@ def test_web_shutdown_closes_owned_mcp(tmp_path):
     client = TestClient(app)
     with client:
         r = client.post(
-            "/api/chat", json={"message": "go", "permission_mode": "allow-all"}
+            "/api/chat",
+                json={
+                    "message": "go",
+                    "permission_mode": "allow-all",
+                    "confirm_full_access": True,
+                },
         )
         assert r.status_code == 200, r.text
         sess = store.list()[0]

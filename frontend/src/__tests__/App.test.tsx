@@ -30,6 +30,122 @@ beforeEach(() => {
 });
 
 describe("App", () => {
+  it("选择完全访问前显示风险确认，取消不会改变权限", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([]);
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+
+    expect(screen.getByRole("dialog", { name: "确认完全访问" })).toBeTruthy();
+    expect(m.setSessionPermission).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy();
+    expect(m.setSessionPermission).not.toHaveBeenCalled();
+  });
+
+  it("Escape 关闭风险确认且不改权限", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    expect(screen.getByRole("dialog", { name: "确认完全访问" })).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "确认完全访问" })).toBeNull());
+    expect(m.setSessionPermission).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy();
+  });
+
+  it("确认完全访问后才发请求，并带上确认字段", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
+    m.setSessionPermission.mockResolvedValue({ permission_mode: "allow-all" });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    await user.click(screen.getByRole("button", { name: "确认完全访问" }));
+
+    await waitFor(() =>
+      expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all", true),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
+  });
+
+  it("切回其他模式后再次进入完全访问仍需确认", async () => {
+    const user = userEvent.setup();
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
+    m.setSessionPermission.mockImplementation(async (_id, mode) => ({ permission_mode: mode }));
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await screen.findByText("hi");
+
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    await user.click(screen.getByRole("button", { name: "确认完全访问" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /完全访问/ })).toBeTruthy());
+
+    // 退出完全访问不需要确认。
+    await user.click(screen.getByRole("button", { name: /完全访问/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /请求批准/ }));
+    await waitFor(() =>
+      expect(m.setSessionPermission).toHaveBeenLastCalledWith("s1", "ask", false),
+    );
+    expect(screen.queryByRole("dialog", { name: "确认完全访问" })).toBeNull();
+
+    // 再次进入仍然先弹确认，取消后不发请求。
+    await user.click(screen.getByRole("button", { name: /请求批准/ }));
+    await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    expect(screen.getByRole("dialog", { name: "确认完全访问" })).toBeTruthy();
+    expect(m.setSessionPermission).toHaveBeenCalledTimes(2);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "确认完全访问" })).toBeNull());
+    expect(m.setSessionPermission).toHaveBeenCalledTimes(2);
+  });
+
+  it("被降级的旧会话显示请求批准，下一轮按该模式发送", async () => {
+    const user = userEvent.setup();
+    // 服务端把未经确认的 allow-all 旧会话降级为 ask，界面照它显示。
+    m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
+    m.fetchSession.mockResolvedValue({
+      ...detail("s1", "会话A", [{ role: "user", content: "hi" }]),
+      permission_mode: "ask",
+    });
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await screen.findByText("hi");
+
+    expect(screen.getByRole("button", { name: /请求批准/ })).toBeTruthy();
+    await user.type(composerField(), "hello");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalledTimes(1));
+    expect(m.streamChat).toHaveBeenCalledWith(
+      "s1",
+      "hello",
+      expect.any(Function),
+      expect.objectContaining({ permission_mode: "ask" }),
+    );
+  });
+
   it("权限改动后发送请求使用最新 currentPermission", async () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
@@ -43,6 +159,7 @@ describe("App", () => {
     // Flip permission to allow-all through the real picker UI.
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
     await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    await user.click(screen.getByRole("button", { name: "确认完全访问" }));
 
     await user.type(composerField(), "hello");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
@@ -592,7 +709,8 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
     await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
-    await waitFor(() => expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all"));
+    await user.click(screen.getByRole("button", { name: "确认完全访问" }));
+    await waitFor(() => expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all", true));
 
     // Switch to B while A's permission request is still pending.
     await user.click(sidebarRow("会话B"));
@@ -630,7 +748,8 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
     await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
-    await waitFor(() => expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all"));
+    await user.click(screen.getByRole("button", { name: "确认完全访问" }));
+    await waitFor(() => expect(m.setSessionPermission).toHaveBeenCalledWith("s1", "allow-all", true));
 
     // The view still shows the confirmed mode and sending is blocked until the
     // server confirms: a turn must not write the old mode back.
@@ -669,6 +788,7 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: /请求批准/ }));
     await user.click(screen.getByRole("menuitemradio", { name: /完全访问/ }));
+    await user.click(screen.getByRole("button", { name: "确认完全访问" }));
 
     await waitFor(() => {
       expect(document.querySelector(".app-toast")?.textContent).toContain("修改权限失败");

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -16,6 +17,7 @@ from prompt_toolkit.keys import Keys
 from easycode.agent.loop import Agent, file_change
 from easycode.agentfactory import bind_agent, make_agent
 from easycode.config import Config
+from easycode.policy import PERM_ALLOW_ALL
 from easycode.ui.render import (
     banner,
     console,
@@ -155,15 +157,55 @@ def main(
     permission: Annotated[
         str | None, typer.Option("--permission", help="permission mode: ask/auto-review/allow-all")
     ] = None,
+    confirm_full_access: Annotated[
+        bool,
+        typer.Option(
+            "--confirm-full-access",
+            help="confirm full access up front; required when no terminal can ask",
+        ),
+    ] = False,
 ) -> None:
     cfg = Config.load(start=root)
     if permission:
         from easycode.policy import permission_parse
 
         cfg.permission_mode = permission_parse(permission)
+    if cfg.permission_mode == PERM_ALLOW_ALL:
+        _confirm_full_access(confirm_full_access)
     current = model or cfg.default_model
     workdir = (root or Path.cwd()).resolve()
     _cli_main(cfg, current, workdir, secondary_root)
+
+
+def _can_prompt() -> bool:
+    """True when this run has a terminal to ask a question on."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _confirm_full_access(pre_confirmed: bool) -> None:
+    """Gate a CLI startup that would run in full access.
+
+    The preset drops the workspace boundary, the approval prompts and the data
+    home firewall, so it is stated out loud rather than inherited silently from
+    a config file: an interactive run asks once, and a run with no terminal to
+    ask must pass ``--confirm-full-access`` instead of proceeding unconfirmed.
+    """
+    risk = "完全访问会关闭沙箱与审批，可读写宿主机任意路径（含 ~/.easycode 与会话数据）。"
+    if not pre_confirmed:
+        if not _can_prompt():
+            console.print(f"[red]{risk}[/]")
+            console.print("[red]无终端可确认，请加 --confirm-full-access 后重试[/]")
+            raise typer.Exit(code=1)
+        console.print(f"[yellow]⚠ {risk}[/]")
+        try:
+            approved = typer.confirm("确认以完全访问模式启动？")
+        except (EOFError, KeyboardInterrupt, typer.Abort):
+            approved = False
+        if not approved:
+            console.print("[dim]已取消[/]")
+            raise typer.Exit(code=1)
+        return
+    console.print(f"[yellow]⚠ {risk}[/]")
 
 
 @app.command()

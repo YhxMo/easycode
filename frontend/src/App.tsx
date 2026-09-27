@@ -169,6 +169,9 @@ export default function App() {
   // view keeps the old value and sending is blocked, so a turn can never write
   // an unconfirmed mode back to the server.
   const [permissionPending, setPermissionPending] = useState(false);
+  // Full host access is a security boundary, so selecting it from the menu
+  // opens an explicit risk confirmation before the server-side mode changes.
+  const [allowAllConfirm, setAllowAllConfirm] = useState(false);
   const [commandState, setCommandState] = useState<CommandMenuState>({ status: "loading" });
   // Bumped by the menu's retry, and by a change in the registered projects.
   const [commandRetry, setCommandRetry] = useState(0);
@@ -1029,8 +1032,9 @@ export default function App() {
     [artifactRecords, currentId],
   );
   const pane = useMemo(
-    () => paneData(sessionToolItems(sessionRecords, items)),
-    [sessionRecords, items],
+    () =>
+      paneData(sessionToolItems(sessionRecords, items), { fullAccess: permission === "allow-all" }),
+    [sessionRecords, items, permission],
   );
   // Newest first: this list is the conversation, and the card a turn just
   // produced is the one worth seeing without scrolling.
@@ -1203,7 +1207,7 @@ export default function App() {
   const isEmptyStage = items.length === 0 && sessionLoad === null;
 
   const changePermission = useCallback(
-    async (mode: string) => {
+    async (mode: string, confirmFullAccess = false) => {
       // One permission request at a time: the picker is disabled while pending,
       // so a second request can never race the first (no request token needed).
       if (sendBlocked) return;
@@ -1218,7 +1222,7 @@ export default function App() {
       // request therefore leaves the old value in place with no rollback.
       setPermissionPending(true);
       try {
-        const r = await setSessionPermission(id, mode);
+        const r = await setSessionPermission(id, mode, confirmFullAccess);
         if (openSeqRef.current !== viewToken) return;
         setPermission(r.permission_mode);
       } catch (e) {
@@ -1230,6 +1234,20 @@ export default function App() {
       }
     },
     [currentId, showToast, sendBlocked],
+  );
+
+  const requestPermissionChange = useCallback(
+    (mode: string) => {
+      // Entering full access is the one change that removes every boundary, so
+      // it goes through the risk dialog first; only that dialog's own button
+      // states the consent to the server.
+      if (mode === "allow-all" && permission !== "allow-all") {
+        setAllowAllConfirm(true);
+        return;
+      }
+      void changePermission(mode, mode === "allow-all");
+    },
+    [changePermission, permission],
   );
 
   // Composer keys: command-menu navigation first, then Enter to send.
@@ -1335,7 +1353,7 @@ export default function App() {
       sendBlocked={sendBlocked}
       permission={permission}
       permissionDisabled={busy || sendBlocked}
-      onPermission={changePermission}
+      onPermission={requestPermissionChange}
       onChange={(v, nextCaret) => {
         if (composingRef.current) {
           // The controlled value still has to follow the field — React would
@@ -1682,6 +1700,34 @@ export default function App() {
             {toast.text}
           </div>
         )}
+        <Modal
+          open={allowAllConfirm}
+          onClose={() => setAllowAllConfirm(false)}
+          title="确认完全访问"
+          variant="permission-warning-modal"
+          actions={
+            <>
+              <button type="button" className="modal-cancel" onClick={() => setAllowAllConfirm(false)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  setAllowAllConfirm(false);
+                  void changePermission("allow-all", true);
+                }}
+              >
+                确认完全访问
+              </button>
+            </>
+          }
+        >
+          <p className="modal-desc">
+            完全访问会关闭文件沙箱和审批，让 Easy code 可以读写宿主机上的文件并执行命令。
+            仅在你确认模型和任务可信时使用。
+          </p>
+        </Modal>
         {editTarget && (
           <Modal
             open={Boolean(editTarget)}

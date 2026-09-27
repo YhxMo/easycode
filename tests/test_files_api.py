@@ -429,3 +429,41 @@ def test_preview_reads_a_large_file_in_bounded_chunks(tmp_path, monkeypatch):
     assert window.lines == ["x" * (routes.CHUNK_BYTES * 3 + 10)]
     assert sizes and all(0 < size <= routes.CHUNK_BYTES for size in sizes)
     assert len(sizes) > 1
+
+
+def test_full_access_previews_any_host_path(tmp_path):
+    """完全访问会话的预览与其工具的边界一致：项目元数据、凭据与工作区外
+    绝对路径都能打开；普通模式继续按工作区与保护策略拒绝。"""
+    from easycode.policy import PERM_ALLOW_ALL
+
+    _workspace(tmp_path)
+    outside = tmp_path.parent / f"outside-preview-{tmp_path.name}.txt"
+    outside.write_text("host file\n", encoding="utf-8")
+    cred = Path.home() / ".easycode" / "credentials.json"
+    cred.parent.mkdir(parents=True, exist_ok=True)
+    cred.write_text('{"api_key": "sk-preview-secret"}\n', encoding="utf-8")
+
+    client = make_app(tmp_path)
+    sandboxed = client.app.state.store.create(root=str(tmp_path))
+    full = client.app.state.store.create(root=str(tmp_path))
+    full.set_permission_mode(PERM_ALLOW_ALL)
+
+    for path in ("easycode.config.json", ".easycode/state.json", str(outside), str(cred)):
+        r = client.get(
+            "/api/files/content", params={"session_id": full.id, "path": path}
+        )
+        assert r.status_code == 200, (path, r.text)
+
+    for path in ("easycode.config.json", ".easycode/state.json", str(outside)):
+        r = client.get(
+            "/api/files/content", params={"session_id": sandboxed.id, "path": path}
+        )
+        assert r.status_code == 403, path
+
+    # 列举仍然只覆盖会话自己的工作区，且与预览放行的一致：完全访问能看到
+    # 工作区内的项目配置，普通模式看不到；工作区之外的文件两边都不列出。
+    for session, expected in ((full, True), (sandboxed, False)):
+        listing = client.post("/api/files", json={"session_id": session.id}).json()
+        paths = _paths(listing)
+        assert ("easycode.config.json" in paths) is expected
+        assert str(outside) not in [f["absolute_path"] for f in listing["files"]]
