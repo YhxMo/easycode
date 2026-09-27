@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,7 @@ def test_grep_invalid_regex(reg, tmp_path):
     assert out["status"] == "error"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 def test_execute_shell(reg, tmp_path):
     out = _run(reg, "execute_shell", {"command": "echo hi", "timeout": 10}, tmp_path)
     assert out["status"] == "ok"
@@ -75,6 +77,7 @@ def test_execute_shell(reg, tmp_path):
     assert "hi" in out["stdout"]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 def test_execute_shell_failure(reg, tmp_path):
     out = _run(reg, "execute_shell", {"command": "exit 3"}, tmp_path)
     assert out["exit_code"] == 3

@@ -93,7 +93,7 @@ uv run easycode main --help
 npm --prefix frontend run dev
 ```
 
-工作区 Shell 沙箱依赖 macOS；其他平台执行 Shell 需要明确选择全访问模式，不能为通过测试而暗中放宽权限。CLI 以完全访问启动时同样要确认：交互式问一次，无终端时必须加 `--confirm-full-access`，否则拒绝启动。CI 在 Linux 上运行，seatbelt 集成用例在那里整体跳过，权限边界的真实验证要在本机 macOS 上做。项目配置、凭据和会话位置见 README，不将本机配置写成代码默认值。
+工作区 Shell 沙箱依赖 macOS；其他平台执行 Shell 需要明确选择全访问模式，不能为通过测试而暗中放宽权限。CLI 以完全访问启动时同样要确认：交互式问一次，无终端时必须加 `--confirm-full-access`，否则拒绝启动。CI 在 Linux 上运行，依赖 Shell 沙箱的用例（执行 Shell、MCP 子进程与 Seatbelt 集成）在那里用 `skipif` 整体跳过，权限边界的真实验证要在本机 macOS 上做。项目配置、凭据和会话位置见 README，不将本机配置写成代码默认值。
 
 ## 审查与验证
 

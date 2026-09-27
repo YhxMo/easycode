@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 
 def mcp_server_config(pidfile: Path | None = None):
-    import sys
-
     server = {
         "command": sys.executable,
         "args": [str(Path(__file__).resolve().parent / "mcp_demo_server.py")],
@@ -35,6 +34,7 @@ def process_state(pid: int) -> str:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_mcp_manager_connects_and_lists_tools():
     from easycode.mcp import MCPSessionManager, mcp_tool_name
 
@@ -54,6 +54,7 @@ async def test_mcp_manager_connects_and_lists_tools():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_mcp_manager_call_tool():
     from easycode.mcp import MCPSessionManager, mcp_tool_name
 
@@ -211,6 +212,7 @@ async def test_failed_connect_closes_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_close_reaps_server_process(tmp_path):
     from easycode.mcp import MCPSessionManager
     from easycode.workspace import PathContext
@@ -323,6 +325,7 @@ async def test_subagent_with_different_sandbox_gets_own_mcp(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_session_delete_closes_owned_mcp(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.config import Config
@@ -504,6 +507,7 @@ async def test_subagent_reuses_mcp_manager(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_mcp_schemas_skip_invalid():
     """A server with an unserializable schema is skipped, others survive."""
     from easycode.mcp import MCPSessionManager

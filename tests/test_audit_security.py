@@ -196,6 +196,7 @@ def test_child_env_strips_parent_secrets_but_keeps_runtime_env(monkeypatch):
     assert env["EASYCODE_TEST_VALUE"] == "kept"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 @pytest.mark.asyncio
 async def test_mcp_child_env_is_sanitized(monkeypatch, tmp_path):
     """A secret-bearing parent variable must not reach an MCP server process,
@@ -773,6 +774,7 @@ def test_finder_prompt_sanitizer_strips_controls_and_caps():
     assert platform_mod._sanitize_finder_prompt("   hi  ") == "hi"
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 def test_finder_prompt_script_no_newline_and_quotes_escaped(tmp_path, monkeypatch):
     import subprocess as sp
 
