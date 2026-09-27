@@ -158,16 +158,36 @@ class Agent:
         return base
 
     async def init_mcp(self) -> None:
-        """Connect configured MCP servers on first use; safe to call repeatedly."""
-        if not self.mcp_servers or self.mcp_manager is not None:
+        """Connect this agent's effective MCP servers; safe to call repeatedly."""
+        if self.mcp_manager is not None:
             return
         from easycode.mcp import MCPSessionManager
+        from easycode.mcp_config import effective_servers, fingerprint
 
-        self.mcp_manager = MCPSessionManager(self.mcp_servers, self.path_context())
+        servers = effective_servers(self.mcp_servers, str(self.root))
+        if not servers:
+            return
+        ctx = self.path_context()
+        self.mcp_manager = MCPSessionManager(servers, ctx, fingerprint=fingerprint(servers, ctx))
         self.mcp_owned = True
         await self.mcp_manager.start()
         if self.mcp_manager.tool_schemas():
             self.history.set_system(self._build_system())
+
+    def mcp_fingerprint(self) -> str:
+        """Digest of this agent's MCP setup; "" when it can no longer be resolved.
+
+        A configuration that has become unreadable deliberately matches no
+        running manager, so its processes are dropped and the next turn reports
+        the problem rather than serving tools nobody configured any more.
+        """
+        from easycode.mcp_config import MCPConfigError, effective_servers, fingerprint
+
+        try:
+            servers = effective_servers(self.mcp_servers, str(self.root))
+        except MCPConfigError:
+            return ""
+        return fingerprint(servers, self.path_context())
 
     async def close_mcp(self) -> None:
         """Release the MCP manager when this agent owns it; safe to call twice.
@@ -183,15 +203,18 @@ class Agent:
         await manager.close()
 
     async def invalidate_mcp_if_context_changed(self) -> None:
-        """Drop MCP when the sandbox/workspace context changed since it started.
+        """Drop MCP when the sandbox, workspace or configuration changed.
 
-        Every entry that mutates the context (permission mode, secondary roots)
-        calls this once; a stale process would otherwise keep serving tools under
-        its old sandbox. A borrowed parent manager is released without closing
-        it, so the parent's process survives.
+        Every entry that mutates the context (permission mode, secondary roots,
+        workspace, a settings edit) calls this once; a stale process would
+        otherwise keep serving tools under its old sandbox or an old server list.
+        A borrowed parent manager is released without closing it, so the parent's
+        process survives.
         """
         manager = self.mcp_manager
-        if manager is None or manager.ctx == self.path_context():
+        if manager is None:
+            return
+        if manager.ctx == self.path_context() and manager.fingerprint == self.mcp_fingerprint():
             return
         if self.mcp_owned:
             await self.close_mcp()

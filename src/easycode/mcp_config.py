@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +67,23 @@ def project_config_path(root: Path) -> Path:
     return Path(root) / CONFIG_FILENAME
 
 
+def cache_home() -> Path:
+    """Where launcher-fetched packages are cached, outside the data home.
+
+    A package manager told to use the data home could never write there: the
+    sandbox denies writes under it, because that is where sessions and
+    credentials live. The cache therefore sits in the user's cache directory,
+    and the sandbox grants exactly this one subtree for the launch.
+    """
+    base = os.environ.get("XDG_CACHE_HOME")
+    root = Path(base).expanduser() if base else Path.home() / ".cache"
+    return root / "easycode"
+
+
+def mcp_cache_dir(launcher: str) -> Path:
+    return cache_home() / "mcp" / launcher
+
+
 def _positive(value: Any, label: str, default: float) -> float:
     if value is None:
         return default
@@ -94,10 +111,6 @@ def _string_list(value: Any, label: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise MCPConfigError(f"{label} 必须是字符串数组")
     return [item for item in value if item]
-
-
-def _tool_name(server: str, tool: str) -> str:
-    return f"mcp__{server}__{tool}"
 
 
 def _valid_name(name: str) -> bool:
@@ -171,16 +184,13 @@ class MCPServerConfig:
         if transport == "http":
             if not url.startswith(("http://", "https://")):
                 raise MCPConfigError(f"{name}: URL 只支持 http(s)")
+            # One rule for the transport, so credentials can never outrun it:
+            # plaintext is for a server on this machine, anything remote is
+            # https. A token therefore never travels in the clear either.
             if not url.startswith("https://") and not _is_loopback(url):
                 raise MCPConfigError(
-                    f"{name}: 敏感请求头或 OAuth 走明文地址只允许本机回环（127.0.0.1/localhost）"
+                    f"{name}: 明文地址只允许本机回环（127.0.0.1/localhost），远程服务请使用 https"
                 )
-
-        has_secrets = bool(raw.get("secret_env")) or bool(raw.get("secret_headers")) or bool(
-            raw.get("bearer_credential") or raw.get("oauth")
-        )
-        if has_secrets and transport == "http" and not url.startswith("https://") and not _is_loopback(url):
-            raise MCPConfigError(f"{name}: 凭据只能发送到 https 或本机回环地址")
 
         cwd = raw.get("cwd")
         if cwd is not None:
@@ -291,13 +301,6 @@ class MCPServerConfig:
         base = Path(self.command).name
         return base if base in PACKAGE_LAUNCHERS else None
 
-    def tool_patterns(self) -> dict[str, list[str]]:
-        """The filter as full registered names, for the manager to apply."""
-        return {
-            "enabled_tools": [_tool_name(self.name, t) for t in self.enabled_tools],
-            "disabled_tools": [_tool_name(self.name, t) for t in self.disabled_tools],
-        }
-
 
 def _matches(pattern: str, tool: str) -> bool:
     """A filter entry names a tool, or ``*`` for all of them."""
@@ -396,20 +399,75 @@ def resolve(
     return sorted(out.values(), key=lambda entry: entry.name)
 
 
-def resolve_for_session(
-    cfg, session: object | None, *, root: str | None = None
-) -> list[ResolvedServer]:
-    """The effective servers for one session's project.
+def effective_servers(app: dict[str, dict[str, Any]] | None, root: str | None) -> list[ResolvedServer]:
+    """The servers one project actually runs, with their secrets filled in.
 
-    Only the session's primary directory is a project scope: a secondary
+    Only the project's own primary directory is a project scope: a secondary
     directory is somewhere the session reads, not the project it belongs to, and
     letting it contribute servers would make the same conversation behave
     differently depending on which directory happened to be listed first.
+
+    Secrets belong to the scope that won the name — a personal credential must
+    not authenticate a project's replacement entry for that server.
     """
-    project_root = root or getattr(session, "root", None) or str(cfg.root)
+    from easycode.mcp_auth import store as credential_store
+
+    project_root = str(root or "")
     personal = read_scope(personal_config_path())
-    project = read_scope(project_config_path(Path(project_root)))
-    return resolve(personal=personal, app=cfg.mcp_servers, project=project)
+    project = read_scope(project_config_path(Path(project_root))) if project_root else {}
+    credentials = credential_store()
+    out: list[ResolvedServer] = []
+    for server in resolve(personal=personal, app=app or {}, project=project):
+        cred_root = project_root if server.scope == "project" else ""
+        config = apply_credentials(server.config, scope=server.scope, root=cred_root, store=credentials)
+        out.append(replace(server, config=config))
+    return out
+
+
+def apply_credentials(
+    config: MCPServerConfig,
+    *,
+    scope: str,
+    root: str = "",
+    store: Any = None,
+) -> MCPServerConfig:
+    """``config`` with the secrets it references filled in from the store.
+
+    The names in ``secret_env``/``secret_headers`` are the *targets* (an
+    environment variable, an HTTP header) and their values are the key to read
+    inside the stored record, so one server can take several secrets and each
+    can be replaced on its own.
+
+    A record is only used for the URL it was issued for. Pointing the server at
+    a different host must not send it the old host's token, because nobody
+    agreed to that host.
+    """
+    from easycode.mcp_auth import MCPCredential
+    from easycode.mcp_auth import store as credential_store
+
+    if not (config.secret_env or config.secret_headers or config.bearer_credential):
+        return config
+    cred: MCPCredential | None = (store or credential_store()).find(
+        scope=scope, server=config.name, root=root
+    )
+    if cred is None or (cred.url and config.url and cred.url != config.url):
+        return config
+
+    def value(key: str) -> str:
+        return cred.values.get(key, "")
+
+    out = replace(config, env=dict(config.env), http_headers=dict(config.http_headers))
+    for target, key in config.secret_env.items():
+        if secret := value(key):
+            out.env[target] = secret
+    for target, key in config.secret_headers.items():
+        if secret := value(key):
+            out.http_headers[target] = secret
+    if config.bearer_credential:
+        token = value(config.bearer_credential)
+        if token:
+            out.http_headers["Authorization"] = f"Bearer {token}"
+    return out
 
 
 def scope_config_path(scope: str, root: str | None, cfg) -> Path:
@@ -426,9 +484,9 @@ def scope_config_path(scope: str, root: str | None, cfg) -> Path:
             raise MCPConfigError("项目作用域需要明确的项目目录")
         return project_config_path(Path(root))
     if scope == "app":
-        if not cfg.config_path:
-            raise MCPConfigError("当前没有可写的应用配置文件")
-        return Path(cfg.config_path)
+        # Same location ``Config.save`` would use, so the panel and the app can
+        # never disagree about which file holds the application's own servers.
+        return Path(cfg.config_path or Path(cfg.root) / CONFIG_FILENAME)
     raise MCPConfigError(f"未知作用域: {scope!r}")
 
 
@@ -474,29 +532,24 @@ def resolve_cwd(config: MCPServerConfig, ctx: PathContext) -> str:
     return str(target)
 
 
-def fingerprint(cfg, session) -> str:
+def fingerprint(servers: list[ResolvedServer], ctx: PathContext | None) -> str:
     """A value that changes whenever a session's effective MCP setup does.
 
     The manager compares this against the one it started under: same value means
     the running processes still describe the configuration, a different one
-    means they are stale and the next turn must reconnect.
+    means they are stale and the next turn must reconnect. Credentials are part
+    of it so that rotating a token reconnects instead of leaving the old one in
+    a live session.
     """
     import hashlib
 
     from easycode.mcp_auth import credential_versions
 
-    try:
-        servers = resolve_for_session(cfg, session)
-        payload = json.dumps(
-            [{"name": s.name, "scope": s.scope, "config": s.config.to_dict()} for s in servers],
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-    except MCPConfigError:
-        payload = "invalid"
-    context = getattr(session, "agent", None)
-    ctx = context.path_context() if context is not None else None
-    versions = credential_versions()
+    payload = json.dumps(
+        [{"name": s.name, "scope": s.scope, "config": s.config.to_dict()} for s in servers],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     raw = json.dumps(
         {
             "servers": payload,
@@ -504,7 +557,7 @@ def fingerprint(cfg, session) -> str:
             "primary": str(getattr(ctx, "primary", "")),
             "secondary": sorted(str(p) for p in getattr(ctx, "secondary", []) or []),
             "extra": sorted(str(p) for p in getattr(ctx, "extra_safe_dirs", []) or []),
-            "credentials": versions,
+            "credentials": credential_versions(),
         },
         ensure_ascii=False,
         sort_keys=True,

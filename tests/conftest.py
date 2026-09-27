@@ -27,6 +27,13 @@ def _isolate_home(tmp_path, monkeypatch):
     monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
 
 
+def mcp_servers(raw: dict[str, Any]) -> list[Any]:
+    """Resolve a raw app-scope ``mcp_servers`` map the way a session does."""
+    from easycode.mcp_config import resolve
+
+    return resolve(app=raw)
+
+
 class FakeProvider(Provider):
     """A scripted provider.
 

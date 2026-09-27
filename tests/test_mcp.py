@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import mcp_servers
 
 
 def mcp_server_config(pidfile: Path | None = None):
@@ -33,12 +36,21 @@ def process_state(pid: int) -> str:
     ).stdout.strip()
 
 
+def wait_for(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_mcp_manager_connects_and_lists_tools():
     from easycode.mcp import MCPSessionManager, mcp_tool_name
 
-    mgr = MCPSessionManager(mcp_server_config())
+    mgr = MCPSessionManager(mcp_servers(mcp_server_config()))
     await mgr.start()
     try:
         names = {s["function"]["name"] for s in mgr.tool_schemas()}
@@ -58,7 +70,7 @@ async def test_mcp_manager_connects_and_lists_tools():
 async def test_mcp_manager_call_tool():
     from easycode.mcp import MCPSessionManager, mcp_tool_name
 
-    mgr = MCPSessionManager(mcp_server_config())
+    mgr = MCPSessionManager(mcp_servers(mcp_server_config()))
     await mgr.start()
     try:
         out = await mgr.call(mcp_tool_name("demo", "add"), {"a": 2, "b": 3})
@@ -79,7 +91,9 @@ async def test_mcp_manager_call_tool():
 async def test_mcp_manager_bad_server_degrades():
     from easycode.mcp import MCPSessionManager
 
-    mgr = MCPSessionManager({"ghost": {"command": "definitely-not-a-command-xyz", "args": []}})
+    mgr = MCPSessionManager(
+        mcp_servers({"ghost": {"command": "definitely-not-a-command-xyz", "args": []}})
+    )
     await mgr.start()  # must not raise
     assert mgr.tool_schemas() == []
 
@@ -205,7 +219,7 @@ async def test_failed_connect_closes_connection(monkeypatch):
     monkeypatch.setattr(MCPConnection, "start", fail_start)
     monkeypatch.setattr(MCPConnection, "close", spy_close)
 
-    mgr = MCPSessionManager(mcp_server_config())
+    mgr = MCPSessionManager(mcp_servers(mcp_server_config()))
     await mgr.start()
     assert mgr.tool_schemas() == []
     assert closed, "the connection created for a failed server must be closed"
@@ -218,7 +232,9 @@ async def test_close_reaps_server_process(tmp_path):
     from easycode.workspace import PathContext
 
     pidfile = tmp_path / "mcp.pid"
-    mgr = MCPSessionManager(mcp_server_config(pidfile), PathContext(primary=tmp_path))
+    mgr = MCPSessionManager(
+        mcp_servers(mcp_server_config(pidfile)), PathContext(primary=tmp_path)
+    )
     await mgr.start()
     pid = server_pid(pidfile)
     assert process_state(pid)
@@ -512,7 +528,7 @@ async def test_mcp_schemas_skip_invalid():
     """A server with an unserializable schema is skipped, others survive."""
     from easycode.mcp import MCPSessionManager
 
-    servers = mcp_server_config()
+    servers = mcp_servers(mcp_server_config())
     mgr = MCPSessionManager(servers)
     await mgr.start()
     try:
@@ -529,9 +545,11 @@ def test_mcp_requires_approval_is_fail_closed():
     false, and destructive all require approval; unknown names are not an MCP
     approval scope."""
     from easycode.mcp import MCPConnection, MCPSession, MCPSessionManager
+    from easycode.mcp_config import MCPServerConfig
 
-    mgr = MCPSessionManager({})
-    sess = MCPSession("demo", MCPConnection("demo", {}))
+    mgr = MCPSessionManager([])
+    config = MCPServerConfig.parse("demo", {"command": "mcp-server"})
+    sess = MCPSession(config, "app", MCPConnection(config))
     sess.tools = {
         "mcp__demo__readonly": {
             "name": "readonly",
@@ -571,3 +589,276 @@ def test_mcp_requires_approval_is_fail_closed():
     # unknown / non-MCP names are not an MCP approval scope
     assert mgr.requires_approval("write_file") is False
     assert mgr.requires_approval("mcp__demo__nope") is False
+
+
+# ------------------------------------------------------------ connection setup
+
+
+def test_a_launcher_gets_easycodes_own_cache_and_a_write_grant():
+    from easycode.mcp import _launcher_env, _stdio_grant
+    from easycode.mcp_config import MCPServerConfig, mcp_cache_dir
+
+    config = MCPServerConfig.parse("s", {"command": "npx", "args": ["-y", "pkg"]})
+    assert _launcher_env(config) == {"npm_config_cache": str(mcp_cache_dir("npx"))}
+    grant = _stdio_grant(config)
+    assert grant is not None
+    assert grant.writable_roots == (mcp_cache_dir("npx"),)
+    assert grant.network_allowed is False
+
+    plain = MCPServerConfig.parse("s", {"command": "node", "args": ["server.js"]})
+    assert _launcher_env(plain) == {}
+    assert _stdio_grant(plain) is None
+
+
+def test_network_is_granted_only_when_the_configuration_asks_for_it():
+    from easycode.mcp import _stdio_grant
+    from easycode.mcp_config import MCPServerConfig, mcp_cache_dir
+
+    off = MCPServerConfig.parse("s", {"command": "npx", "network_enabled": False})
+    assert _stdio_grant(off).network_allowed is False
+    assert _stdio_grant(off).writable_roots == (mcp_cache_dir("npx"),)
+
+    on = MCPServerConfig.parse("s", {"command": "node", "network_enabled": True})
+    assert _stdio_grant(on).network_allowed is True
+    assert _stdio_grant(on).writable_roots == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_tool_list_follows_every_page():
+    """A server that pages its tools still gets all of them registered."""
+    from easycode.mcp import MCPSessionManager, mcp_tool_name
+
+    raw = mcp_server_config()
+    raw["demo"]["env"] = {"MCP_DEMO_PAGE_SIZE": "1"}
+
+    mgr = MCPSessionManager(mcp_servers(raw))
+    await mgr.start()
+    try:
+        names = {s["function"]["name"] for s in mgr.tool_schemas()}
+        assert mcp_tool_name("demo", "add") in names
+        # The last page only arrives if the cursor was followed to the end.
+        assert mcp_tool_name("demo", "readonly") in names
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_tool_filter_removes_a_tool_before_it_is_registered():
+    from easycode.mcp import MCPSessionManager, mcp_tool_name
+
+    raw = mcp_server_config()
+    raw["demo"]["disabled_tools"] = ["boom"]
+
+    mgr = MCPSessionManager(mcp_servers(raw))
+    await mgr.start()
+    try:
+        names = {s["function"]["name"] for s in mgr.tool_schemas()}
+        assert mcp_tool_name("demo", "add") in names
+        assert mcp_tool_name("demo", "boom") not in names
+        assert mgr.has_tool(mcp_tool_name("demo", "boom")) is False
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_a_slow_tool_call_returns_an_error_instead_of_hanging():
+    from easycode.mcp import MCPSessionManager, mcp_tool_name
+
+    raw = mcp_server_config()
+    raw["demo"]["tool_timeout_sec"] = 0.3
+
+    mgr = MCPSessionManager(mcp_servers(raw))
+    await mgr.start()
+    try:
+        started = time.monotonic()
+        out = await mgr.call(mcp_tool_name("demo", "slow"), {"seconds": 30})
+        assert json.loads(out)["status"] == "error"
+        assert "未返回" in out
+        assert time.monotonic() - started < 10
+
+        # A timed-out call must not wedge the session for the next one.
+        again = await mgr.call(mcp_tool_name("demo", "add"), {"a": 1, "b": 2})
+        assert json.loads(again)["status"] == "ok"
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_a_server_that_never_initializes_times_out_without_leaking_a_child(tmp_path):
+    from easycode.mcp import MCPSessionManager
+    from easycode.workspace import PathContext
+
+    pidfile = tmp_path / "mcp.pid"
+    raw = mcp_server_config(pidfile)
+    raw["demo"]["env"]["MCP_DEMO_STARTUP_SLEEP"] = "30"
+    raw["demo"]["startup_timeout_sec"] = 0.5
+
+    mgr = MCPSessionManager(mcp_servers(raw), PathContext(primary=tmp_path))
+    started = time.monotonic()
+    try:
+        await mgr.start()  # must not raise: a stuck server is one degraded server
+        elapsed = time.monotonic() - started
+        status = {s.name: s for s in mgr.status()}["demo"]
+        assert status.state == "failed"
+        assert "启动超时" in (status.error or "")
+        assert elapsed < 10, f"the startup timeout did not bound the connect ({elapsed:.1f}s)"
+
+        assert wait_for(pidfile.exists), "the child never started"
+        pid = server_pid(pidfile)
+        assert pid > 0
+        # Giving up on the connect must not leave the child running behind it.
+        assert wait_for(lambda: process_state(pid) == ""), "the timed-out child was not reaped"
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_status_reports_disabled_failed_and_connected_servers():
+    from easycode.mcp import STATE_DISABLED, STATE_FAILED, MCPSessionManager
+
+    raw = {
+        "off": {"command": "node", "enabled": False},
+        "broken": {"command": "definitely-not-a-command-xyz"},
+    }
+    mgr = MCPSessionManager(mcp_servers(raw))
+    await mgr.start()
+    try:
+        status = {s.name: s for s in mgr.status()}
+        assert status["off"].state == STATE_DISABLED
+        assert status["broken"].state == STATE_FAILED
+        assert status["broken"].error
+        assert mgr.tool_schemas() == []
+    finally:
+        await mgr.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_status_reports_a_connected_servers_tools():
+    from easycode.mcp import STATE_CONNECTED, MCPSessionManager
+
+    mgr = MCPSessionManager(mcp_servers(mcp_server_config()))
+    await mgr.start()
+    try:
+        status = {s.name: s for s in mgr.status()}["demo"]
+        assert status.state == STATE_CONNECTED
+        assert status.tools == ["add", "boom", "greet", "readonly", "slow"]
+        assert status.error is None
+    finally:
+        await mgr.close()
+
+
+# ------------------------------------------------------------------- agent wiring
+
+
+def agent_for(root: Path, **kwargs):
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from tests.conftest import FakeProvider
+
+    return Agent(
+        provider=FakeProvider(model="fake", script=[{"text": "ok"}]),
+        registry=build_registry(8000),
+        root=root,
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_a_servers_own_project_file_is_what_connects_it(tmp_path):
+    """The project scope is the agent's own directory, not the app config."""
+    from easycode.mcp import STATE_CONNECTED, mcp_tool_name
+    from easycode.mcp_config import project_config_path, write_scope
+
+    write_scope(project_config_path(tmp_path), mcp_server_config())
+    agent = agent_for(tmp_path, permission_mode="allow-all")
+    await agent.init_mcp()
+    try:
+        assert agent.mcp_manager is not None
+        assert mcp_tool_name("demo", "add") in agent.available_tool_names()
+        status = {s.name: s for s in agent.mcp_manager.status()}["demo"]
+        assert status.state == STATE_CONNECTED
+        assert status.scope == "project"
+    finally:
+        await agent.close_mcp()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_a_project_can_switch_off_an_app_server_for_itself_only(tmp_path):
+    from easycode.mcp import STATE_CONNECTED, STATE_DISABLED
+    from easycode.mcp_config import project_config_path, write_scope
+
+    other = tmp_path / "other"
+    other.mkdir()
+    write_scope(project_config_path(tmp_path), {"demo": {"command": "unused", "enabled": False}})
+
+    def state(agent):
+        return {s.name: s for s in agent.mcp_manager.status()}["demo"].state
+
+    silenced = agent_for(tmp_path, mcp_servers=mcp_server_config())
+    await silenced.init_mcp()
+    try:
+        assert silenced.mcp_manager is not None
+        assert state(silenced) == STATE_DISABLED
+        assert silenced.available_tool_names().isdisjoint({"mcp__demo__add"})
+    finally:
+        await silenced.close_mcp()
+
+    # The same app-scope server still runs everywhere else.
+    keeper = agent_for(other, mcp_servers=mcp_server_config(), permission_mode="allow-all")
+    await keeper.init_mcp()
+    try:
+        assert keeper.mcp_manager is not None
+        assert state(keeper) == STATE_CONNECTED
+    finally:
+        await keeper.close_mcp()
+
+
+@pytest.mark.asyncio
+async def test_a_settings_change_drops_the_running_connection(tmp_path):
+    """Editing the servers must not leave the old process serving their tools."""
+    from easycode.mcp import MCPSessionManager
+    from easycode.mcp_config import (
+        effective_servers,
+        fingerprint,
+        personal_config_path,
+        project_config_path,
+        write_scope,
+    )
+
+    write_scope(project_config_path(tmp_path), mcp_server_config())
+    agent = agent_for(tmp_path, mcp_servers=mcp_server_config())
+    ctx = agent.path_context()
+    servers = effective_servers(agent.mcp_servers, str(tmp_path))
+    agent.mcp_manager = MCPSessionManager(
+        servers, ctx, fingerprint=fingerprint(servers, ctx)
+    )
+    agent.mcp_owned = True
+
+    await agent.invalidate_mcp_if_context_changed()
+    assert agent.mcp_manager is not None, "an unchanged setup keeps its process"
+
+    # The user points the server somewhere else.
+    write_scope(project_config_path(tmp_path), {"demo": {"command": "something-else"}})
+    await agent.invalidate_mcp_if_context_changed()
+    assert agent.mcp_manager is None, "an edited server list must be reconnected"
+
+    # So must a configuration that has become unreadable, rather than serving
+    # tools from a file nobody can parse any more.
+    write_scope(project_config_path(tmp_path), mcp_server_config())
+    servers = effective_servers(agent.mcp_servers, str(tmp_path))
+    agent.mcp_manager = MCPSessionManager(
+        servers, ctx, fingerprint=fingerprint(servers, ctx)
+    )
+    agent.mcp_owned = True
+    personal_config_path().parent.mkdir(parents=True, exist_ok=True)
+    personal_config_path().write_text("{ not json", encoding="utf-8")
+
+    await agent.invalidate_mcp_if_context_changed()
+    assert agent.mcp_manager is None

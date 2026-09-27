@@ -218,12 +218,17 @@ async def test_mcp_child_env_is_sanitized(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_module, "stdio_client", fake_stdio)
 
     connection = mcp_module.MCPConnection(
-        "demo",
-        {
-            "command": "mcp-server",
-            "args": ["--stdio"],
-            "env": {"MCP_EXPLICIT": "configured", "MCP_EXPLICIT_TOKEN": "intentionally-configured"},
-        },
+        mcp_module.MCPServerConfig.parse(
+            "demo",
+            {
+                "command": "mcp-server",
+                "args": ["--stdio"],
+                "env": {
+                    "MCP_EXPLICIT": "configured",
+                    "MCP_EXPLICIT_TOKEN": "intentionally-configured",
+                },
+            },
+        ),
         PathContext(primary=tmp_path),
     )
     with pytest.raises(RuntimeError):
@@ -979,15 +984,15 @@ async def test_mcp_command_follows_the_session_sandbox_mode(monkeypatch, tmp_pat
         yield  # pragma: no cover - never reached
 
     monkeypatch.setattr(mcp_module, "stdio_client", fake_stdio)
-    conf = {"command": "mcp-server", "args": ["--stdio"]}
+    conf = mcp_module.MCPServerConfig.parse("demo", {"command": "mcp-server", "args": ["--stdio"]})
 
     full = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
     with pytest.raises(RuntimeError):
-        await mcp_module.MCPConnection("demo", conf, full).start()
+        await mcp_module.MCPConnection(conf, full).start()
     assert captured[-1].command == "mcp-server"
     assert captured[-1].args == ["--stdio"]
 
     if sys.platform == "darwin":
         with pytest.raises(RuntimeError):
-            await mcp_module.MCPConnection("demo", conf, PathContext(primary=tmp_path)).start()
+            await mcp_module.MCPConnection(conf, PathContext(primary=tmp_path)).start()
         assert captured[-1].command.endswith("sandbox-exec")
