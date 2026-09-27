@@ -45,3 +45,6 @@ PLAN-phase*.md
 
 # IDE settings
 .idea/
+
+# Task-list example mutation scratch
+examples/task-list/.mutation-scratch/

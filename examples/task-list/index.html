@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>我的任务清单</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="app__header">
+      <h1 class="app__title">我的任务清单</h1>
+      <p class="app__subtitle">纯原生 HTML / CSS / JavaScript，数据保存在本机浏览器，刷新不会丢失。</p>
+    </header>
+
+    <form id="task-form" class="composer" autocomplete="off" novalidate>
+      <label class="sr-only" for="task-input">新任务内容</label>
+      <input
+        id="task-input"
+        class="composer__input"
+        type="text"
+        name="task"
+        placeholder="想做点什么？输入后按回车"
+        maxlength="120"
+      />
+      <button class="composer__submit" type="submit">添加</button>
+    </form>
+    <p id="form-error" class="form-error" role="alert" hidden></p>
+
+    <div class="toolbar">
+      <div class="filters" role="group" aria-label="按状态筛选任务">
+        <button type="button" class="filter" data-filter="all" aria-pressed="true">全部</button>
+        <button type="button" class="filter" data-filter="active" aria-pressed="false">待办</button>
+        <button type="button" class="filter" data-filter="done" aria-pressed="false">已完成</button>
+      </div>
+      <button id="clear-completed" class="link-button" type="button">清除已完成</button>
+    </div>
+
+    <p id="task-count" class="task-count">共 0 项</p>
+
+    <ul id="task-list" class="task-list"></ul>
+    <p id="empty-state" class="empty-state">还没有任务，先添加一条吧。</p>
+
+    <footer class="app__footer">
+      <p>提示：勾选复选框表示完成，点击「删除」移除单条任务。</p>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

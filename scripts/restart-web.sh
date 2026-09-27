@@ -42,6 +42,16 @@ if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 
 cd "$ROOT_DIR"
+
+# Build before starting: the server serves frontend/dist, so a stale build is
+# what a reviewer would actually be testing. A failed build stops here rather
+# than starting on the previous dist.
+printf '构建前端…\n'
+if ! npm --prefix frontend run build; then
+  printf '前端构建失败，未启动 Easy Code（不拿旧 dist 验收）。\n' >&2
+  exit 1
+fi
+
 nohup uv run easycode web --port "$PORT" >"$LOG_FILE" 2>&1 < /dev/null &
 server_pid=$!
 
