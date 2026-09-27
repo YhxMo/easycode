@@ -115,6 +115,21 @@ describe("App · 编辑历史消息", () => {
     await stream.finish();
   });
 
+  it("回车与发送按钮走同一条路，不会追加成新回合", async () => {
+    const stream = controllableStream();
+    const user = await open();
+    await user.click(editButtons()[0]);
+    await user.clear(composerField());
+    await user.type(composerField(), "改过的问题{Enter}");
+
+    await waitFor(() => expect(m.streamChat).toHaveBeenCalled());
+    // 回车曾直接调 send()：旧消息留在会话里，编辑变成了往后追加一个回合，
+    // 与撤回箭头承诺的「其后的对话会被替换」正好相反。
+    expect(stream.options()?.edit_turn_id).toBe("A-t1");
+    expect(stream.options()?.expected_revision).toBe(1);
+    await stream.finish();
+  });
+
   it("取消恢复编辑前的草稿，而不是清空输入框", async () => {
     const user = await open();
     await user.type(composerField(), "我刚写的半句");

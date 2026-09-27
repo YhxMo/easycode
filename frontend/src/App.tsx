@@ -462,13 +462,6 @@ export default function App() {
   // `@` references: fetch the listing for the token under the caret, debounced
   // so typing does not fire a request per keystroke. A reply is used only while
   // it still matches the scope and the query it was fetched for.
-  /* eslint-disable react-hooks/preserve-manual-memoization -- the draft this
-     component derives its composer state from is a union (plain text, or an
-     edit with a turn and a revision), and every dependency list from here down
-     names one of its fields. The React Compiler cannot prove those fields are
-     primitives once the union is in play, so it refuses to preserve any manual
-     memoization in this component. The lists are correct as written: each one
-     names exactly the values its callback reads. */
   const mentionInfo = useMemo(
     () => (composing ? null : mentionToken(input, caret)),
     [input, caret, composing],
@@ -1293,6 +1286,22 @@ export default function App() {
     [changePermission, permission],
   );
 
+  /**
+   * The one way a message leaves the composer.
+   *
+   * Enter and the send button both come through here. An edit rewrites the
+   * branch it was opened from, so a second path that called ``send()`` on its
+   * own would append a new turn beside the very message the user was editing —
+   * which is exactly what the retract arrow promised to replace.
+   */
+  const submit = useCallback(() => {
+    // Sending is an explicit return to the live edge: the reply to your own
+    // message is never something you have to scroll back down for.
+    sticky.stick();
+    if (editingDraft) void sendEdit(editingDraft);
+    else void send();
+  }, [editingDraft, send, sendEdit, sticky]);
+
   // Composer keys: command-menu navigation first, then Enter to send.
   const onComposerKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -1356,7 +1365,7 @@ export default function App() {
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        send();
+        submit();
       }
     },
     [
@@ -1364,7 +1373,7 @@ export default function App() {
       commands,
       input,
       cmdIndex,
-      send,
+      submit,
       cancelEdit,
       mentionOpen,
       mentionMatches,
@@ -1461,13 +1470,7 @@ export default function App() {
             : undefined
           : undefined
       }
-      onSend={() => {
-        // Sending is an explicit return to the live edge: the reply to your own
-        // message is never something you have to scroll back down for.
-        sticky.stick();
-        if (editingDraft) void sendEdit(editingDraft);
-        else void send();
-      }}
+      onSend={submit}
       editing={editingDraft ? { text: editingDraft.text, onCancel: cancelEdit } : undefined}
       onStop={stop}
       hint="Enter 发送 · Shift + Enter 换行"
