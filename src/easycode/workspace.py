@@ -44,10 +44,16 @@ class ToolGrant:
     writable_roots: tuple[Path, ...] = ()
 
 
-def secret_paths() -> tuple[Path, Path]:
-    """The credential file and its atomic-write temp sibling (always blocked)."""
+def secret_paths() -> tuple[Path, ...]:
+    """Credential files and their atomic-write temp siblings (always blocked).
+
+    MCP credentials are covered alongside the model ones: a token for an
+    external service is no less sensitive than an API key, and a model that
+    could read the file could hand it to whichever server it liked.
+    """
     cred = data_home() / "credentials.json"
-    return cred, cred.with_suffix(".tmp")
+    mcp = data_home() / "mcp-credentials.json"
+    return (cred, cred.with_suffix(".tmp"), mcp, mcp.with_suffix(".tmp"))
 
 
 def resolve_workspace_path(raw: str | Path, base: Path | None = None) -> Path:
