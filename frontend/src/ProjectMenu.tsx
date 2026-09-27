@@ -11,6 +11,7 @@ export type ProjectAction =
   | "pin"
   | "unpin"
   | "edit"
+  | "mcp"
   | "reveal"
   | "worktree"
   | "archive"
@@ -31,6 +32,7 @@ const REVEAL_D = "M3 7h7l2 2h9v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z";
 const WORKTREE_D = "M12 21V9M12 9l-3.5 3.5M12 9l3.5 3.5M4 4h16M4 4v3M20 4v3M6 21h12";
 const ARCHIVE_D = "M4 5h16v4H4V5ZM4 9h16v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9ZM10 13h4";
 const REMOVE_D = "M4 7h16M9 7V5h6v2m-8 0 1 13h8l1-13";
+const MCP_D = "M12 3v6m0 0-3 3v9m3-12 3 3v9M4 6h4M16 6h4M9 18h6";
 
 const ITEMS: {
   action: ProjectAction;
@@ -44,6 +46,7 @@ const ITEMS: {
   { action: "pin", label: "置顶", d: PIN_D },
   { action: "unpin", label: "取消置顶", d: UNPIN_D },
   { action: "edit", label: "编辑", d: EDIT_D },
+  { action: "mcp", label: "MCP 服务", d: MCP_D },
   { action: "reveal", label: "在 Finder 中显示", d: REVEAL_D, dividerBefore: true },
   { action: "worktree", label: "创建永久工作树", d: WORKTREE_D },
   { action: "archive", label: "归档聊天", d: ARCHIVE_D, dividerBefore: true, needsIdle: true },

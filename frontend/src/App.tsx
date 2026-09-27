@@ -36,6 +36,7 @@ import {
 import { DRAFT_KEY, useChatStream } from "./useChatStream";
 import { MENTION_LIST_ID, MENTION_OPTION_PREFIX, MentionMenu } from "./MentionMenu";
 import type { MentionAnswer, MentionState } from "./MentionMenu";
+import { McpSettings } from "./McpSettings";
 import { ModelPicker } from "./ModelPicker";
 import { currentTurn } from "./chatStream";
 import { artifactsToItems, historyToItems } from "./lib/history";
@@ -777,6 +778,9 @@ export default function App() {
 
   // ---- project row actions (new chat / more menu) ----
   const [editTarget, setEditTarget] = useState<{ root: string | null; name: string } | null>(null);
+  /** The project whose MCP servers the settings dialog is editing. */
+  const [mcpOpen, setMcpOpen] = useState(false);
+  const [mcpRoot, setMcpRoot] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<{ root: string | null; count: number } | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
@@ -860,6 +864,9 @@ export default function App() {
         if (action === "edit") {
           const proj = root ? projectMeta.get(root) : projectMeta.get(null);
           setEditTarget({ root, name: proj?.name ?? (root ? basename(root) : DEFAULT_PROJECT) });
+        } else if (action === "mcp") {
+          setMcpRoot(root);
+          setMcpOpen(true);
         } else if (action === "pin" || action === "unpin") {
           const r = await pinProject(root, action === "pin");
           setProjects(r.projects);
@@ -1539,6 +1546,10 @@ export default function App() {
         onTogglePin={togglePin}
         onDeleteSession={setDeleteTarget}
         onRestoreSession={restoreArchived}
+        onOpenMcp={() => {
+          setMcpRoot(currentId ? currentRoot : chosenRoot);
+          setMcpOpen(true);
+        }}
         onError={(msg) => showToast("err", msg)}
       />
       {sidebarOpen && (
@@ -1804,6 +1815,14 @@ export default function App() {
             仅在你确认模型和任务可信时使用。
           </p>
         </Modal>
+        {mcpOpen && (
+          <McpSettings
+            root={mcpRoot}
+            sessionId={currentId}
+            onClose={() => setMcpOpen(false)}
+            onToast={showToast}
+          />
+        )}
         {editTarget && (
           <Modal
             open={Boolean(editTarget)}

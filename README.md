@@ -119,6 +119,10 @@ uv run easycode main --help
   second model in auto-review mode.
 - Shell sandbox: on macOS shell commands run inside a Seatbelt profile that allows the workspace and
   nothing else.
+- MCP servers: connect external stdio or Streamable HTTP servers and let the model call their tools.
+  Servers come from three scopes — your personal file, the app's startup config, and the current
+  project — and the settings panel (sidebar → MCP) edits all three, stores tokens separately from the
+  configuration, and shows why a server is not connecting.
 
 ## Configuration
 
@@ -126,6 +130,14 @@ uv run easycode main --help
 projects, MCP servers and `max_tool_iterations` (an optional cap on model calls per turn; unset means
 the model ends the turn). Credentials live in `~/.easycode/credentials.json` and conversations in
 `~/.easycode/sessions/`. None of it is committed.
+
+MCP servers are configured in three places, lowest priority first: `~/.easycode/mcp.json`, the
+application's own `easycode.config.json`, and the current project's `easycode.config.json` — which is
+usually the same file as the one before it. A name defined in a higher scope replaces the whole entry
+from the lower one, so setting `enabled: false` in a project is how you switch off a personal server
+there without touching anyone else's. Secrets never go into these files: the configuration only names
+where a secret comes from, and the value is kept in `~/.easycode/mcp-credentials.json` (mode `0600`),
+writable only through the settings panel.
 
 ## Extending
 
@@ -136,7 +148,8 @@ the model ends the turn). Credentials live in `~/.easycode/credentials.json` and
 | Command | `commands/<name>.md` | [prompt template](examples/commands/btw.md) |
 
 Each of these can live in the project's `.easycode/` directory or in `~/.easycode/`. MCP servers are
-configured in `easycode.config.json` and speak stdio or HTTP.
+configured in the three scopes described above and speak stdio or HTTP; the settings panel edits those
+same files, so hand-written entries keep working.
 
 ## Project layout
 

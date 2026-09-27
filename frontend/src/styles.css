@@ -762,6 +762,36 @@
   letter-spacing: -0.01em;
 }
 
+.brand-settings {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.brand-settings svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.brand-settings:hover {
+  border-color: var(--line);
+  color: var(--ink);
+}
+
 .sidebar-scroll {
   flex: 1;
   min-height: 0;
@@ -3261,7 +3291,12 @@
   gap: 12px;
 }
 
+/* A flex row so a section can carry a trailing count (`.pane-count`), which
+   needs the free space `margin-left: auto` can only claim in one. */
 .modal-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   color: var(--ink-2);
   font-size: 11px;
   font-weight: 650;
@@ -3293,7 +3328,8 @@
 }
 
 .modal input,
-.modal select {
+.modal select,
+.modal textarea {
   padding: 8px 11px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -3304,8 +3340,20 @@
   font-size: 13px;
 }
 
+/* Multiline fields carry lists (args, KEY=VALUE, headers): they keep the
+   field width, stay resizable vertically, and never wrap a key mid-word. */
+.modal textarea {
+  min-height: 62px;
+  resize: vertical;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
 .modal input:focus,
-.modal select:focus {
+.modal select:focus,
+.modal textarea:focus {
   outline: none;
   border-color: var(--line-strong);
 }
@@ -3437,6 +3485,172 @@
 }
 
 .modal-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --------------------------------------------------------------- MCP 设置 */
+
+/* The panel carries a form and a list, so it needs more room than the short
+   confirm dialogs it shares the modal shell with. */
+.mcp-settings-modal {
+  width: min(560px, 100%);
+}
+
+.modal-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modal-check input {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+}
+
+.mcp-row.off .mcp-name,
+.mcp-row.off .mcp-row-meta {
+  opacity: 0.55;
+}
+
+.mcp-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-name {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-scope,
+.mcp-transport,
+.mcp-cred {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.mcp-state {
+  flex: none;
+  font-size: 11px;
+}
+
+.mcp-state.connected {
+  color: var(--accent);
+}
+
+.mcp-state.failed {
+  color: var(--red);
+}
+
+.mcp-state.disabled,
+.mcp-state.pending {
+  color: var(--ink-3);
+}
+
+.mcp-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+/* The command is the only part allowed to shrink: labels keep their own width
+   and move to the next line instead of breaking mid-word. */
+.mcp-row-meta > span {
+  flex: none;
+  white-space: nowrap;
+}
+
+.mcp-row-meta > span:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-note,
+.mcp-error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mcp-note {
+  color: var(--ink-3);
+}
+
+.mcp-error {
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+.mcp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mcp-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.mcp-actions button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.mcp-actions button.danger {
+  color: var(--red);
+}
+
+.mcp-actions button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }

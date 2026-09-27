@@ -89,6 +89,8 @@ export interface SidebarProps {
   onDeleteSession: (session: SessionSummary) => void;
   onTogglePin: (session: SessionSummary) => void;
   onRestoreSession: (session: SessionSummary) => void;
+  /** Open the MCP settings for the project the current view is in. */
+  onOpenMcp: () => void;
   /** Global error reporter (app-level toast) for picker/editor failures. */
   onError: (message: string) => void;
 }
@@ -125,6 +127,7 @@ export function Sidebar({
   onDeleteSession,
   onTogglePin,
   onRestoreSession,
+  onOpenMcp,
   onError,
 }: SidebarProps) {
   const [showAllProjects, setShowAllProjects] = useState(false);
@@ -260,6 +263,19 @@ export function Sidebar({
           &gt;_
         </span>
         <h1>Easy code</h1>
+        {/* Global, not per conversation: every project needs a way in, and a
+            sidebar with no project group (the default workspace) has none. */}
+        <button
+          type="button"
+          className="brand-settings"
+          title="MCP 服务"
+          aria-label="MCP 服务设置"
+          onClick={onOpenMcp}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 3v6m0 0-3 3v9m3-12 3 3v9M4 6h4M16 6h4M9 18h6" />
+          </svg>
+        </button>
       </div>
       <div className="sidebar-scroll">
         {section(

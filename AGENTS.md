@@ -34,8 +34,9 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 | `src/easycode/agent/` | 执行循环、上下文预算与压缩、提示词、内置工具（委派、Skill、任务清单）。 |
 | `src/easycode/tools/`、`src/easycode/models/` | 文件与 Shell 工具、模型适配。 |
 | `src/easycode/policy.py`、`src/easycode/approval.py`、`src/easycode/sandbox/` | 权限策略、审批和执行沙箱。 |
-| `src/easycode/web/` | FastAPI 应用与路由（chat、models、sessions、workspaces、files）、会话存储、SSE 事件桥接，以及面板读取的文件工具记录 `artifacts.py` 与工作区 Git 状态 `git.py`。 |
-| `frontend/src/` | React 界面；`useChatStream.ts` 按会话管理流生命周期，`chatStream.ts` 转换消息状态。 |
+| `src/easycode/web/` | FastAPI 应用与路由（chat、models、sessions、workspaces、files、mcp）、会话存储、SSE 事件桥接，以及面板读取的文件工具记录 `artifacts.py` 与工作区 Git 状态 `git.py`。 |
+| `src/easycode/mcp.py`、`mcp_config.py`、`mcp_auth.py` | MCP 连接、三层作用域配置与凭据存取（约定见下）。 |
+| `frontend/src/` | React 界面；`useChatStream.ts` 按会话管理流生命周期，`chatStream.ts` 转换消息状态，`McpSettings.tsx` 是 MCP 设置面板。 |
 | `frontend/src/components/`、`lib/` | `layout/` 标签栏、右侧面板与输入框，`primitives/` 消息流组件，`lib/` 纯函数。 |
 | `frontend/src/styles.css`、`styles/` | 样式入口；`tokens.css` 存令牌、基础规则与 keyframes，`primitives.css` 存组件样式。 |
 | `tests/`、`frontend/src/__tests__/` | 后端和前端测试。 |
@@ -70,7 +71,10 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 - 路径权限须区分可审批放行与硬保护，审批不能解除硬保护；修改文件工具或 Shell 沙箱时，核对项目配置、凭据、用户数据目录和工作树例外，具体边界见 `workspace.py` 及权限决策记录。硬保护目标在展示审批之前就被拒绝，不提供注定失败的批准选项；审批卡片只陈述决定（批准/拒绝），调用是否成功由工具结果回答，模型可见的工具结果用 `approved_by_user` 补上审批事实，因为 `in_allowed` 只说明目标是否在工作区内。`danger-full-access`（完全访问）按 Codex 语义是另一套边界：文件工具、Shell、MCP 与预览都不再拦截 `.git`/`.easycode`/项目配置/凭据/应用数据和工作区外路径，Seatbelt 不再包装，`is_protected*`、`is_model_state`、`grant_for_toolcall` 都按沙箱模式返回，搜索的跳过目录也只在沙箱模式包含 `.git`（`node_modules`/`.venv` 这类性能目录两种模式都跳过）；`permission_rules` 的 `deny`、工作区根目录校验和 `child_env` 的密钥清洗仍然保留。改任一侧时同时覆盖 `workspace-write` 与 `danger-full-access` 两种模式。
 - Web 历史会话不能因模型凭据缺失而被隐藏：恢复时允许延迟绑定模型，发送前解析失败返回明确的 422；新建会话仍严格校验。修改恢复或模型绑定时同时验证会话可见性和发送失败路径。
 - 模型/项目配置变更、新建会话与回合准备共用 `SessionStore.config_change()` 协调，锁顺序固定为配置锁 → 会话锁；服务层只处理路由在锁内确定的会话集合，不重新枚举 store。删除会话在会话锁内完成文件删除与 store 分离，删除失败必须上报而不是吞掉。
-- MCP 进程的沙箱上下文变化统一由 `Agent.invalidate_mcp_if_context_changed()` 判断并回收；修改权限、目录或子 Agent 借用逻辑时，覆盖父子上下文相同与不同两种路径。连接走官方 `mcp` SDK：它的客户端传输是必须在同一个任务里进出的 anyio 上下文管理器，而 easycode 会在另一个任务里释放连接，所以每条连接由 `MCPConnection` 自己的任务持有并只对外暴露 session；改生命周期时不要把上下文管理挪回调用方任务。
+- MCP 服务由三层作用域按项目合并：个人文件、应用启动配置、当前项目的 `easycode.config.json`。高层**整项替换**低层的同名条目，不做字段级拼接，所以「项目里 `enabled: false`」就是屏蔽个人服务的手段，`overrides` 记录被遮住的下层。生效列表只对**一个项目**成立（会话主目录取项目作用域，次目录不参与），改合并规则时同时覆盖「项目停用个人服务」「另一项目不受影响」两条路径。
+- MCP 配置只记**密钥从哪来**（`secret_env`/`secret_headers`/`bearer_credential` 存名字），值放在 `~/.easycode/mcp-credentials.json`（0600、原子替换、随 `secret_paths()` 硬保护）。因此设置接口的读路径用 `resolve()` 而**不是** `effective_servers()`——后者会把值填进 env/headers，直接把 token 发给浏览器。凭据归属含项目根与 URL：根一律取**解析后的项目目录**（省略 root 表示默认项目，会话里带的也是这个路径，不能用请求里的写法），指向新主机的服务不会拿到旧主机的 token。删除服务注册要一并删除它的凭据。
+- MCP 写接口的作用域由服务端决定，项目根必须是已登记项目，路径绝不取自请求。应用启动配置在正常启动时**就是**当前项目的那个文件，此时面板只列一次（按项目作用域），否则同一个条目会被显示成不存在的两层合并。写入走 `config_change()` → `idle_sessions()`，结束后对受影响会话调 `invalidate_mcp_if_context_changed()`。
+- MCP 进程的沙箱上下文或配置指纹变化统一由 `Agent.invalidate_mcp_if_context_changed()` 判断并回收；修改权限、目录、设置编辑或子 Agent 借用逻辑时，覆盖父子上下文相同与不同两种路径。连接走官方 `mcp` SDK：它的客户端传输是必须在同一个任务里进出的 anyio 上下文管理器，而 easycode 会在另一个任务里释放连接，所以每条连接由 `MCPConnection` 自己的任务持有并只对外暴露 session；改生命周期时不要把上下文管理挪回调用方任务。`startup_timeout_sec` 必须覆盖「连接 + initialize + 列出工具」整段——只包进程启动的话，卡在 initialize 的服务会绕过超时并在放弃后留下子进程；工具超时用 `asyncio.timeout` 包住整次调用（不只是等响应），并把整段起点定在启动时，绝不依赖 SDK 的读超时。stdio 服务只有在配置里显式开启 `network_enabled` 才拿到网络授权，包管理器（npx/uvx 等）另给一个 easycode 自己的缓存目录写权限——缓存目录必须在数据目录**之外**，否则沙箱的写拒绝会让它永远写不进去。
 - 不提交或输出模型密钥、凭据及私人会话内容。验证优先使用临时目录和模拟数据，不改写用户真实会话来制造测试条件。
 
 ## 环境与常用命令

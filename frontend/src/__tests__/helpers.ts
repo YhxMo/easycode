@@ -36,6 +36,12 @@ export const apiMock = {
   deleteModel: vi.fn(),
   fetchModel: vi.fn(),
   updateModel: vi.fn(),
+  fetchMcp: vi.fn(),
+  fetchMcpStatus: vi.fn(),
+  saveMcpServer: vi.fn(),
+  removeMcpServer: vi.fn(),
+  saveMcpCredential: vi.fn(),
+  removeMcpCredential: vi.fn(),
 };
 
 /** Baseline mock behaviour shared by the App-level suites: clears the mock and

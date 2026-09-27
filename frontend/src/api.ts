@@ -549,3 +549,104 @@ export async function streamChat(
     throw new Error("连接中断：本轮未正常结束，已保留已生成内容。");
   }
 }
+
+export type McpScope = "personal" | "app" | "project";
+
+export interface McpCredentialView {
+  id: string;
+  kind: string;
+  /** Names the record holds. Values are never sent to the browser. */
+  names: string[];
+  has_value: boolean;
+  expires_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface McpServerView {
+  name: string;
+  /** The scope that won the name; `overrides` lists the scopes it shadows. */
+  scope: McpScope;
+  overrides: McpScope[];
+  enabled: boolean;
+  config: Record<string, unknown>;
+  credential: McpCredentialView | null;
+}
+
+export interface McpScopeFile {
+  scope: McpScope;
+  root: string | null;
+  name?: string;
+  path: string;
+  exists: boolean;
+}
+
+export interface McpInfo {
+  root: string | null;
+  projects: Array<{ root: string; name: string }>;
+  scopes: McpScopeFile[];
+  servers: McpServerView[];
+  /** Files that could not be read; the panel shows them instead of hiding them. */
+  errors: string[];
+}
+
+export function fetchMcp(root: string | null): Promise<McpInfo> {
+  return request(root ? `/api/mcp?root=${encodeURIComponent(root)}` : "/api/mcp");
+}
+
+export function saveMcpServer(
+  scope: McpScope,
+  root: string | null,
+  name: string,
+  config: Record<string, unknown>,
+): Promise<McpInfo> {
+  return request("/api/mcp/servers", {
+    method: "POST",
+    body: { scope, root, name, config },
+  });
+}
+
+export function removeMcpServer(
+  scope: McpScope,
+  root: string | null,
+  name: string,
+): Promise<McpInfo> {
+  return request("/api/mcp/servers/remove", { method: "POST", body: { scope, root, name } });
+}
+
+export function saveMcpCredential(
+  scope: McpScope,
+  root: string | null,
+  server: string,
+  kind: string,
+  values: Record<string, string | null>,
+): Promise<McpInfo> {
+  return request("/api/mcp/credentials", {
+    method: "POST",
+    body: { scope, root, server, kind, values },
+  });
+}
+
+export function removeMcpCredential(
+  scope: McpScope,
+  root: string | null,
+  server: string,
+): Promise<McpInfo> {
+  return request("/api/mcp/credentials/remove", {
+    method: "POST",
+    body: { scope, root, server },
+  });
+}
+
+export interface McpStatusServer {
+  name: string;
+  scope: McpScope;
+  state: "pending" | "connected" | "failed" | "disabled";
+  error: string | null;
+  tools: string[];
+}
+
+export function fetchMcpStatus(
+  sessionId: string,
+): Promise<{ started: boolean; servers: McpStatusServer[] }> {
+  return request(`/api/mcp/status?session_id=${encodeURIComponent(sessionId)}`);
+}
