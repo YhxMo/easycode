@@ -18,6 +18,7 @@ from easycode.agent.loop import Agent
 from easycode.credentials import data_home
 from easycode.models.base import DeferredProvider
 from easycode.policy import PERM_ALLOW_ALL, PERM_ASK
+from easycode.web.turns import full_messages, repair_interrupted, split_legacy
 from easycode.workspace import normalise_secondary, root_error
 
 log = logging.getLogger("easycode.web.session")
@@ -86,16 +87,24 @@ class Session:
     cancel_event: Any | None = None  # asyncio.Event; set by the cancel endpoint
     always_allow: list[str] = field(default_factory=list)  # approval_key() scopes, persists
     approval_log: list[dict] = field(default_factory=list)  # resolved approval records
-    user_times: list[str] = field(default_factory=list)  # ISO timestamps per user message
+    #: The whole conversation, one record per user turn: what the transcript
+    #: renders, what an edit replays, and the only place the turns the model
+    #: context has since dropped still exist. ``messages`` is just the most
+    #: recently saved model context; see ``web/turns``.
+    turns: list[dict] = field(default_factory=list)
+    #: Incremented when a turn is accepted. An edit states the revision it read,
+    #: so a stale page cannot rewrite a conversation that has moved on.
+    revision: int = 0
+    #: Messages that sat in front of the first recoverable user turn of a session
+    #: written before turns existed — a compaction summary, and nothing else that
+    #: can be trusted as conversation. Always empty for a session that started
+    #: after turns were recorded.
+    history_base: list[dict] = field(default_factory=list)
     #: Bounded records of the file tools this conversation ran, in call order.
     #: They outlive the message history they came from (see ``web/artifacts``),
     #: so the pane can still show the context and diffs of earlier turns after a
     #: refresh or a context compaction.
     artifacts: list[dict] = field(default_factory=list)
-    #: Terminal errors the server produced, keyed by the user turn that raised
-    #: them (``{"time", "message", "code"}``). A user stop and a dropped browser
-    #: connection are not failures and never land here.
-    turn_failures: list[dict] = field(default_factory=list)
     archived: bool = False  # hidden from the sidebar main list (对齐 codex 归档)
     pinned: bool = False  # kept at the top of the sidebar
     pinned_at: str | None = None  # when it was pinned, for ordering
@@ -139,11 +148,16 @@ class Session:
     def is_blank(self) -> bool:
         """True while no turn has begun in this session.
 
-        A turn stamps ``user_times`` as it starts, before the model answers, so
-        a stopped or failed turn still counts as started: the definition is
-        "nothing has run here", which is what the blank-delete relies on.
+        The turn record is created when the input is accepted, before the model
+        answers, so a stopped or failed turn still counts as started: the
+        definition is "nothing has run here", which is the blank-delete relies on.
         """
-        return not self.messages and not self.user_times
+        return not self.messages and not self.turns
+
+    @property
+    def running(self) -> bool:
+        """True while a turn holds this session's lock."""
+        return self._lock.locked()
 
     def cancel_stream(self) -> bool:
         """Request cancellation of the in-flight chat; True if one is running."""
@@ -153,7 +167,88 @@ class Session:
         evt.set()
         return True
 
-    def record_artifact(self, tool_call, result: str | None) -> None:
+    def turn_index(self, turn_id: str) -> int:
+        """Position of a recorded turn, or -1 when this session has no such turn."""
+        for index, turn in enumerate(self.turns):
+            if turn.get("id") == turn_id:
+                return index
+        return -1
+
+    def begin_turn(
+        self,
+        raw_input: str,
+        model_input: str,
+        command_id: str | None = None,
+    ) -> dict:
+        """Open a new running turn at the end of the conversation.
+
+        The task list is snapshotted here rather than read back later: an edit of
+        this turn has to restore the list as it stood *before* the turn ran, and
+        the live list is the model's to change as it works.
+        """
+        from easycode.web.turns import TurnRecord
+
+        record = TurnRecord.start(
+            raw_input=raw_input,
+            model_input=model_input,
+            todos=list(self.agent.todos),
+            command_id=command_id,
+        )
+        turn = record.to_dict()
+        self.turns.append(turn)
+        self.revision += 1
+        if self.title == "新会话" and raw_input.strip():
+            self.title = raw_input.strip()[:30]
+        return turn
+
+    def replace_turns_from(
+        self,
+        index: int,
+        raw_input: str,
+        model_input: str,
+        command_id: str | None = None,
+    ) -> dict:
+        """Drop everything from ``index`` on and open a new turn in its place.
+
+        The replaced branch leaves the conversation entirely — its messages stop
+        reaching the model, its records stop being shown — while the session's own
+        settings (project, model, permission, authorizations, pin) are untouched,
+        because an edit rewrites what was said, not where or how it runs.
+
+        A later turn is never restored afterwards: once the new branch fails, the
+        old one is already gone.
+        """
+        from easycode.web.turns import TurnRecord, rebuild_history
+
+        if index < 0 or index >= len(self.turns):
+            raise IndexError(f"turn index out of range: {index}")
+        # Replay the turns ahead of the edited one — not the edited turn itself,
+        # which is the branch that is being taken out of the conversation. The
+        # task list comes back with them, to the state it had before that turn ran.
+        rebuild_history(self.agent.history, self.turns, self.agent.todos, before=index)
+        record = TurnRecord.start(
+            raw_input=raw_input,
+            model_input=model_input,
+            todos=self.agent.todos,
+            command_id=command_id,
+        )
+        turn = record.to_dict()
+        dropped = {str(t.get("id") or "") for t in self.turns[index:]}
+        self.turns = self.turns[:index]
+        # Records belong to the branch they were made on; the ones the edit
+        # replaced must not reappear in the pane. Records written before turns
+        # had ids cannot be attributed, so they stay.
+        self.artifacts = [
+            a for a in self.artifacts if a.get("turn_id") not in dropped
+        ]
+        self.approval_log = [
+            a for a in self.approval_log if a.get("turn_id") not in dropped
+        ]
+        self.turns.append(turn)
+        self.revision += 1
+        return turn
+
+    def record_artifact(self, tool_call, result: str | None, turn_id: str | None = None) -> None:
         """Keep one file-tool result for the pane (trimmed, never the whole output)."""
         from easycode.web.artifacts import build_record
 
@@ -163,26 +258,71 @@ class Session:
             tool_call.id, tool_call.name, tool_call.arguments, result, self._resolve_target
         )
         if record is not None:
+            if turn_id:
+                record["turn_id"] = turn_id
             self.artifacts.append(record)
 
     def _resolve_target(self, display: str) -> Path:
         """The canonical file a display path names, as of this session's roots."""
         return self.agent.path_context().resolve(display)
 
-    def record_turn_failure(self, message: str, code: str | None) -> None:
-        """Attach a server-produced terminal error to the current user turn.
+    def record_turn_failure(self, message: str, code: str | None, turn_id: str) -> None:
+        """Attach a server-produced terminal error to the turn that raised it.
 
-        The turn is identified by its user-message timestamp, which is also what
-        the transcript uses to put the failure back where it happened.
+        The record is what a reload reads to put the error back where it
+        happened, so it is stored on the turn rather than derived from a
+        timestamp the renderer would have to match up.
         """
-        if not self.user_times:
+        index = self.turn_index(turn_id)
+        if index < 0:
             return
-        entry = {"time": self.user_times[-1], "message": message}
+        entry: dict = {"message": message}
         if code:
             entry["code"] = code
-        if entry in self.turn_failures:
+        failures = self.turns[index].setdefault("failures", [])
+        if entry not in failures:
+            failures.append(entry)
+
+    def finish_turn(self, turn_id: str, status: str, error: str | None = None) -> None:
+        """Close out a turn that will not report a status of its own."""
+        index = self.turn_index(turn_id)
+        if index < 0:
             return
-        self.turn_failures.append(entry)
+        turn = self.turns[index]
+        from easycode.web.turns import RUNNING
+
+        if turn.get("status") != RUNNING:
+            return
+        turn["status"] = status
+        if error:
+            self.record_turn_failure(error, None, turn_id)
+
+    def _baseline(self) -> list[dict]:
+        """The model context's own head, which is not part of the conversation.
+
+        That is a compaction summary and nothing else. Everything the turns
+        recorded is rebuilt from them, so counting any of it as baseline would
+        duplicate it; a message the context dropped is still in its turn, which
+        is the whole point of keeping the two apart. Deriving it here is what
+        carries a summary written during a live turn through the next flush —
+        without it a restart would quietly undo the last compaction.
+        """
+        from easycode.agent.context import History
+
+        head = self.agent.history.messages
+        if head and History.is_summary(head[0]):
+            return [dict(head[0])]
+        return []
+
+    def projection(self) -> dict:
+        """The conversation as the transcript reads it, plus the current revision."""
+        from easycode.web.turns import project_detail, turn_statuses
+
+        running = self.turns[-1].get("id") if self.turns and self.running else None
+        out = project_detail(self.turns, self.history_base, running_turn=running)
+        out["revision"] = self.revision
+        out["turn_status"] = turn_statuses(self.turns)
+        return out
 
     @property
     def summary(self) -> dict:
@@ -423,31 +563,51 @@ class SessionStore:
                 agent.permission_mode = PERM_ASK if downgraded else mode
                 # the task list lives on the agent, so restore it there
                 agent.todos = list(data.get("todos") or [])
-                # The snapshot and the live history must not share one list:
-                # record_exchange replaces the snapshot each turn while the
-                # agent keeps mutating its own history.
-                messages = list(data.get("messages") or [])
-                agent.history.messages = list(messages)
-                # A conversation written before records existed is re-read from
-                # its surviving history: what compaction already dropped is gone.
+                stored = list(data.get("messages") or [])
+                turn_data = list(data.get("turns") or [])
+                if turn_data:
+                    turns = [dict(t) for t in turn_data]
+                    base = list(data.get("history_base") or [])
+                else:
+                    # A conversation written before turns existed is re-read from
+                    # its surviving history: what compaction already dropped is
+                    # gone, and the summary it left behind becomes the baseline.
+                    # Its ids are derived from the file, so they hold still
+                    # without a write — the migrated shape is saved when the
+                    # session next changes.
+                    base, turns = split_legacy(
+                        stored,
+                        list(data.get("user_times") or []),
+                        list(data.get("turn_failures") or []),
+                        str(data["id"]),
+                    )
+                for turn in turns:
+                    repair_interrupted(turn)
+                # The agent keeps the whole conversation; compaction reshapes it
+                # on the next call rather than having already lost the messages
+                # the transcript still shows.
+                agent.history.messages = full_messages(base, turns)
                 artifacts = list(data.get("artifacts") or [])
                 if not artifacts:
                     from easycode.web.artifacts import records_from_messages
 
-                    artifacts = records_from_messages(messages, agent.path_context().resolve)
+                    artifacts = records_from_messages(
+                        agent.history.messages, agent.path_context().resolve
+                    )
                 sess = Session(
                     id=data["id"],
                     title=data.get("title", "新会话"),
                     created_at=data.get("created_at", _now()),
                     agent=agent,
-                    messages=messages,
+                    messages=stored,
                     root=root,
                     secondary_roots=secondary,
                     always_allow=list(data.get("always_allow") or []),
                     approval_log=list(data.get("approval_log") or []),
-                    user_times=list(data.get("user_times") or []),
+                    turns=turns,
+                    revision=int(data.get("revision") or 0),
+                    history_base=base,
                     artifacts=artifacts,
-                    turn_failures=list(data.get("turn_failures") or []),
                     archived=bool(data.get("archived")),
                     pinned=bool(data.get("pinned")),
                     pinned_at=data.get("pinned_at"),
@@ -455,22 +615,27 @@ class SessionStore:
                 )
                 self._sessions[sess.id] = sess
                 if downgraded:
+                    # The downgrade changes what the session is allowed to do, so
+                    # it is written out now: the user is asked exactly once.
                     self._flush(sess)
-            except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+                # A file that cannot be restored is reported, never silently
+                # dropped from the list; the identifier is enough to find it and
+                # the message carries no conversation text.
+                log.warning("无法恢复会话文件 %s: %s: %s", p.name, type(exc).__name__, exc)
                 continue
 
     def record_exchange(self, session: Session) -> None:
-        """Persist history and align timestamps after context compaction."""
+        """Persist the model context and the turn records together.
+
+        The context cache is refreshed from the live history; the conversation
+        itself is already recorded on the turns, so compaction dropping messages
+        from the context no longer shortens what the transcript can show.
+        """
         if session.id not in self._sessions:
             return
         session.messages = list(session.agent.history.messages)
-        n_user = sum(1 for m in session.messages if m.get("role") == "user")
-        if len(session.user_times) > n_user:
-            session.user_times = list(session.user_times[-n_user:]) if n_user else []
-        # A failure is only reachable while its turn is still in the transcript:
-        # once compaction drops that turn, the record has nothing to attach to.
-        known = set(session.user_times)
-        session.turn_failures = [f for f in session.turn_failures if f.get("time") in known]
+        session.history_base = session._baseline()
         self._flush(session)
 
     def _flush(self, session: Session) -> None:
@@ -484,18 +649,18 @@ class SessionStore:
             "model_alias": session.model_alias,
             "permission_mode": session.permission_mode,
             "messages": session.messages,
+            "turns": list(session.turns),
+            "revision": session.revision,
             "always_allow": list(session.always_allow),
             "approval_log": list(session.approval_log),
-            "user_times": list(session.user_times),
             "archived": session.archived,
             "todos": list(session.agent.todos),
         }
         if session.pinned:
             payload["pinned"] = True
             payload["pinned_at"] = session.pinned_at
-        # Omitted while empty so a session that never failed keeps its old shape.
-        if session.turn_failures:
-            payload["turn_failures"] = list(session.turn_failures)
+        if session.history_base:
+            payload["history_base"] = list(session.history_base)
         if session.artifacts:
             payload["artifacts"] = list(session.artifacts)
         # Absent means "not confirmed": a file without it is read back asking.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from easycode.models.base import Message
@@ -30,6 +31,12 @@ class History:
     messages: list[Message] = field(default_factory=list)
     max_chars: int = 400_000
     max_tokens: int = 32_000
+    #: Optional observer of messages that enter the conversation. Set by the Web
+    #: session for the duration of a turn so the turn can keep a verbatim record
+    #: of what the model was told, which outlives context compaction. Only an
+    #: explicit :meth:`add` notifies it — trimming, condensing and restoring are
+    #: the history managing itself, not the conversation saying something new.
+    on_message: Callable[[Message], None] | None = None
 
     @property
     def summary(self) -> str | None:
@@ -46,6 +53,8 @@ class History:
         # budgets; a message count limit would drop old turns without a
         # summary.
         self.messages.append(message)
+        if self.on_message is not None:
+            self.on_message(message)
 
     def add_user(self, content: str) -> None:
         self.add({"role": "user", "content": content})

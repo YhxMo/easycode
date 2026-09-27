@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import aclosing
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,9 +20,12 @@ from easycode.web.bridge import (
     event_to_sse,
     session_sse,
     stream_chat_with_approval,
+    turn_accepted_sse,
 )
 from easycode.web.session import Session, SessionStore
 from easycode.workspace import resolve_workspace_path, root_error
+
+log = logging.getLogger("easycode.web.chat")
 
 if TYPE_CHECKING:
     from easycode.commands import Command, CommandRegistry
@@ -41,6 +44,15 @@ class ChatRequest(BaseModel):
     #: command is resolved from the registered projects rather than from the
     #: session's own scope; the text is still what gets expanded.
     command_id: str | None = None
+    #: Editing: the recorded turn this message replaces. The turn and everything
+    #: after it leave the conversation, and the reply starts a new branch in
+    #: place. Files, shells and MCP calls the replaced turns already ran are not
+    #: undone — an edit rewrites the conversation, not the workspace.
+    edit_turn_id: str | None = None
+    #: The revision the client read the conversation at. Required with
+    #: ``edit_turn_id``: a page that has fallen behind must not rewrite a
+    #: conversation that moved on under it.
+    expected_revision: int | None = None
 
 
 def _session_roots(sess: Session, cfg: Config) -> list[Path]:
@@ -73,6 +85,31 @@ def _draft_roots(
     secondary = [str(p) for p in store._resolve_secondary(root, secondary_raw)]
     base = Path(root) if root else Path(cfg.root)
     return [base, *(Path(p) for p in secondary)]
+
+
+def _session_state(sess: Session) -> dict:
+    """Everything rewriting a branch touches, for an all-or-nothing edit."""
+    import copy
+
+    return {
+        "turns": copy.deepcopy(sess.turns),
+        "revision": sess.revision,
+        "artifacts": copy.deepcopy(sess.artifacts),
+        "approval_log": copy.deepcopy(sess.approval_log),
+        "history": copy.deepcopy(sess.agent.history.messages),
+        "todos": copy.deepcopy(sess.agent.todos),
+    }
+
+
+def _restore_state(sess: Session, state: dict) -> None:
+    import copy
+
+    sess.turns = state["turns"]
+    sess.revision = state["revision"]
+    sess.artifacts = state["artifacts"]
+    sess.approval_log = state["approval_log"]
+    sess.agent.history.messages = state["history"]
+    sess.agent.todos = copy.deepcopy(state["todos"])
 
 
 def _expand_command(message: str, roots: list[Path], skills) -> str:
@@ -222,6 +259,10 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             raise HTTPException(422, "empty message")
         if req.root and not Path(req.root).expanduser().is_dir():
             raise HTTPException(422, f"workspace root is not a directory: {req.root}")
+        if req.edit_turn_id and not req.session_id:
+            raise HTTPException(422, "edit_turn_id needs an existing session")
+        if req.edit_turn_id and req.expected_revision is None:
+            raise HTTPException(422, "编辑需要携带 expected_revision")
         from easycode.policy import permission_parse, require_full_access_consent
 
         perm_mode: str | None = None
@@ -243,23 +284,47 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         if req.session_id:
             _assert_session_workspace_match(req.session_id, req.root, req.secondary_roots)
         raw_message = req.message
-        is_command = raw_message.strip().startswith("/")
-        if req.command_id and not is_command:
+        existing_sess = store.get(req.session_id) if req.session_id else None
+        # Which command this message is, if any. An edit keeps the one its turn
+        # was sent with unless the request names another, so re-running an edited
+        # `/review` prompt stays a `/review` prompt rather than becoming a plain
+        # message with a stray slash in it.
+        command_id = req.command_id
+        if req.edit_turn_id and not command_id and existing_sess is not None:
+            index = existing_sess.turn_index(req.edit_turn_id)
+            if index >= 0:
+                command_id = existing_sess.turns[index].get("command_id")
+        if command_id and not raw_message.strip().startswith("/"):
             raise HTTPException(400, "command id needs a /command message")
-        if is_command and req.command_id:
-            # A menu selection is resolved against the registered commands, so
-            # the body can come from another project — while it still runs in
-            # this session's own directory and permission scope.
-            req.message = _expand_by_id(req.command_id, raw_message, cfg, store)
-        elif is_command and not req.session_id:
-            # Resolve the command BEFORE creating the session: an unknown command
-            # must not leave an empty session behind.
+
+        def _resolve_message(text: str) -> str:
+            """The text the model is given for ``text`` in this session's scope."""
+            if not text.strip().startswith("/"):
+                return text
+            if command_id:
+                # A menu selection is resolved against the registered commands, so
+                # the body can come from another project — while it still runs in
+                # this session's own directory and permission scope.
+                return _expand_by_id(command_id, text, cfg, store)
+            if existing_sess is not None:
+                # Typed by hand rather than picked from the menu: the current
+                # project's and the personal commands are what resolve it.
+                return _expand_command(
+                    text, _session_roots(existing_sess, cfg), existing_sess.agent.skills
+                )
+            # A brand-new session: resolve before creating it, so an unknown
+            # command does not leave an empty session behind.
             try:
                 roots = _draft_roots(req.root, req.secondary_roots, cfg, store)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
             skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
-            req.message = _expand_command(req.message, roots, skills)
+            return _expand_command(text, roots, skills)
+
+        # Splitting the message in two is what keeps an edit honest in the
+        # transcript: the user sees the text they wrote, while the model is given
+        # the command expansion of it.
+        model_input = _resolve_message(raw_message)
         try:
             # Session creation and turn preparation read cfg/credentials; the
             # config guard keeps them from interleaving with a model/project
@@ -273,10 +338,18 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 root_err = root_error(primary_root)
                 if root_err is not None:
                     raise HTTPException(422, f"会话工作目录无效: {root_err}")
-                # A session restored without a usable credential resolves its
+                # A restored session without a usable credential resolves its
                 # provider on first use; failure is a clear 422, not a hidden
                 # mid-stream error.
                 store.ensure_provider(sess)
+                if req.edit_turn_id:
+                    # 404 before anything is prepared: the turn must exist in
+                    # *this* session, and a stale id is a client error, not a
+                    # reason to quietly append instead.
+                    if sess.turn_index(req.edit_turn_id) < 0:
+                        raise HTTPException(404, f"turn not found: {req.edit_turn_id}")
+                    if sess.revision != req.expected_revision:
+                        raise HTTPException(409, "会话已被更新，请刷新后再编辑")
         except ValueError as exc:
             # Session creation can fail while building the agent (e.g. the
             # default model has no credential configured) or while validating
@@ -288,21 +361,18 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         # serialized (two near-simultaneous starts run, never interleave).
         if sess._lock.locked():
             raise HTTPException(409, "session busy")
-        if is_command and req.session_id and not req.command_id:
-            # Typed by hand rather than picked from the menu: the current
-            # project's and the personal commands are what resolve it.
-            req.message = _expand_command(
-                req.message, _session_roots(sess, cfg), sess.agent.skills
-            )
 
         async def gen():
             # Hold the per-session lock across the ENTIRE stream (including
             # approval waits) and release only after the final flush, so a
-            # session's history / approval / user_times mutations can never be
+            # session's history / approval / turn mutations can never be
             # interleaved by a concurrent request.
             await sess._lock.acquire()
             cancel_event = asyncio.Event()
             sess.cancel_event = cancel_event
+            turn: dict | None = None
+            terminal = False
+            error_seen = False
             try:
                 # A session deleted between the route's get() and this acquire
                 # must not run a turn: the request holds a stale object only.
@@ -315,13 +385,47 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                     # A chat-requested mode change must drop MCP started under
                     # the previous sandbox, same as the permission endpoint.
                     await sess.agent.invalidate_mcp_if_context_changed()
-                if sess.title == "新会话":
-                    sess.title = raw_message.strip()[:30]
-                sess.user_times.append(datetime.now(UTC).isoformat())
+                # The branch is rewritten — and persisted — before the model is
+                # asked anything: an edit that failed to reach disk must leave the
+                # session it read exactly as it was, not half-rewritten in memory.
+                if req.edit_turn_id:
+                    index = sess.turn_index(req.edit_turn_id)
+                    if index < 0:
+                        yield event_to_sse(
+                            {"type": "error", "error": f"turn not found: {req.edit_turn_id}"}
+                        )
+                        return
+                    if sess.revision != req.expected_revision:
+                        yield event_to_sse(
+                            {"type": "error", "error": "会话已被更新，请刷新后再编辑"}
+                        )
+                        return
+                    # The candidate branch replaces the old one only once it is on
+                    # disk: an edit that could not be persisted must leave the
+                    # conversation it read exactly as it was, in memory as well as
+                    # on disk, and report that nothing was accepted.
+                    snapshot = _session_state(sess)
+                    turn = sess.replace_turns_from(index, raw_message, model_input, command_id)
+                else:
+                    snapshot = None
+                    turn = sess.begin_turn(raw_message, model_input, command_id)
+                try:
+                    store.record_exchange(sess)
+                except OSError as exc:
+                    if snapshot is not None:
+                        _restore_state(sess, snapshot)
+                    yield event_to_sse({"type": "error", "error": f"保存会话失败: {exc}"})
+                    return
                 yield session_sse(sess.id)
+                yield turn_accepted_sse(sess, turn["id"], req.edit_turn_id)
                 async with aclosing(
                     stream_chat_with_approval(
-                        sess.agent, req.message, broker, cancel_event=cancel_event, session=sess
+                        sess.agent,
+                        model_input,
+                        broker,
+                        cancel_event=cancel_event,
+                        session=sess,
+                        turn=turn,
                     )
                 ) as events:
                     async for kind, payload in events:
@@ -329,16 +433,28 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                             approval_id, tc, reason, scope = payload
                             yield approval_required_sse(approval_id, tc, reason, scope)
                         else:
-                            # A terminal error the server produced belongs to the
-                            # turn that raised it, so a reload can put it back.
-                            # A user stop or a dropped connection is not recorded.
-                            if payload.kind == "error" and payload.error:
-                                sess.record_turn_failure(payload.error, payload.code)
+                            if payload.kind == "error":
+                                # A terminal error the server produced belongs to
+                                # the turn that raised it, so a reload can put it
+                                # back. A user stop and a dropped connection are
+                                # not failures and never land here.
+                                terminal = True
+                                error_seen = True
+                                if payload.error:
+                                    sess.record_turn_failure(
+                                        payload.error, payload.code, turn["id"]
+                                    )
+                            if payload.kind == "done":
+                                terminal = True
+                            if payload.kind == "cancelled":
+                                terminal = True
                             # File-tool results are kept on the session so the
                             # pane can still show them after a refresh or once
                             # compaction drops them from the history.
                             if payload.kind == "tool_result" and payload.tool_call:
-                                sess.record_artifact(payload.tool_call, payload.tool_result)
+                                sess.record_artifact(
+                                    payload.tool_call, payload.tool_result, turn["id"]
+                                )
                             yield event_to_sse(payload)
             finally:
                 # Persistence failures must not keep the session lock: release
@@ -346,11 +462,37 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 try:
                     if sess.cancel_event is cancel_event:
                         sess.cancel_event = None
-                    # do not resurrect a session the user deleted while
-                    # the stream was in flight; record_exchange is also gated, but
-                    # check here so the StreamResponse settles cleanly either way.
-                    if store.get(sess.id) is not None:
-                        store.record_exchange(sess)
+                    if turn is not None and store.get(sess.id) is not None:
+                        index = sess.turn_index(turn["id"])
+                        if index >= 0 and sess.turns[index].get("status") == "running":
+                            # The stream never reported an end of its own. A user
+                            # stop is the cancel event and is not a failure; a
+                            # reader that simply went away mid-turn is. Either way
+                            # the turn is over, and saying so keeps a reload from
+                            # showing it as still working.
+                            from easycode.web.turns import CANCELLED, COMPLETED, FAILED
+
+                            # Four ways a turn can end without having closed
+                            # itself out: the model reported an error, the user
+                            # stopped it, it finished normally, or the reader
+                            # vanished mid-turn. Only the last one is a failure
+                            # the user did not ask for.
+                            if error_seen:
+                                status = FAILED
+                            elif cancel_event.is_set():
+                                status = CANCELLED
+                            elif terminal:
+                                status = COMPLETED
+                            else:
+                                status = FAILED
+                            sess.finish_turn(turn["id"], status)
+                        try:
+                            store.record_exchange(sess)
+                        except OSError as exc:
+                            # The turn already ran and its results were streamed;
+                            # a failed final save must not replace that outcome
+                            # with an exception, and must not keep the lock.
+                            log.warning("保存会话 %s 失败: %s", sess.id, exc)
                 finally:
                     sess._lock.release()
 

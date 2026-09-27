@@ -132,6 +132,11 @@ class Agent:
     agents: AgentRegistry | None = None
     skills: SkillRegistry | None = None
     system_override: str | None = None
+    #: The turn record currently being captured, when a caller keeps one (the Web
+    #: session does; the CLI and subagents do not). ``respond`` installs the
+    #: recorder on the history and clears both again when the turn ends, so a
+    #: stream can close out a turn that failed before it ever answered.
+    active_turn: Any | None = None
 
     def __post_init__(self) -> None:
         self.compaction = {**COMPACTION_DEFAULTS, **(self.compaction or {})}
@@ -283,19 +288,35 @@ class Agent:
         return self.history.estimate_text_tokens(json.dumps(schemas, ensure_ascii=False))
 
     async def respond(self, user_input: str) -> AsyncIterator[AgentEvent]:
-        """Run a user turn; keep completed operations in history if it is interrupted."""
-        await self.init_mcp()
-        self.history.add_user(user_input)
-        self._review_items = []
-        self._review_decisions = []
-        self._consecutive_review_denials = 0
+        """Run a user turn; keep completed operations in history if it is interrupted.
+
+        When a caller has attached a ``TurnRecord`` to :attr:`active_turn`, the
+        messages this turn adds are also captured onto it: the record is the
+        conversation as the user sees it, and outlives the compaction that
+        reshapes the history it was read from.
+        """
+        recorder: TurnRecorder | None = None
+        if self.active_turn is not None:
+            from easycode.web.turns import TurnRecorder
+
+            recorder = TurnRecorder(self.active_turn)
+            self.history.on_message = recorder.on_add
         try:
-            async with aclosing(self._turn()) as events:
-                async for event in events:
-                    yield event
-        except Exception as exc:
-            yield AgentEvent(kind="error", error=f"{type(exc).__name__}: {exc}")
-            raise
+            await self.init_mcp()
+            self.history.add_user(user_input)
+            self._review_items = []
+            self._review_decisions = []
+            self._consecutive_review_denials = 0
+            try:
+                async with aclosing(self._turn()) as events:
+                    async for event in events:
+                        yield event
+            except Exception as exc:
+                yield AgentEvent(kind="error", error=f"{type(exc).__name__}: {exc}")
+                raise
+        finally:
+            self.history.on_message = None
+            self.active_turn = None
 
     async def _turn(self) -> AsyncIterator[AgentEvent]:
         limit = self.max_tool_iterations

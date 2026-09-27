@@ -91,15 +91,18 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
-        # ``messages`` is the last completed-turn snapshot (stable while a turn
-        # runs); ``approvals``/``user_times``/``turn_failures``/``artifacts`` are
-        # live per-session lists.
+        # ``messages`` is the whole conversation rebuilt from its turn records —
+        # not the model context, which compaction is free to shorten. The live
+        # lists (approvals, artifacts) are per-session and already complete.
+        detail = sess.projection()
         return {
             **sess.summary,
-            "messages": sess.messages,
+            "messages": detail["messages"],
             "approvals": list(sess.approval_log),
-            "user_times": list(sess.user_times),
-            "turn_failures": list(sess.turn_failures),
+            "turn_failures": detail["failures"],
+            "turns": detail["turn_status"],
+            "revision": detail["revision"],
+            "busy": sess.running,
             "todos": list(sess.todos),
             "artifacts": list(sess.artifacts),
         }

@@ -7,13 +7,11 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from easycode.agent.loop import Agent, AgentEvent
 from easycode.models.base import ToolCall
-
-if TYPE_CHECKING:
-    from easycode.web.session import Session
+from easycode.web.session import Session
 
 # Throttle knobs for human-friendly streaming: coalesce token-level text into
 # larger chunks (either at least TEXT_FLUSH_CHARS chars, or at most
@@ -77,6 +75,32 @@ def approval_required_sse(approval_id: str, tc: ToolCall, reason: str, scope: st
     )
 
 
+def turn_accepted_sse(session: Session, turn_id: str, replaced: str | None) -> str:
+    """The server's accepted state for a turn that just started.
+
+    It carries the whole conversation as the server now holds it, so the view
+    replaces its own list in one step instead of patching it: an accepted edit
+    has already rewritten the branch, and a client that only appended would keep
+    showing turns the conversation no longer contains.
+    """
+    detail = session.projection()
+    return event_to_sse(
+        {
+            "type": "turn_accepted",
+            "session_id": session.id,
+            "turn_id": turn_id,
+            "replaced_turn_id": replaced,
+            "revision": detail["revision"],
+            "messages": detail["messages"],
+            "turns": detail["turn_status"],
+            "failures": detail["failures"],
+            "todos": list(session.todos),
+            "artifacts": list(session.artifacts),
+            "approvals": list(session.approval_log),
+        }
+    )
+
+
 class ApprovalBroker:
     """Resolves approval futures by id; wired to POST /api/approval/{id}."""
 
@@ -108,6 +132,7 @@ async def stream_chat_with_approval(
     flush_seconds: float = TEXT_FLUSH_SECONDS,
     cancel_event: asyncio.Event | None = None,
     session: Session | None = None,
+    turn: dict | None = None,
 ) -> AsyncIterator[tuple[str, object]]:
     """Agent turn with human approval interleaved.
 
@@ -126,6 +151,11 @@ async def stream_chat_with_approval(
     When ``session`` is given, approvals that match the session's recorded
     ``always_allow`` scopes are auto-approved without prompting, and every
     decision/timeout is appended to the session's ``approval_log``.
+
+    When ``turn`` is given it is the record the agent appends to: the prompt the
+    user typed, and every message the model produces in reply. The record is a
+    copy the caller owns, so a turn that this stream never gets to finish still
+    has the input it was given.
     """
     q: asyncio.Queue = asyncio.Queue()
     buf: list[str] = []
@@ -140,6 +170,11 @@ async def stream_chat_with_approval(
 
     async def run_turn() -> None:
         prev = agent.approval_handler
+        # The agent captures this turn's messages onto the record while it runs;
+        # the status stays the caller's to set, so a hook can tell "the model is
+        # still going" from "this turn is over and did not finish".
+        if turn is not None:
+            agent.active_turn = turn
 
         async def approval_handler(tc: ToolCall, reason: str, identity: str) -> bool:
             from easycode.approval import approval_scope
@@ -165,17 +200,20 @@ async def stream_chat_with_approval(
             finally:
                 broker.remove(approval_id)
                 if session is not None:
-                    session.approval_log.append(
-                        {
-                            "tool_call_id": tc.id,
-                            "name": tc.name,
-                            "args": tc.arguments,
-                            "reason": reason,
-                            "scope": scope,
-                            "decision": decision,
-                            "always": bool(always and decision == "approved"),
-                        }
-                    )
+                    entry = {
+                        "tool_call_id": tc.id,
+                        "name": tc.name,
+                        "args": tc.arguments,
+                        "reason": reason,
+                        "scope": scope,
+                        "decision": decision,
+                        "always": bool(always and decision == "approved"),
+                    }
+                    # Which turn asked for this decides whether the record
+                    # survives an edit that replaces that turn.
+                    if turn is not None:
+                        entry["turn_id"] = turn["id"]
+                    session.approval_log.append(entry)
             return decision == "approved"
 
         agent.approval_handler = approval_handler

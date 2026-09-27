@@ -72,13 +72,16 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
 
             sess = store.get(sid)
             assert sess is not None
-            roles = [m.get("role") for m in sess.messages]
+            roles = [m.get("role") for m in sess.agent.history.messages]
             # A complete tool-calling turn: user -> assistant(tool_calls) -> tool -> assistant.
             assert roles == ["user", "assistant", "tool", "assistant"], roles
-            n_user = sum(1 for m in sess.messages if m.get("role") == "user")
-            assert len(sess.user_times) == n_user == 1
+            assert [t["raw_input"] for t in sess.turns] == ["first chat"]
+            # The detail route serves the conversation the turns record; the
+            # context cache (equal here, since nothing was compacted) is separate.
             fetched = (await c.get(f"/api/sessions/{sid}")).json()
-            assert fetched["messages"] == sess.messages
+            assert [m["content"] for m in fetched["messages"] if m["role"] == "user"] == [
+                "first chat"
+            ]
 
     asyncio.run(scenario())
 
@@ -124,10 +127,11 @@ def test_inflight_chat_permission_archive_409(tmp_path) -> None:
 
             sess = store.get(sid)
             assert sess is not None
-            roles = [m.get("role") for m in sess.messages]
+            roles = [m.get("role") for m in sess.agent.history.messages]
             assert roles == ["user", "assistant"], roles
-            n_user = sum(1 for m in sess.messages if m.get("role") == "user")
-            assert len(sess.user_times) == n_user == 1
+            # The conversation is recorded as one complete turn.
+            assert [t["raw_input"] for t in sess.turns] == ["hi"]
+            assert sess.turns[0]["status"] == "completed"
 
     asyncio.run(scenario())
 

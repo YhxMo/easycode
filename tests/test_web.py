@@ -370,14 +370,11 @@ def test_session_persistence(tmp_path, monkeypatch):
 
 
 def test_load_all_preserves_condensed_summary(tmp_path):
-    """A rolling-compaction summary (system + SUMMARY_PREFIX) at
-    messages[0] must survive a reload instead of being stripped as an old base
-    system prompt.
+    """A rolling-compaction summary must survive a reload.
 
-    Before the fix, ``migrate_persisted_messages`` dropped any leading system
-    message unconditionally, so a summary written by ``condense_from`` was
-    treated as a stale base prompt and cut on every restart — silently losing
-    all condensed context (refresh/restart resume promise broken).
+    The summary is the model context's own head: it is not a chat message, so it
+    belongs in ``history_base`` rather than in front of the transcript. Losing it
+    would silently drop everything the earlier turns were condensed into.
     """
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
@@ -392,18 +389,31 @@ def test_load_all_preserves_condensed_summary(tmp_path):
         )
 
     store = SessionStore(cfg, tmp_path, factory)
-    sess = store.create()
-    for msg in ("one", "two", "three", "four"):
-        sess.agent.history.add_user(msg)
-        sess.agent.history.add_assistant(f"a-{msg}")
-    # The loop already condenses older turns into a summary system message here.
-    assert sess.agent.history.condense_from("SUMMARY", 2) is True
-    assert History.is_summary(sess.agent.history.messages[0])
-    assert sess.agent.history.summary == "SUMMARY"
-    store.record_exchange(sess)
+    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    with client:
+        sid = None
+        for msg in ("one", "two", "three", "four"):
+            payload: dict = {"message": msg}
+            if sid:
+                payload["session_id"] = sid
+            body = client.post("/api/chat", json=payload).text
+            for line in body.splitlines():
+                if line.startswith("data:"):
+                    ev = json.loads(line[6:])
+                    if ev.get("type") == "session":
+                        sid = ev["session_id"]
+        sess = store.get(sid)
+        assert sess is not None
+        assert len(sess.turns) == 4
+        # The loop already condenses older turns into a summary system message here.
+        assert sess.agent.history.condense_from("SUMMARY", 2) is True
+        assert History.is_summary(sess.agent.history.messages[0])
+        assert sess.agent.history.summary == "SUMMARY"
+        store.record_exchange(sess)
+        saved = json.loads((store.dir / f"{sid}.json").read_text(encoding="utf-8"))
+        assert History.is_summary(saved["history_base"][0])
 
-    # Reload from disk (browser refresh / service restart). NOTE: the summary is
-    # now messages[0] and must NOT be stripped as a base prompt.
+    # Reload from disk (browser refresh / service restart).
     store2 = SessionStore(cfg, tmp_path, factory)
     store2.load_all()
     restored = store2.get(sess.id)
@@ -412,9 +422,17 @@ def test_load_all_preserves_condensed_summary(tmp_path):
     assert m[0]["role"] == "system"
     assert History.is_summary(m[0])
     assert SUMMARY_PREFIX in str(m[0]["content"])
-    assert restored.messages == m
-    # The rolling-merge field is rebuilt so the next compaction can merge.
+    # The rolling-merge field is rebuilt so the next compaction can merge, and
+    # the conversation the summary replaced is still readable.
     assert restored.agent.history.summary == "SUMMARY"
+    assert len(restored.turns) == 4
+    detail = client.get(f"/api/sessions/{sid}").json()
+    assert [msg["content"] for msg in detail["messages"] if msg["role"] == "user"] == [
+        "one",
+        "two",
+        "three",
+        "four",
+    ]
 
 
 # ---------------------------------------------------------------- project management (对齐 codex)
@@ -576,7 +594,12 @@ def _user_count(messages) -> int:
 
 
 def test_user_times_follow_compaction(tmp_path):
-    """Keep timestamps aligned with user turns retained by compaction."""
+    """Compacting the model context must not shorten the conversation.
+
+    The turns are the transcript; the agent's history is only the context sent
+    to the model, and condensing it is allowed to drop messages the user can
+    still see and still edit.
+    """
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
     cfg = Config.load(start=tmp_path)
@@ -607,22 +630,19 @@ def test_user_times_follow_compaction(tmp_path):
             assert sid
         sess = store.get(sid)
         assert sess is not None
-        assert _user_count(sess.messages) == 3
-        times3 = list(sess.user_times)
-        assert len(times3) == 3  # one ISO timestamp per user message
+        assert [t["raw_input"] for t in sess.turns] == ["one", "two", "three"]
 
         # compaction: simulate the in-loop condense dropping the oldest turns.
         # history [u1,a1,u2,a2,u3,a3] -> [summary, u3, a3] (only one user left).
         assert sess.agent.history.condense_from("SUMMARY", 4) is True
         assert _user_count(sess.agent.history.messages) == 1
         store.record_exchange(sess)
+        # The context cache is the condensed one; the conversation is not.
         assert _user_count(sess.messages) == 1
-        assert sess.user_times == [times3[2]]  # surviving = the most recent entry
+        assert [t["raw_input"] for t in sess.turns] == ["one", "two", "three"]
 
-        # old-session JSON compatibility: a JSON without user_times must load and
-        # keep a consistent (here: empty) user_times that stays aligned.
         fetched = client.get(f"/api/sessions/{sid}").json()
-        assert fetched["messages"] and fetched["user_times"] == [times3[2]]
+        assert _user_count(fetched["messages"]) == 3
 
 
 def test_chat_cross_project_session_id_conflict(tmp_path):
@@ -773,7 +793,10 @@ def test_restored_session_with_sensitive_root_reports_422(tmp_path):
         assert [s["id"] for s in listed] == ["legacy1"]
         detail = client.get("/api/sessions/legacy1")
         assert detail.status_code == 200
-        assert detail.json()["messages"] == [{"role": "user", "content": "old work"}]
+        body = detail.json()
+        assert [m["content"] for m in body["messages"]] == ["old work"]
+        # The recovered turn is addressable: that id is what an edit names.
+        assert body["messages"][0]["turn_id"] == body["turns"][0]["id"]
 
         r = client.post("/api/chat", json={"message": "run", "session_id": "legacy1"})
         assert r.status_code == 422
@@ -885,15 +908,22 @@ def test_turn_failure_is_recorded_with_its_turn_and_restored(tmp_path):
     assert len(detail["turn_failures"]) == 1
     failure = detail["turn_failures"][0]
     assert "boom" in failure["message"]
-    assert failure["time"] == detail["user_times"][-1]
+    # The failure names its turn directly; the transcript needs no timestamp
+    # lookup to place it, and an edit of that turn takes the error with it.
+    assert failure["turn_id"] == detail["turns"][0]["id"]
+    assert detail["turns"][0]["status"] == "failed"
 
     # Persisted, so a restart restores the same association.
     saved = json.loads((store.dir / f"{sid}.json").read_text(encoding="utf-8"))
-    assert saved["turn_failures"] == detail["turn_failures"]
+    assert saved["turns"][0]["failures"] == [{"message": failure["message"]}]
+    assert saved["turns"][0]["status"] == "failed"
 
     restored = SessionStore(store.cfg, tmp_path, store.agent_factory)
     restored.load_all()
-    assert restored.get(sid).turn_failures == detail["turn_failures"]
+    again = restored.get(sid)
+    assert again is not None
+    assert again.turns[0]["status"] == "failed"
+    assert again.turns[0]["failures"][0]["message"] == failure["message"]
 
 
 def test_iteration_limit_failure_carries_its_code_to_the_client(tmp_path):
@@ -911,4 +941,4 @@ def test_iteration_limit_failure_carries_its_code_to_the_client(tmp_path):
     assert '"code": "tool_iteration_limit"' in body
     detail = client.get(f"/api/sessions/{sess.id}").json()
     assert [f["code"] for f in detail["turn_failures"]] == ["tool_iteration_limit"]
-    assert detail["turn_failures"][0]["time"] == detail["user_times"][-1]
+    assert detail["turn_failures"][0]["turn_id"] == detail["turns"][0]["id"]
