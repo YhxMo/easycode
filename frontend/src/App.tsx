@@ -70,7 +70,7 @@ import { groupSessions } from "./lib/sessionGroups";
 import { applyMention, mentionToken } from "./lib/mention";
 import { useVoiceInput } from "./lib/useVoiceInput";
 import { usePersistedFlags } from "./lib/usePersistedFlags";
-import { useDrafts } from "./lib/useDrafts";
+import { isEditing, useDrafts } from "./lib/useDrafts";
 import { useStickToBottom } from "./lib/useStickToBottom";
 import type { StickToBottom } from "./lib/useStickToBottom";
 import type { ProjectAction } from "./ProjectMenu";
@@ -143,6 +143,9 @@ function readStoredCurrentTab(): string | null {
     return null;
   }
 }
+
+/** One user message, as the transcript holds it. */
+type UserItem = Extract<Item, { kind: "user" }>;
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -315,6 +318,17 @@ export default function App() {
     [drafts, draftKey],
   );
 
+  /** The edit this composer is holding, if any (the banner names its target). */
+  const editingDraft = isEditing(draft) ? draft : null;
+  // A command the user picked now wins; otherwise an edit keeps the command the
+  // message was sent with, so re-sending a `/review` prompt stays one.
+  const draftCommandId = activeCommandId(pickedCommand, draft.text) ?? editingDraft?.commandId ?? null;
+  /** Leave edit mode and put the draft the user started with back. */
+  const cancelEdit = useCallback(() => {
+    drafts.cancelEdit(draftKey);
+    fieldRef.current?.focus();
+  }, [drafts, draftKey]);
+
   // IME composition (Chinese/Japanese input) owns the field while it runs. The
   // ref guards the caret restore below — writing a selection into the field
   // mid-composition is what turns a pinyin buffer into stray latin text — and
@@ -347,6 +361,7 @@ export default function App() {
 
   const {
     send,
+    sendEdit,
     stop,
     busy,
     items,
@@ -361,7 +376,7 @@ export default function App() {
     chosenRoot,
     secondary,
     permission,
-    commandId: activeCommandId(pickedCommand, input),
+    commandId: draftCommandId,
     currentModelName,
     sendBlocked,
     getViewToken: () => openSeqRef.current,
@@ -446,6 +461,13 @@ export default function App() {
   // `@` references: fetch the listing for the token under the caret, debounced
   // so typing does not fire a request per keystroke. A reply is used only while
   // it still matches the scope and the query it was fetched for.
+  /* eslint-disable react-hooks/preserve-manual-memoization -- the draft this
+     component derives its composer state from is a union (plain text, or an
+     edit with a turn and a revision), and every dependency list from here down
+     names one of its fields. The React Compiler cannot prove those fields are
+     primitives once the union is in play, so it refuses to preserve any manual
+     memoization in this component. The lists are correct as written: each one
+     names exactly the values its callback reads. */
   const mentionInfo = useMemo(
     () => (composing ? null : mentionToken(input, caret)),
     [input, caret, composing],
@@ -602,7 +624,6 @@ export default function App() {
             const restored = historyToItems(
               detail.messages,
               detail.approvals,
-              detail.user_times,
               detail.turn_failures,
             );
             // The task list is session state, not a message: it rides at the end
@@ -610,6 +631,11 @@ export default function App() {
             if (detail.todos?.length) restored.push({ kind: "todo", todos: detail.todos });
             loadHistory(id, restored);
           }
+          // An edit draft is only meaningful while the turn it names is still in
+          // the conversation: after a reload it may have been replaced here or in
+          // another tab. The text the user typed stays; the target does not
+          // silently become a different turn.
+          drafts.revalidateEdit(id, (detail.turns ?? []).map((t) => t.id), detail.revision);
           setSecondary(detail.secondary_roots ?? []);
           setPermission(detail.permission_mode ?? "ask");
           // Records describe the whole conversation, not one turn, so they are
@@ -639,7 +665,17 @@ export default function App() {
         setPermission("ask");
       }
     },
-    [showToast, currentId, busy, sessionLoad, loadHistory, dropEntry, isStreaming, registerTab],
+    [
+      showToast,
+      currentId,
+      busy,
+      sessionLoad,
+      loadHistory,
+      dropEntry,
+      isStreaming,
+      registerTab,
+      drafts,
+    ],
   );
 
   // Reopen the remembered conversation, but only while the server still lists
@@ -1257,9 +1293,10 @@ export default function App() {
       // text and must never send or pick commands.
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
       if (e.key === "Escape") {
-        // the mention menu is the innermost context: dismiss it first
+        // Menus are the innermost context: one is dismissed before the edit is.
         if (mentionOpen) setMentionOff(true);
-        else setCmdOpen(false);
+        else if (cmdOpen) setCmdOpen(false);
+        else cancelEdit();
         return;
       }
       // While the file menu is up, Enter belongs to it: picking a reference is
@@ -1321,6 +1358,7 @@ export default function App() {
       input,
       cmdIndex,
       send,
+      cancelEdit,
       mentionOpen,
       mentionMatches,
       mentionIndex,
@@ -1340,6 +1378,41 @@ export default function App() {
     fieldRef.current?.focus();
     sticky.stick();
   }, [drafts, draftKey, setInput, sticky]);
+
+  /**
+   * Send one earlier message back to the composer.
+   *
+   * The revision is read from the server right now rather than kept from the
+   * last load: an edit has to name the conversation as it is, and the view's
+   * copy can be older than the last turn it streamed. A failed read leaves the
+   * draft alone and explains itself — editing a conversation the server has
+   * moved past would either be refused or, worse, replace the wrong turn.
+   */
+  const startEdit = useCallback(
+    (item: UserItem) => {
+      if (busy || sendBlocked || currentId === null) return;
+      const key = draftKey;
+      // The command this message was sent with: one it was already showing, or
+      // the menu entry the composer is holding.
+      const commandId = item.commandId ?? pickedCommand?.id ?? null;
+      fetchSession(currentId)
+        .then((detail) => {
+          if (detail.revision === undefined) return;
+          drafts.startEdit(key, {
+            turnId: item.turnId ?? "",
+            revision: detail.revision,
+            commandId,
+            text: item.text,
+          });
+          fieldRef.current?.focus();
+          sticky.stick();
+        })
+        .catch((e: unknown) => {
+          showToast("err", `无法开始编辑: ${e instanceof Error ? e.message : String(e)}`);
+        });
+    },
+    [busy, currentId, draftKey, drafts, pickedCommand, sendBlocked, showToast, sticky],
+  );
 
   // One composer, two placements: the centred first-run card, or docked over
   // the message stream. Only one of them is mounted at a time.
@@ -1385,8 +1458,10 @@ export default function App() {
         // Sending is an explicit return to the live edge: the reply to your own
         // message is never something you have to scroll back down for.
         sticky.stick();
-        send();
+        if (editingDraft) void sendEdit(editingDraft);
+        else void send();
       }}
+      editing={editingDraft ? { text: editingDraft.text, onCancel: cancelEdit } : undefined}
       onStop={stop}
       hint="Enter 发送 · Shift + Enter 换行"
       model={
@@ -1563,6 +1638,7 @@ export default function App() {
                   currentModelName={currentModelName}
                   onDecide={decideApproval}
                   onContinue={continueUnfinished}
+                  onEdit={busy || sendBlocked ? undefined : startEdit}
                   onOpenTasks={() => {
                     chooseSection("tasks");
                     setPaneOpen(true);

@@ -1,5 +1,6 @@
 // Pure SSE events to chat items reducer.
 import type { ChatEvent } from "./api";
+import { historyToItems } from "./lib/history";
 import type { ApprovalState, Item } from "./types";
 
 /** Resolve every pending approval to "expired" (turn ended / cancelled / error). */
@@ -33,6 +34,15 @@ export function currentTurn(items: Item[]): Item[] {
   return items.slice(currentTurnStart(items) + 1);
 }
 
+/** The turn the trailing items belong to, for tagging what the stream adds. */
+function currentTurnId(items: Item[]): string | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "user") return item.turnId;
+  }
+  return undefined;
+}
+
 function appendOrExtendAssistant(prev: Item[], content: string): Item[] {
   const last = prev[prev.length - 1];
   if (last?.kind === "assistant") {
@@ -43,7 +53,7 @@ function appendOrExtendAssistant(prev: Item[], content: string): Item[] {
   }
   // Text after a tool call starts a new assistant block (the old handler dropped
   // it, hiding the model's final reply).
-  return [...prev, { kind: "assistant", text: content }];
+  return [...prev, { kind: "assistant", text: content, turnId: currentTurnId(prev) }];
 }
 
 function fillToolResult(prev: Item[], ev: Extract<ChatEvent, { type: "tool_result" }>): Item[] {
@@ -95,8 +105,15 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
   switch (ev.type) {
     case "text":
       return appendOrExtendAssistant(prev, ev.content ?? "");
-    case "cancelled":
-      return [...interruptPending(prev), { kind: "notice", text: "已停止本轮，已执行的操作保留。" }];
+    case "turn_accepted":
+      // The server's state is the authority: its messages already name every
+      // turn, so whatever the view held for this conversation is replaced
+      // rather than extended. An accepted edit has rewritten the branch, and a
+      // view that only appended would keep showing turns the conversation no
+      // longer contains.
+      return ev.messages
+        ? historyToItems(ev.messages, ev.approvals ?? [], ev.failures ?? [])
+        : prev;
     case "tool_start":
       return [
         ...prev,
@@ -112,6 +129,11 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
       return fillToolResult(prev, ev);
     case "done":
       return finishDone(prev);
+    case "cancelled":
+      return [
+        ...interruptPending(prev),
+        { kind: "notice", text: "已停止本轮，已执行的操作保留。" },
+      ];
     case "error":
       return [
         ...interruptPending(prev),

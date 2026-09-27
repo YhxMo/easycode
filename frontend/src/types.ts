@@ -8,7 +8,15 @@ export interface TodoItem {
 }
 
 export type Item =
-  | { kind: "user"; text: string; time?: string }
+  | {
+      kind: "user";
+      text: string;
+      time?: string;
+      /** The recorded turn this message opened; absent on a not-yet-recorded send. */
+      turnId?: string;
+      /** The command this message was sent with, so editing keeps it a command. */
+      commandId?: string | null;
+    }
   | {
       kind: "assistant";
       text: string;
@@ -16,6 +24,8 @@ export type Item =
       model?: string;
       /** Wall-clock duration of the turn that produced this reply, stamped when the stream finishes. */
       durationMs?: number;
+      /** The turn this reply belongs to, for the same reason as the user item's. */
+      turnId?: string;
     }
   | {
       kind: "tool";

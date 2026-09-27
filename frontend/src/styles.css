@@ -2841,6 +2841,61 @@
   outline: none;
 }
 
+/* Rewriting an earlier message: the target and its consequences sit above the
+ * field, so an edit is never something the user discovers after sending. */
+.composer-editing {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-lg);
+  background: var(--accent-tint);
+}
+
+.composer-editing-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.composer-editing-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+
+.composer-editing-quote {
+  font-size: 12px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-editing-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.composer-editing-cancel {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer-editing-cancel:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
 .composer-tall {
   gap: 16px;
   padding: 16px;

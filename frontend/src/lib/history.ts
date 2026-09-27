@@ -50,13 +50,22 @@ export interface HistoryMessage {
   content?: unknown;
   tool_call_id?: string;
   tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
+  /** The turn this message belongs to, as the server records it. */
+  turn_id?: string;
   [key: string]: unknown;
 }
 
+/**
+ * A conversation as the server holds it, converted into the items the view
+ * renders.
+ *
+ * Failures are attached through the turn they ended rather than through a
+ * timestamp, so the same input produces the same transcript whatever order the
+ * server happens to list them in.
+ */
 export function historyToItems(
   messages: HistoryMessage[],
   approvals: ApprovalRecord[] = [],
-  userTimes: string[] = [],
   failures: TurnFailure[] = [],
 ): Item[] {
   const items: Item[] = [];
@@ -66,9 +75,8 @@ export function historyToItems(
   }
   const approvalByCall = new Map<string, ApprovalRecord>();
   for (const a of approvals) approvalByCall.set(String(a.tool_call_id), a);
-  const failureByTime = new Map<string, TurnFailure>();
-  for (const f of failures) if (f.time) failureByTime.set(f.time, f);
-  let userIndex = 0;
+  const failureByTurn = new Map<string, TurnFailure>();
+  for (const f of failures) if (f.turn_id) failureByTurn.set(String(f.turn_id), f);
   // The error ended its turn, so it belongs at the end of that turn — not
   // beside the prompt that started it.
   let pending: TurnFailure | null = null;
@@ -79,12 +87,12 @@ export function historyToItems(
   for (const m of messages) {
     if (m.role === "user") {
       flushFailure();
-      const time = userTimes[userIndex];
-      pending = (time && failureByTime.get(time)) || null;
-      items.push({ kind: "user", text: String(m.content ?? ""), time });
-      userIndex += 1;
+      const turnId = m.turn_id ? String(m.turn_id) : undefined;
+      pending = (turnId && failureByTurn.get(turnId)) || null;
+      items.push({ kind: "user", text: String(m.content ?? ""), turnId, commandId: null });
     } else if (m.role === "assistant") {
-      if (m.content) items.push({ kind: "assistant", text: String(m.content) });
+      const turnId = m.turn_id ? String(m.turn_id) : undefined;
+      if (m.content) items.push({ kind: "assistant", text: String(m.content), turnId });
       if (m.tool_calls?.length) {
         for (const tc of m.tool_calls) {
           if (!tc.function) continue;

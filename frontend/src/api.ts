@@ -9,6 +9,24 @@ export interface ToolCall {
 
 export type ChatEvent =
   | { type: "session"; session_id?: string }
+  | {
+      /**
+       * The server accepted a turn. The conversation it carries is the
+       * authoritative one, so an accepted edit replaces the view's own list
+       * instead of appending to it.
+       */
+      type: "turn_accepted";
+      session_id?: string;
+      turn_id?: string;
+      replaced_turn_id?: string | null;
+      revision?: number;
+      messages?: HistoryMessage[];
+      turns?: TurnSummary[];
+      failures?: TurnFailure[];
+      todos?: TodoItem[];
+      artifacts?: ArtifactRecord[];
+      approvals?: ApprovalRecord[];
+    }
   | { type: "text"; content?: string }
   | { type: "tool_start"; tool_call: ToolCall }
   | { type: "tool_result"; tool_call: ToolCall; result?: string }
@@ -44,12 +62,21 @@ export interface ApprovalRecord {
   decision: ApprovalDecision;
 }
 
-/** A terminal error the server produced, tied to the user turn it ended. */
+/** A terminal error the server produced, tied to the turn it ended. */
 export interface TurnFailure {
-  /** Timestamp of that turn's user message; a reload uses it to place the error. */
-  time?: string;
+  /** The turn whose turn this ended; a reload uses it to place the error. */
+  turn_id?: string;
   message: string;
   code?: string;
+}
+
+/** One recorded user turn, as the client needs to address it. */
+export interface TurnSummary {
+  id: string;
+  created_at?: string;
+  /** ``running`` while a turn holds the session; terminal once it is over. */
+  status: "running" | "completed" | "failed" | "cancelled";
+  command_id?: string;
 }
 
 /** One persisted file-tool result, in the shape the pane already reads. */
@@ -58,12 +85,18 @@ export interface ArtifactRecord {
   name: string;
   args: Record<string, unknown>;
   result?: string;
+  /** The turn that produced it, so an edit can drop the replaced branch's records. */
+  turn_id?: string;
 }
 
 export interface SessionDetail extends SessionSummary {
   messages: HistoryMessage[];
   approvals?: ApprovalRecord[];
-  user_times?: string[];
+  /** Complete turns, oldest first; the ids an edit names. */
+  turns?: TurnSummary[];
+  /** Incremented whenever a turn is accepted; an edit states the one it read. */
+  revision?: number;
+  busy?: boolean;
   turn_failures?: TurnFailure[];
   todos?: TodoItem[];
   /** File-tool records of the whole conversation; see lib/pane. */
@@ -139,6 +172,13 @@ export interface ChatOptions {
   permission_mode?: string;
   /** Id of the `/` menu entry this message picked, when it came from the menu. */
   command_id?: string;
+  /**
+   * Editing: the recorded turn this message replaces. The turn and everything
+   * after it leave the conversation; the workspace is not rolled back.
+   */
+  edit_turn_id?: string;
+  /** The revision the conversation was read at; required with ``edit_turn_id``. */
+  expected_revision?: number;
   /** Abort the in-flight chat stream (e.g. on session switch / explicit stop). */
   signal?: AbortSignal;
 }
@@ -457,6 +497,10 @@ export async function streamChat(
     if (opts.permission_mode === "allow-all") body.confirm_full_access = true;
   }
   if (opts.command_id) body.command_id = opts.command_id;
+  if (opts.edit_turn_id) {
+    body.edit_turn_id = opts.edit_turn_id;
+    body.expected_revision = opts.expected_revision;
+  }
   const resp = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

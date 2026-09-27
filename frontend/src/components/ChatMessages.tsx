@@ -26,6 +26,16 @@ function CopyIcon({ copied = false }: { copied?: boolean }) {
   );
 }
 
+/** The retract arrow: send this message back to the composer and rewrite it. */
+function RetractIcon() {
+  return (
+    <svg className="message-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M20 17v-4.5A3.5 3.5 0 0 0 16.5 9H4" />
+      <path d="m8 5-4 4 4 4" />
+    </svg>
+  );
+}
+
 export function ChatMessages({
   items,
   busy,
@@ -33,6 +43,7 @@ export function ChatMessages({
   onDecide,
   onOpenTasks,
   onContinue,
+  onEdit,
 }: {
   items: Item[];
   busy: boolean;
@@ -41,6 +52,12 @@ export function ChatMessages({
   onOpenTasks: () => void;
   /** Fill the composer with a continuation prompt; never sends on its own. */
   onContinue: () => void;
+  /**
+   * Send one user message back to the composer to be rewritten. Absent while a
+   * turn is running: an edit rewrites the conversation the turn is still adding
+   * to, which the server refuses anyway.
+   */
+  onEdit?: (item: Extract<Item, { kind: "user" }>) => void;
 }) {
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null);
   const copyMessage = useCallback((text: string, index: number) => {
@@ -86,6 +103,16 @@ export function ChatMessages({
             <span>{currentModelName}</span>
             <span className="msg-meta-separator">·</span>
             <time>{it.time ? formatClock(it.time) : currentTimeLabel()}</time>
+            {onEdit && it.turnId && (
+              <button
+                className="msg-action"
+                title="编辑并重新发送这条消息；其后的对话会被替换，文件不会回退"
+                aria-label="编辑并重新发送这条消息"
+                onClick={() => onEdit(it)}
+              >
+                <RetractIcon />
+              </button>
+            )}
             <button
               className="msg-action"
               title="复制消息"

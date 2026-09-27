@@ -82,14 +82,13 @@ describe("App · 未完成的回合", () => {
     const user = userEvent.setup();
     m.fetchSession.mockResolvedValue({
       ...detail("s1", "会话A", [
-        { role: "user", content: "第一条" },
-        { role: "assistant", content: "第一次回复" },
-        { role: "user", content: "第二条" },
-        { role: "assistant", content: "第二次回复" },
+        { role: "user", content: "第一条", turn_id: "t1" },
+        { role: "assistant", content: "第一次回复", turn_id: "t1" },
+        { role: "user", content: "第二条", turn_id: "t2" },
+        { role: "assistant", content: "第二次回复", turn_id: "t2" },
       ]),
-      user_times: ["2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z"],
       turn_failures: [
-        { time: "2026-01-01T00:00:02Z", message: "达到轮数上限", code: "tool_iteration_limit" },
+        { turn_id: "t2", message: "达到轮数上限", code: "tool_iteration_limit" },
       ],
     });
 
@@ -110,8 +109,7 @@ describe("App · 未完成的回合", () => {
   it("旧会话没有失败记录时照常恢复", async () => {
     const user = userEvent.setup();
     m.fetchSession.mockResolvedValue({
-      ...detail("s1", "会话A", [{ role: "user", content: "旧消息" }]),
-      user_times: ["2026-01-01T00:00:01Z"],
+      ...detail("s1", "会话A", [{ role: "user", content: "旧消息", turn_id: "t1" }]),
     });
 
     render(<App />);

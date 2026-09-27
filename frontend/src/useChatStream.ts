@@ -4,10 +4,12 @@ import type { ChatOptions } from "./api";
 import { cancelSessionChat, streamChat } from "./api";
 import { applyChatEvent, currentTurn, expirePending, stampTurnMeta } from "./chatStream";
 import { isAbortError } from "./lib/history";
+import type { EditDraft } from "./lib/useDrafts";
 import type { Item } from "./types";
 
 /** Registry key of the not-yet-created session the composer is composing into. */
 export const DRAFT_KEY = "\u0000draft";
+
 
 export interface UseChatStreamParams {
   input: string;
@@ -113,6 +115,138 @@ export function useChatStream(params: UseChatStreamParams) {
     [],
   );
 
+  /**
+   * Run one send and own the slot it writes into.
+   *
+   * Both a normal send and an edit go through here: they differ only in what
+   * they ask the server for and in what they show while the request is being
+   * accepted. The slot, the session migration, the error handling and the
+   * retirement of a finished turn are the same for either.
+   */
+  const run = useCallback(
+    async (
+      key: string,
+      sessionId: string | null,
+      text: string,
+      opts: ChatOptions,
+      /** Editing: show nothing until the server confirms the new branch. */
+      awaitAcceptance: boolean,
+    ) => {
+      const c = latest.current;
+      const viewToken = c.getViewToken();
+      const turnStartedAt = Date.now();
+      const modelAtSend = c.currentModelName;
+      const request: ActiveRequest = {
+        controller: new AbortController(),
+        sessionId,
+        key,
+        retired: false,
+      };
+      const signal = request.controller.signal;
+      const initial: Item[] = awaitAcceptance
+        ? (entries.get(key)?.items ?? [])
+        : [
+            // Stamp the time at send: rendering must not fall back to the clock.
+            { kind: "user", text, time: new Date().toISOString() },
+            { kind: "assistant", text: "" },
+          ];
+      setEntries((prev) => {
+        const entry = prev.get(key);
+        return new Map(prev).set(key, {
+          items: awaitAcceptance ? initial : [...(entry?.items ?? []), ...initial],
+          request,
+        });
+      });
+      if (!awaitAcceptance) {
+        // The message is on screen now, so it is no longer a draft: text typed
+        // into another conversation (or into the next draft while this one
+        // streams) is untouched because the key is this request's own. An edit
+        // keeps its draft until the server confirms, so a refused one leaves
+        // the text where the user was writing it.
+        c.clearDraft(key);
+      }
+      let terminalError = false;
+      try {
+        await streamChat(sessionId, text, (ev) => {
+          // A turn that already ended owns nothing: the aborted reader of a
+          // stopped turn must not write into whatever claimed the slot next.
+          if (request.retired) return;
+          if (ev.type === "session") {
+            const id = ev.session_id;
+            if (id) {
+              // Adopt the id the backend assigned: the entry moves to the real
+              // session slot so the tab bar and sidebar can find it, and stop()
+              // targets this request's own session rather than the foreground.
+              const from = request.key;
+              request.sessionId = id;
+              request.key = id;
+              setEntries((prev) => {
+                const entry = prev.get(from);
+                if (!entry) return prev;
+                const next = new Map(prev);
+                next.delete(from);
+                next.set(id, entry);
+                return next;
+              });
+              // An unsent draft belongs to the conversation it was being typed
+              // into, so it follows the id this request claimed.
+              if (from === DRAFT_KEY) c.moveDraft(from, id);
+              c.onSessionNamed(id);
+              // Only follow the new session if the user is still on the view
+              // that started this turn; otherwise it joins the list in the
+              // background.
+              if (viewToken === latest.current.getViewToken()) c.setCurrentId(id);
+            }
+            c.refreshSessions();
+            return;
+          }
+          // Raising the approval overlay is foreground state, not items, so a
+          // background turn must not steal the view for its own approval.
+          if (
+            ev.type === "approval_required" &&
+            request.key === (latest.current.currentId ?? DRAFT_KEY)
+          ) {
+            latest.current.onApprovalRequired();
+          }
+          if (ev.type === "turn_accepted") {
+            // The server took it, so the text that produced it is no longer a
+            // draft. An edit keeps it until now for the same reason a send
+            // clears its own: what was typed is consumed by what it became.
+            c.clearDraft(request.key);
+          }
+          if (ev.type === "error") terminalError = true;
+          writeItems(request.key, (prev) => applyChatEvent(prev, ev));
+        }, { ...opts, signal });
+      } catch (err) {
+        if (request.retired) return;
+        if (isAbortError(err)) {
+          writeItems(request.key, (prev) => applyChatEvent(prev, { type: "cancelled" }));
+          return;
+        }
+        // The backend already reported a terminal error for this turn (the
+        // stream then ended): do not append a second error row.
+        if (!terminalError) {
+          // Route through the reducer so a network failure also interrupts any
+          // still-running tool card instead of leaving it spinning forever.
+          writeItems(request.key, (prev) =>
+            applyChatEvent(prev, {
+              type: "error",
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+      } finally {
+        request.retired = true;
+        writeItems(request.key, (prev) =>
+          stampTurnMeta(expirePending(prev), modelAtSend, Date.now() - turnStartedAt),
+        );
+        patchEntry(request.key, (entry) => ({ ...entry, request: null }));
+        c.refreshSessions();
+      }
+    },
+    [entries, patchEntry, writeItems],
+  );
+
   /** Suspend one conversation's cached items. Ignored while its turn is running. */
   const dropEntry = useCallback((key: string) => {
     setEntries((prev) => {
@@ -133,20 +267,8 @@ export function useChatStream(params: UseChatStreamParams) {
     if (!text || c.sendBlocked) return;
     const key = c.currentId ?? DRAFT_KEY;
     if (entries.get(key)?.request) return;
-    const viewToken = c.getViewToken();
-    // Clear exactly the draft this send consumed: text typed in another
-    // conversation (or into the next draft while this one streams) stays.
-    c.clearDraft(key);
-    const turnStartedAt = Date.now();
-    const modelAtSend = c.currentModelName;
-    const request: ActiveRequest = {
-      controller: new AbortController(),
-      sessionId: c.currentId,
-      key,
-      retired: false,
-    };
     const opts: ChatOptions = {};
-    if (request.sessionId === null) {
+    if (c.currentId === null) {
       if (c.chosenRoot) opts.root = c.chosenRoot;
       // The draft's list is always explicit (empty included): only a request
       // that omits the field inherits the project's secondary binding.
@@ -154,88 +276,38 @@ export function useChatStream(params: UseChatStreamParams) {
     }
     opts.permission_mode = c.permission;
     if (c.commandId) opts.command_id = c.commandId;
-    opts.signal = request.controller.signal;
-    const patches: Item[] = [
-      // Stamp the time at send: rendering must not fall back to the clock.
-      { kind: "user", text, time: new Date().toISOString() },
-      { kind: "assistant", text: "" },
-    ];
-    setEntries((prev) => {
-      const entry = prev.get(key);
-      return new Map(prev).set(key, { items: [...(entry?.items ?? []), ...patches], request });
-    });
-    let terminalError = false;
-    try {
-      await streamChat(request.sessionId, text, (ev) => {
-        // A turn that already ended owns nothing: the aborted reader of a
-        // stopped turn must not write into whatever claimed the slot next.
-        if (request.retired) return;
-        if (ev.type === "session") {
-          const id = ev.session_id;
-          if (id) {
-            // Adopt the id the backend assigned: the entry moves to the real
-            // session slot so the tab bar and sidebar can find it, and stop()
-            // targets this request's own session rather than the foreground.
-            const from = request.key;
-            request.sessionId = id;
-            request.key = id;
-            setEntries((prev) => {
-              const entry = prev.get(from);
-              if (!entry) return prev;
-              const next = new Map(prev);
-              next.delete(from);
-              next.set(id, entry);
-              return next;
-            });
-            // An unsent draft belongs to the conversation it was being typed
-            // into, so it follows the id this request claimed.
-            if (from === DRAFT_KEY) c.moveDraft(from, id);
-            c.onSessionNamed(id);
-            // Only follow the new session if the user is still on the view that
-            // started this turn; otherwise it joins the list in the background.
-            if (viewToken === latest.current.getViewToken()) c.setCurrentId(id);
-          }
-          c.refreshSessions();
-          return;
-        }
-        // Raising the approval overlay is foreground state, not items, so a
-        // background turn must not steal the view for its own approval.
-        if (
-          ev.type === "approval_required" &&
-          request.key === (latest.current.currentId ?? DRAFT_KEY)
-        ) {
-          latest.current.onApprovalRequired();
-        }
-        if (ev.type === "error") terminalError = true;
-        writeItems(request.key, (prev) => applyChatEvent(prev, ev));
-      }, opts);
-    } catch (err) {
-      if (request.retired) return;
-      if (isAbortError(err)) {
-        writeItems(request.key, (prev) => applyChatEvent(prev, { type: "cancelled" }));
-        return;
-      }
-      // The backend already reported a terminal error for this turn (the
-      // stream then ended): do not append a second error row.
-      if (!terminalError) {
-        // Route through the reducer so a network failure also interrupts any
-        // still-running tool card instead of leaving it spinning forever.
-        writeItems(request.key, (prev) =>
-          applyChatEvent(prev, {
-            type: "error",
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        );
-      }
-    } finally {
-      request.retired = true;
-      writeItems(request.key, (prev) =>
-        stampTurnMeta(expirePending(prev), modelAtSend, Date.now() - turnStartedAt),
-      );
-      patchEntry(request.key, (entry) => ({ ...entry, request: null }));
-      c.refreshSessions();
-    }
-  }, [entries, patchEntry, writeItems]);
+    await run(key, c.currentId, text, opts, false);
+  }, [entries, run]);
+
+  /**
+   * Resend an earlier user message in this conversation.
+   *
+   * The turn named by ``edit`` and everything after it leave the conversation as
+   * soon as the server accepts the request — the view only changes then, so a
+   * refusal leaves the transcript the user is reading untouched. Files, shells
+   * and MCP calls those turns already ran are not undone: this rewrites the
+   * conversation, not the workspace.
+   */
+  const sendEdit = useCallback(
+    async (edit: EditDraft) => {
+      const c = latest.current;
+      const text = c.input.trim();
+      const sessionId = c.currentId;
+      if (!text || c.sendBlocked || sessionId === null) return;
+      if (entries.get(sessionId)?.request) return;
+      // The draft is deliberately left in place: the conversation only changes
+      // once the server accepts, and a refused edit must leave the user's text
+      // exactly where they were writing it.
+      const opts: ChatOptions = {
+        permission_mode: c.permission,
+        edit_turn_id: edit.editTurnId,
+        expected_revision: edit.expectedRevision,
+      };
+      if (edit.commandId) opts.command_id = edit.commandId;
+      await run(sessionId, sessionId, text, opts, true);
+    },
+    [entries, run],
+  );
 
   const stop = useCallback(() => {
     // Abort the local reader + tell the backend to cancel; the send() finally
@@ -272,6 +344,7 @@ export function useChatStream(params: UseChatStreamParams) {
 
   return {
     send,
+    sendEdit,
     stop,
     items: entries.get(viewKey)?.items ?? [],
     busy: entries.get(viewKey)?.request != null,

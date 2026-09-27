@@ -42,6 +42,11 @@ interface Props {
   menuId?: string;
   activeOptionId?: string;
   hint?: string;
+  /**
+   * The earlier message this composer is rewriting. Shown above the field so
+   * the user can see what will be replaced before they send — and can leave.
+   */
+  editing?: { text: string; onCancel: () => void };
 }
 
 export function ComposerBar({
@@ -69,6 +74,7 @@ export function ComposerBar({
   menuOpen = false,
   menuId,
   activeOptionId,
+  editing,
 }: Props) {
   // The centred first-run field starts taller but shares the growth logic; the
   // heights mirror `.composer-field` / `.composer-tall .composer-field`.
@@ -101,6 +107,20 @@ export function ComposerBar({
 
   return (
     <div className={`composer composer-${variant}`} ref={boxRef}>
+      {editing && (
+        <div className="composer-editing">
+          <div className="composer-editing-text">
+            <span className="composer-editing-label">正在编辑这条消息</span>
+            <span className="composer-editing-quote">{editing.text}</span>
+            <span className="composer-editing-note">
+              重新发送后，这条消息之后的对话会被替换；文件、命令等已执行的操作不会回退。
+            </span>
+          </div>
+          <button type="button" className="composer-editing-cancel" onClick={editing.onCancel}>
+            取消
+          </button>
+        </div>
+      )}
       <div className="cmd-wrap">
         {menu}
         <textarea

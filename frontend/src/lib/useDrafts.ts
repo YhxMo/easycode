@@ -1,16 +1,46 @@
 // Unsent composer text, one record per conversation.
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-export interface Draft {
+/** A plain draft: text the user has typed but not sent. */
+export interface PlainDraft {
   text: string;
   /** Caret offset restored when the conversation comes back to the foreground. */
   caret: number;
 }
 
-const EMPTY: Draft = { text: "", caret: 0 };
+/**
+ * A draft that is rewriting an earlier message.
+ *
+ * It carries the revision the conversation was read at, because the server
+ * refuses an edit that names a revision it has moved past — the user's own page
+ * must not rewrite a conversation another tab has changed underneath it.
+ */
+export interface EditDraft extends PlainDraft {
+  /** The turn being replaced. */
+  editTurnId: string;
+  expectedRevision: number;
+  /** The command that turn was sent with, so re-sending it stays that command. */
+  commandId: string | null;
+  /** What the composer held before editing began, to restore on cancel. */
+  previousDraft: PlainDraft;
+}
+
+export type Draft = PlainDraft | (EditDraft & { caret: number });
+
+export function isEditing(draft: Draft): draft is EditDraft {
+  return typeof (draft as EditDraft).editTurnId === "string";
+}
+
+const EMPTY: PlainDraft = { text: "", caret: 0 };
 
 /** Browser-local store of unsent text, keyed like the stream entries. */
 export const DRAFTS_KEY = "easycode:drafts";
+
+function plainFrom(value: unknown): PlainDraft | null {
+  const draft = value as { text?: unknown; caret?: unknown } | null;
+  if (typeof draft?.text !== "string") return null;
+  return { text: draft.text, caret: typeof draft.caret === "number" ? draft.caret : 0 };
+}
 
 /** Restore the saved drafts: strings only, never fatal. */
 function readStoredDrafts(): Map<string, Draft> {
@@ -21,12 +51,26 @@ function readStoredDrafts(): Map<string, Draft> {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Map();
     const out = new Map<string, Draft>();
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      const draft = value as { text?: unknown; caret?: unknown };
-      if (!key || typeof draft?.text !== "string") continue;
-      out.set(key, {
-        text: draft.text,
-        caret: typeof draft.caret === "number" ? draft.caret : 0,
-      });
+      if (!key) continue;
+      const plain = plainFrom(value);
+      if (plain === null) continue;
+      const edit = value as {
+        editTurnId?: unknown;
+        expectedRevision?: unknown;
+        commandId?: unknown;
+        previousDraft?: unknown;
+      };
+      if (typeof edit.editTurnId === "string" && typeof edit.expectedRevision === "number") {
+        out.set(key, {
+          ...plain,
+          editTurnId: edit.editTurnId,
+          expectedRevision: edit.expectedRevision,
+          commandId: typeof edit.commandId === "string" ? edit.commandId : null,
+          previousDraft: plainFrom(edit.previousDraft) ?? EMPTY,
+        });
+        continue;
+      }
+      out.set(key, plain);
     }
     return out;
   } catch {
@@ -43,12 +87,47 @@ function storeDrafts(map: Map<string, Draft>): void {
   }
 }
 
+function isSame(a: Draft, b: Draft): boolean {
+  if (a.text !== b.text || a.caret !== b.caret) return false;
+  const ae = isEditing(a);
+  const be = isEditing(b);
+  if (ae !== be) return false;
+  if (!ae || !be) return true;
+  return (
+    a.editTurnId === b.editTurnId &&
+    a.expectedRevision === b.expectedRevision &&
+    a.commandId === b.commandId &&
+    a.previousDraft.text === b.previousDraft.text &&
+    a.previousDraft.caret === b.previousDraft.caret
+  );
+}
+
+/** Nothing worth remembering: no text, no caret, and no edit to come back to. */
+function isEmpty(draft: Draft): boolean {
+  return draft.text === "" && draft.caret === 0 && !isEditing(draft);
+}
+
 export interface DraftStore {
   get: (key: string) => Draft;
   update: (key: string, patch: (draft: Draft) => Draft) => void;
   clear: (key: string) => void;
   /** Hand a draft to the conversation a request turned into. */
   move: (from: string, to: string) => void;
+  /**
+   * Open an edit of one recorded turn, remembering the draft it replaced.
+   *
+   * Only one level is kept: starting a second edit while one is open changes
+   * the target but keeps the plain draft the user began with, so cancelling
+   * always lands back on their own text rather than on an earlier edit's.
+   */
+  startEdit: (
+    key: string,
+    edit: { turnId: string; revision: number; commandId: string | null; text: string },
+  ) => void;
+  /** Leave edit mode and put the remembered draft back. */
+  cancelEdit: (key: string) => void;
+  /** Re-anchor or drop an edit against the conversation as just read. */
+  revalidateEdit: (key: string, turnIds: string[], revision?: number) => void;
 }
 
 /**
@@ -68,13 +147,37 @@ export function useDrafts(): DraftStore {
     storeDrafts(map);
   }, [map]);
 
+  /** Replace one draft, given what it currently holds. */
   const update = useCallback((key: string, patch: (draft: Draft) => Draft) => {
     setMap((prev) => {
       const current = prev.get(key) ?? EMPTY;
       const next = patch(current);
-      if (next.text === current.text && next.caret === current.caret) return prev;
+      if (isSame(next, current)) return prev;
       const out = new Map(prev);
-      if (next.text === "" && next.caret === 0) out.delete(key);
+      if (isEmpty(next)) out.delete(key);
+      else out.set(key, next);
+      return out;
+    });
+  }, []);
+
+  /**
+   * Drop an edit whose target is gone, keeping the text the user began with.
+   *
+   * Called when a conversation is (re)read: the revision may have moved on, in
+   * which case the edit is re-anchored, or the turn may have been replaced, in
+   * which case there is nothing left to edit and the plain draft comes back.
+   */
+  const revalidateEdit = useCallback((key: string, turnIds: string[], revision?: number) => {
+    setMap((prev) => {
+      const current = prev.get(key);
+      if (!current || !isEditing(current)) return prev;
+      const next =
+        turnIds.includes(current.editTurnId) && revision !== undefined
+          ? { ...current, expectedRevision: revision }
+          : current.previousDraft;
+      if (isSame(next, current)) return prev;
+      const out = new Map(prev);
+      if (isEmpty(next)) out.delete(key);
       else out.set(key, next);
       return out;
     });
@@ -101,9 +204,42 @@ export function useDrafts(): DraftStore {
     });
   }, []);
 
+  const startEdit = useCallback<DraftStore["startEdit"]>((key, edit) => {
+    setMap((prev) => {
+      const current = prev.get(key) ?? EMPTY;
+      const previousDraft = isEditing(current) ? current.previousDraft : current;
+      const next: Draft = {
+        text: edit.text,
+        caret: edit.text.length,
+        editTurnId: edit.turnId,
+        expectedRevision: edit.revision,
+        commandId: edit.commandId,
+        previousDraft,
+      };
+      const out = new Map(prev);
+      out.set(key, next);
+      return out;
+    });
+  }, []);
+
+  const cancelEdit = useCallback((key: string) => {
+    setMap((prev) => {
+      const current = prev.get(key);
+      if (!current || !isEditing(current)) return prev;
+      const out = new Map(prev);
+      const restored = current.previousDraft;
+      if (restored.text === "" && restored.caret === 0) out.delete(key);
+      else out.set(key, restored);
+      return out;
+    });
+  }, []);
+
   // `get` is read during render, so it closes over the current map: the
   // mutators stay stable while the read follows the latest committed state.
   const get = useCallback((key: string) => map.get(key) ?? EMPTY, [map]);
 
-  return useMemo(() => ({ get, update, clear, move }), [get, update, clear, move]);
+  return useMemo(
+    () => ({ get, update, clear, move, startEdit, cancelEdit, revalidateEdit }),
+    [get, update, clear, move, startEdit, cancelEdit, revalidateEdit],
+  );
 }
