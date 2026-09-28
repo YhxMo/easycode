@@ -4,8 +4,9 @@ import { createPortal } from "react-dom";
 import { Modal } from "../../components/Modal";
 import { useDismiss } from "../../lib/useDismiss";
 import { placeMenu, type MenuPlacement } from "../../lib/menuPlacement";
-import type { AddModelBody, ModelsInfo, UpdateModelBody } from "../../api";
-import { addModel, deleteModel, fetchModel, fetchModels, switchModel, updateModel } from "../../api";
+import type { ModelsInfo } from "../../api";
+import { deleteModel, fetchModel, fetchModels, switchModel } from "../../api";
+import { ModelDialog, type ModelDialogTarget } from "./ModelDialog";
 
 //: Design cap on the menu height; the room actually left on screen wins.
 const MENU_MAX_HEIGHT = 460;
@@ -16,35 +17,6 @@ const MENU_MARGIN = 12;
 const MENU_GAP = 8;
 
 const PROVIDERS = ["bailian", "deepseek", "openox", "rightcode", "openai", "anthropic", "openrouter", "custom"];
-
-const API_FORMATS: Array<{ value: string; label: string }> = [
-  { value: "openai_responses", label: "OpenAI Responses" },
-  { value: "openai_compatible", label: "OpenAI Compatible" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "bedrock", label: "Amazon Bedrock" },
-  { value: "gemini", label: "Google (Gemini)" },
-];
-
-interface ModelForm {
-  alias: string;
-  model: string;
-  /** Optional list-grouping label; empty means "infer it". */
-  provider: string;
-  base_url: string;
-  api_key: string;
-  api_format: string;
-  clear_key: boolean;
-}
-
-const EMPTY_FORM: ModelForm = {
-  alias: "",
-  model: "",
-  provider: "",
-  base_url: "",
-  api_key: "",
-  api_format: "openai_compatible",
-  clear_key: false,
-};
 
 function providerLabel(provider: string): string {
   return {
@@ -80,32 +52,6 @@ function TrashIcon() {
   );
 }
 
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M2.5 12S6.2 5.7 12 5.7 21.5 12 21.5 12 17.8 18.3 12 18.3 2.5 12 2.5 12Z" />
-      <circle cx="12" cy="12" r="3.1" />
-    </svg>
-  );
-}
-
-function EyeOffIcon() {
-  return (
-    // Same eye as `EyeIcon` with a slash across it: the two states stay the same
-    // shape at a glance, and the slash is what reads at 15px.
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M2.5 12S6.2 5.7 12 5.7 21.5 12 21.5 12 17.8 18.3 12 18.3 2.5 12 2.5 12Z" />
-      <circle cx="12" cy="12" r="3.1" />
-      <path d="m4 4 16 16" />
-    </svg>
-  );
-}
-
-/** Which write path the model form is open on, and on what. */
-type Dialog =
-  | { kind: "add" }
-  | { kind: "edit"; alias: string; hasKey: boolean; keyTail: string };
-
 export function ModelPicker({
   models,
   current,
@@ -130,15 +76,12 @@ export function ModelPicker({
   // modal chrome are identical, and only the request bodies differ. Which path
   // it is and what it is editing are one state, so the form cannot be open for
   // an edit whose target is missing.
-  const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [revealKey, setRevealKey] = useState(false);
+  const [target, setTarget] = useState<ModelDialogTarget | null>(null);
   const [toast, setToast] = useState<{ kind: "success"; text: string } | null>(null);
   // Where the menu fits, in viewport coordinates: it is anchored to the trigger,
   // which sits wherever the composer happens to be, so the room actually
   // available decides its size and which side it opens on.
   const [placement, setPlacement] = useState<MenuPlacement | null>(null);
-  const [errors, setErrors] = useState<{ alias?: string; model?: string }>({});
-  const [formError, setFormError] = useState<string | null>(null);
   // Deleting is confirmed: it takes the credential with it and leaves existing
   // sessions without a model they can send to.
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -148,8 +91,6 @@ export function ModelPicker({
   // The panel is portalled out of the trigger's subtree, so the dismiss region
   // has to name both halves.
   const dismissRefs = useMemo(() => [triggerRef, menuPanelRef], []);
-
-  const [form, setForm] = useState<ModelForm>(EMPTY_FORM);
 
   const closeMenu = useCallback(() => {
     setOpen(false);
@@ -251,11 +192,7 @@ export function ModelPicker({
     // Hand focus to the trigger before the menu row unmounts: the dialog records
     // whatever owns focus when it opens and returns it there on close.
     closeMenu();
-    setForm(EMPTY_FORM);
-    setErrors({});
-    setFormError(null);
-    setRevealKey(false);
-    setDialog({ kind: "add" });
+    setTarget({ kind: "add" });
   };
 
   const openEdit = async (alias: string) => {
@@ -264,21 +201,7 @@ export function ModelPicker({
     modelSeq.current += 1;
     try {
       const detail = await fetchModel(alias);
-      setForm({
-        alias: detail.alias,
-        model: detail.model,
-        provider: detail.provider ?? "",
-        base_url: detail.base_url ?? "",
-        // Never the stored key: the field only carries a new one, and an empty
-        // field leaves the old key in place.
-        api_key: "",
-        api_format: detail.api_format ?? "openai_compatible",
-        clear_key: false,
-      });
-      setDialog({ kind: "edit", alias, hasKey: detail.has_api_key, keyTail: detail.key_tail });
-      setErrors({});
-      setFormError(null);
-      setRevealKey(false);
+      setTarget({ kind: "edit", alias, hasKey: detail.has_api_key, keyTail: detail.key_tail, detail });
     } catch (error) {
       // Reading one model failed: say so instead of opening an empty form.
       onError?.(`读取失败：${error instanceof Error ? error.message : "请求失败"}`);
@@ -288,54 +211,11 @@ export function ModelPicker({
     }
   };
 
-  const closeForm = () => {
-    setDialog(null);
-    setErrors({});
-    setFormError(null);
-    setRevealKey(false);
-  };
-
-  const submitForm = async () => {
-    const alias = form.alias.trim();
-    const model = form.model.trim();
-    const next: { alias?: string; model?: string } = {};
-    if (!alias) next.alias = "请填写别名";
-    if (!model) next.model = "请填写模型 ID";
-    setErrors(next);
-    setFormError(null);
-    if (next.alias || next.model) return;
-
-    setBusy(true);
+  const handleSaved = (next: ModelsInfo) => {
     modelSeq.current += 1; // an in-flight refresh must not undo this write
-    try {
-      if (dialog?.kind === "add") {
-        const body: AddModelBody = { alias, model, api_format: form.api_format };
-        if (form.provider.trim()) body.provider = form.provider.trim();
-        if (form.base_url.trim()) body.base_url = form.base_url.trim();
-        if (form.api_key.trim()) body.api_key = form.api_key.trim();
-        onChange(await addModel(body));
-        flash("添加成功");
-      } else if (dialog?.kind === "edit") {
-        const body: UpdateModelBody = {
-          model,
-          new_alias: alias,
-          provider: form.provider.trim(),
-          base_url: form.base_url.trim(),
-          api_format: form.api_format,
-          clear_key: form.clear_key,
-        };
-        if (form.api_key.trim()) body.api_key = form.api_key.trim();
-        onChange(await updateModel(dialog.alias, body));
-        flash("保存成功");
-      }
-      closeForm();
-    } catch (error) {
-      // The reason belongs next to the fields that caused it: the dialog stays
-      // open with everything typed so far still in place.
-      setFormError(error instanceof Error ? error.message : "请求失败");
-    } finally {
-      setBusy(false);
-    }
+    onChange(next);
+    flash(target?.kind === "add" ? "添加成功" : "保存成功");
+    setTarget(null);
   };
 
   const removeModel = async (alias: string) => {
@@ -528,153 +408,14 @@ export function ModelPicker({
         )}
       </Modal>
 
-      <Modal
-        open={dialog !== null}
-        onClose={closeForm}
-        title={dialog?.kind === "add" ? "添加模型" : "编辑模型"}
-        variant="model-form-modal"
-        actions={
-          <>
-            <button type="button" className="modal-cancel" onClick={closeForm}>
-              取消
-            </button>
-            <button type="button" className="primary" onClick={submitForm} disabled={busy}>
-              {busy ? "…" : dialog?.kind === "add" ? "添加" : "保存"}
-            </button>
-          </>
-        }
-      >
-        <div className="modal-section">
-          <div className="modal-section-title">模型信息</div>
-          <div className="modal-field">
-            <label>
-              别名
-              <input
-                value={form.alias}
-                placeholder="如 my-gpt"
-                onChange={(e) => setForm({ ...form, alias: e.target.value })}
-              />
-            </label>
-            <small>只在本机标识这个模型，切换、编辑和删除都用它。</small>
-            {/* Required-field complaints clear themselves as soon as the field
-                has something in it. */}
-            {errors.alias && !form.alias.trim() && (
-              <small className="modal-field-error">{errors.alias}</small>
-            )}
-            {dialog?.kind === "add" && models.models[form.alias.trim()] && (
-              <small className="modal-field-error">
-                「{form.alias.trim()}」已存在，添加会覆盖它原有的配置和凭据。
-              </small>
-            )}
-          </div>
-          <div className="modal-field">
-            <label>
-              模型 ID
-              <input
-                value={form.model}
-                placeholder="如 gpt-4o"
-                onChange={(e) => setForm({ ...form, model: e.target.value })}
-              />
-            </label>
-            <small>会原样发给服务商，通常是提供方文档里的模型名。</small>
-            {errors.model && !form.model.trim() && (
-              <small className="modal-field-error">{errors.model}</small>
-            )}
-          </div>
-        </div>
-
-        <div className="modal-section">
-          <div className="modal-section-title">连接设置</div>
-          <label>
-            接口格式
-            <span className="modal-select-wrap">
-              <select
-                value={form.api_format}
-                onChange={(e) => setForm({ ...form, api_format: e.target.value })}
-              >
-                {API_FORMATS.map((f) => (
-                  <option key={f.value} value={f.value}>
-                    {f.label}
-                  </option>
-                ))}
-              </select>
-            </span>
-          </label>
-          <label>
-            Base URL
-            <input
-              value={form.base_url}
-              placeholder="https://api.example.com/v1"
-              onChange={(e) => setForm({ ...form, base_url: e.target.value })}
-            />
-          </label>
-          <div className="modal-field">
-            <label>
-              API Key
-              <span className="secret-input-row">
-                <input
-                  type={revealKey ? "text" : "password"}
-                  value={form.api_key}
-                  placeholder={dialog?.kind === "edit" ? "留空则沿用已有密钥" : "输入该模型专用 API Key"}
-                  onChange={(e) => setForm({ ...form, api_key: e.target.value, clear_key: false })}
-                />
-                <button
-                  type="button"
-                  className="secret-toggle"
-                  title={revealKey ? "隐藏 API Key" : "显示 API Key"}
-                  aria-label={revealKey ? "隐藏 API Key" : "显示 API Key"}
-                  onClick={() => setRevealKey(!revealKey)}
-                >
-                  {/* The glyph names the state the field is in: dots are marked by
-                      the struck-through eye, plain text by the open one. The
-                      label names what pressing it does. */}
-                  {revealKey ? <EyeIcon /> : <EyeOffIcon />}
-                </button>
-              </span>
-            </label>
-            {dialog?.kind === "edit" && (
-              <small>
-                {dialog.hasKey
-                  ? `已有密钥${dialog.keyTail ? `（尾号 ${dialog.keyTail}）` : ""}，留空保存不会改动它。`
-                  : "尚未配置密钥。"}
-              </small>
-            )}
-            {form.api_key.trim() && dialog?.kind === "edit" && (
-              <small>保存后替换为新输入的密钥。</small>
-            )}
-          </div>
-          {dialog?.kind === "edit" && (
-            <div className="modal-inline-actions">
-              <button
-                type="button"
-                className="clear-key"
-                disabled={busy || (!dialog.hasKey && !form.base_url)}
-                onClick={() => setForm({ ...form, api_key: "", clear_key: true })}
-              >
-                清除连接凭据
-              </button>
-              {form.clear_key && <span>保存后删除该模型的 API Key 与 Base URL</span>}
-            </div>
-          )}
-        </div>
-
-        <div className="modal-section">
-          <div className="modal-section-title">列表分组（可选）</div>
-          <div className="modal-field">
-            <label>
-              供应商
-              <input
-                value={form.provider}
-                placeholder="留空则按模型 ID 推断"
-                onChange={(e) => setForm({ ...form, provider: e.target.value })}
-              />
-            </label>
-            <small>只决定它显示在模型菜单的哪一组，不影响调用方式。</small>
-          </div>
-        </div>
-
-        {formError && <p className="modal-error">{formError}</p>}
-      </Modal>
+      {target && (
+        <ModelDialog
+          target={target}
+          taken={(alias) => Boolean(models.models[alias])}
+          onClose={() => setTarget(null)}
+          onSaved={handleSaved}
+        />
+      )}
     </div>
   );
 }

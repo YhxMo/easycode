@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   fetchMcp,
@@ -12,6 +12,8 @@ import {
   type McpServerView,
   type McpStatusServer,
 } from "../../api";
+import { asString, configFrom, EMPTY_FORM, formFrom, type ServerForm } from "./mcpForm";
+import { McpServerForm } from "./McpServerForm";
 
 const SCOPE_LABELS: Record<McpScope, string> = {
   project: "当前项目",
@@ -39,178 +41,6 @@ export interface McpSettingsPanelProps {
   /** The effective server set changed: the `/` menu must be re-read. */
   onChanged: () => void;
   onToast: (kind: "ok" | "err", text: string) => void;
-}
-
-interface ServerForm {
-  scope: McpScope;
-  name: string;
-  transport: "stdio" | "http";
-  command: string;
-  args: string;
-  cwd: string;
-  env: string;
-  url: string;
-  headers: string;
-  startup: string;
-  tool: string;
-  network: boolean;
-  enabledTools: string;
-  disabledTools: string;
-  secretKind: "env" | "header" | "bearer";
-  secretName: string;
-  secretValue: string;
-}
-
-const EMPTY_FORM: ServerForm = {
-  scope: "project",
-  name: "",
-  transport: "stdio",
-  command: "",
-  args: "",
-  cwd: "",
-  env: "",
-  url: "",
-  headers: "",
-  startup: "",
-  tool: "",
-  network: false,
-  enabledTools: "",
-  disabledTools: "",
-  secretKind: "env",
-  secretName: "",
-  secretValue: "",
-};
-
-function lines(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-}
-
-function pairs(text: string, separator: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of lines(text)) {
-    const at = line.indexOf(separator);
-    if (at <= 0) continue;
-    out[line.slice(0, at).trim()] = line.slice(at + separator.length).trim();
-  }
-  return out;
-}
-
-function formatPairs(source: unknown, separator: string): string {
-  if (!source || typeof source !== "object") return "";
-  return Object.entries(source as Record<string, string>)
-    .map(([k, v]) => `${k}${separator}${v}`)
-    .join("\n");
-}
-
-function list(text: string): string[] | null {
-  const items = text
-    .split(/[,\s]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return items.length ? items : null;
-}
-
-function asString(source: Record<string, unknown>, key: string): string {
-  const value = source[key];
-  return typeof value === "string" ? value : "";
-}
-
-function asNumber(source: Record<string, unknown>, key: string): string {
-  const value = source[key];
-  return typeof value === "number" ? String(value) : "";
-}
-
-function formFrom(server: McpServerView): ServerForm {
-  const cfg = server.config;
-  const secretEnv = (cfg.secret_env ?? {}) as Record<string, string>;
-  const secretHeaders = (cfg.secret_headers ?? {}) as Record<string, string>;
-  const bearer = typeof cfg.bearer_credential === "string";
-  return {
-    ...EMPTY_FORM,
-    scope: server.scope,
-    name: server.name,
-    transport: cfg.transport === "http" ? "http" : "stdio",
-    command: asString(cfg, "command"),
-    args: Array.isArray(cfg.args) ? (cfg.args as string[]).join("\n") : "",
-    cwd: asString(cfg, "cwd"),
-    env: formatPairs(cfg.env, "="),
-    url: asString(cfg, "url"),
-    headers: formatPairs(cfg.http_headers, ": "),
-    startup: asNumber(cfg, "startup_timeout_sec"),
-    tool: asNumber(cfg, "tool_timeout_sec"),
-    network: cfg.network_enabled === true,
-    enabledTools: Array.isArray(cfg.enabled_tools) ? (cfg.enabled_tools as string[]).join(", ") : "",
-    disabledTools: Array.isArray(cfg.disabled_tools)
-      ? (cfg.disabled_tools as string[]).join(", ")
-      : "",
-    secretKind: bearer ? "bearer" : Object.keys(secretHeaders).length ? "header" : "env",
-    secretName: bearer
-      ? ""
-      : (Object.keys(secretHeaders)[0] ?? Object.keys(secretEnv)[0] ?? ""),
-  };
-}
-
-/** The stored configuration, built from the form over whatever it already had. */
-function configFrom(form: ServerForm, base: Record<string, unknown>): Record<string, unknown> {
-  const cfg: Record<string, unknown> = { ...base, transport: form.transport };
-  const startup = Number(form.startup);
-  const tool = Number(form.tool);
-  if (startup > 0) cfg.startup_timeout_sec = startup;
-  else delete cfg.startup_timeout_sec;
-  if (tool > 0) cfg.tool_timeout_sec = tool;
-  else delete cfg.tool_timeout_sec;
-
-  const enabledTools = list(form.enabledTools);
-  const disabledTools = list(form.disabledTools);
-  if (enabledTools) cfg.enabled_tools = enabledTools;
-  else delete cfg.enabled_tools;
-  if (disabledTools) cfg.disabled_tools = disabledTools;
-  else delete cfg.disabled_tools;
-
-  // Fields the other transport owns are removed rather than left behind: a
-  // server with both a command and a url is a configuration nobody wrote.
-  if (form.transport === "stdio") {
-    delete cfg.url;
-    delete cfg.http_headers;
-    delete cfg.bearer_token_env_var;
-    cfg.command = form.command.trim();
-    const args = lines(form.args);
-    if (args.length) cfg.args = args;
-    else delete cfg.args;
-    if (form.cwd.trim()) cfg.cwd = form.cwd.trim();
-    else delete cfg.cwd;
-    const env = pairs(form.env, "=");
-    if (Object.keys(env).length) cfg.env = env;
-    else delete cfg.env;
-    if (form.network) cfg.network_enabled = true;
-    else delete cfg.network_enabled;
-  } else {
-    delete cfg.command;
-    delete cfg.args;
-    delete cfg.cwd;
-    delete cfg.env;
-    delete cfg.network_enabled;
-    cfg.url = form.url.trim();
-    const headers = pairs(form.headers, ":");
-    if (Object.keys(headers).length) cfg.http_headers = headers;
-    else delete cfg.http_headers;
-  }
-
-  // The reference to a stored secret is written here; the value itself goes to
-  // the credential endpoint, so the configuration file never holds it.
-  if (form.secretValue) {
-    delete cfg.secret_env;
-    delete cfg.secret_headers;
-    delete cfg.bearer_credential;
-    if (form.secretKind === "bearer") cfg.bearer_credential = "token";
-    else if (form.secretKind === "header") {
-      cfg.secret_headers = { [form.secretName.trim() || "Authorization"]: "token" };
-    } else cfg.secret_env = { [form.secretName.trim()]: "token" };
-  }
-  return cfg;
 }
 
 export function McpSettingsPanel({
@@ -261,15 +91,6 @@ export function McpSettingsPanel({
       live = false;
     };
   }, [active, sessionId, info]);
-
-  const scopesFor = useCallback(
-    (scope: McpScope) => info?.scopes.find((s) => s.scope === scope),
-    [info],
-  );
-  const projectLabel = useMemo(
-    () => info?.projects.find((p) => p.root === info.root)?.name ?? null,
-    [info],
-  );
 
   const apply = async (run: () => Promise<McpInfo>, message: string) => {
     setBusy(true);
@@ -358,32 +179,6 @@ export function McpSettingsPanel({
       return next;
     }, `已删除「${server.name}」`);
 
-  const field = (
-    label: string,
-    key: keyof ServerForm,
-    props: { placeholder?: string; hint?: string; multiline?: boolean } = {},
-  ) => (
-    <label className="modal-field">
-      <span>{label}</span>
-      {props.multiline ? (
-        <textarea
-          rows={3}
-          value={String(form?.[key] ?? "")}
-          placeholder={props.placeholder}
-          onChange={(e) => setForm((f) => (f ? { ...f, [key]: e.target.value } : f))}
-        />
-      ) : (
-        <input
-          type="text"
-          value={String(form?.[key] ?? "")}
-          placeholder={props.placeholder}
-          onChange={(e) => setForm((f) => (f ? { ...f, [key]: e.target.value } : f))}
-        />
-      )}
-      {props.hint ? <small>{props.hint}</small> : null}
-    </label>
-  );
-
   return (
     <>
       {active && actionsHost
@@ -427,114 +222,7 @@ export function McpSettingsPanel({
         </p>
       ))}
 
-      {form ? (
-        <>
-          <div className="modal-section">
-            <div className="modal-section-title">基本信息</div>
-            <label className="modal-field">
-              <span>作用域</span>
-              <span className="modal-select-wrap">
-                <select
-                  value={form.scope}
-                  onChange={(e) => setForm({ ...form, scope: e.target.value as McpScope })}
-                >
-                  {(info?.scopes ?? [{ scope: "project" as McpScope, path: "" }]).map((row) => (
-                    <option key={row.scope} value={row.scope}>
-                      {row.scope === "project"
-                        ? `当前项目${projectLabel ? `（${projectLabel}）` : ""}`
-                        : row.scope === "personal"
-                          ? "个人（所有项目）"
-                          : "应用启动配置"}
-                    </option>
-                  ))}
-                </select>
-              </span>
-              <small>{scopesFor(form.scope)?.path ?? ""}</small>
-            </label>
-            {field("名称", "name", { placeholder: "filesystem" })}
-            <label className="modal-field">
-              <span>传输</span>
-              <span className="modal-select-wrap">
-                <select
-                  value={form.transport}
-                  onChange={(e) =>
-                    setForm({ ...form, transport: e.target.value as "stdio" | "http" })
-                  }
-                >
-                  <option value="stdio">本地命令（stdio）</option>
-                  <option value="http">远程地址（Streamable HTTP）</option>
-                </select>
-              </span>
-            </label>
-          </div>
-
-          <div className="modal-section">
-            <div className="modal-section-title">
-              {form.transport === "stdio" ? "启动方式" : "连接方式"}
-            </div>
-            {form.transport === "stdio" ? (
-              <>
-                {field("命令", "command", { placeholder: "npx" })}
-                {field("参数", "args", { multiline: true, hint: "每行一个" })}
-                {field("工作目录", "cwd", {
-                  placeholder: "留空即当前目录",
-                  hint: "必须在工作区内",
-                })}
-                {field("环境变量", "env", { multiline: true, hint: "每行 KEY=VALUE" })}
-                <label className="modal-check">
-                  <input
-                    type="checkbox"
-                    checked={form.network}
-                    onChange={(e) => setForm({ ...form, network: e.target.checked })}
-                  />
-                  <span>允许访问网络（首次下载包时需要）</span>
-                </label>
-              </>
-            ) : (
-              <>
-                {field("地址", "url", { placeholder: "https://example.com/mcp" })}
-                {field("请求头", "headers", { multiline: true, hint: "每行 KEY: VALUE" })}
-              </>
-            )}
-          </div>
-
-          <div className="modal-section">
-            <div className="modal-section-title">工具与超时</div>
-            {field("启动超时（秒）", "startup", { placeholder: "10" })}
-            {field("工具超时（秒）", "tool", { placeholder: "60" })}
-            {field("只允许这些工具", "enabledTools", { placeholder: "留空即全部，* 表示全部" })}
-            {field("禁用这些工具", "disabledTools", { placeholder: "逗号或空格分隔" })}
-          </div>
-
-          <div className="modal-section">
-            <div className="modal-section-title">凭据</div>
-            <label className="modal-field">
-              <span>凭据类型</span>
-              <span className="modal-select-wrap">
-                <select
-                  value={form.secretKind}
-                  onChange={(e) =>
-                    setForm({ ...form, secretKind: e.target.value as ServerForm["secretKind"] })
-                  }
-                >
-                  <option value="env">环境变量</option>
-                  <option value="header">请求头</option>
-                  <option value="bearer">Bearer Token</option>
-                </select>
-              </span>
-            </label>
-            {form.secretKind !== "bearer"
-              ? field(form.secretKind === "env" ? "变量名" : "请求头名", "secretName", {
-                  placeholder: form.secretKind === "env" ? "GITHUB_TOKEN" : "Authorization",
-                })
-              : null}
-            {field("凭据值", "secretValue", {
-              placeholder: form.secretKind === "bearer" ? "粘贴 Token" : "粘贴密钥",
-              hint: "保存后不再回显；留空表示不修改",
-            })}
-          </div>
-        </>
-      ) : null}
+      {form ? <McpServerForm form={form} info={info} onChange={setForm} /> : null}
 
       {info ? (
         <div className="modal-section">
