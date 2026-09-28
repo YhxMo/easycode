@@ -5,30 +5,14 @@ import type {
   SessionSummary,
   WorkspaceProject,
 } from "../api";
-import {
-  archiveProjectChats,
-  createWorktree,
-  fetchModels,
-  fetchSession,
-  pinSession,
-  pinProject,
-  revealInFinder,
-  setSessionArchived,
-  submitApproval,
-} from "../api";
+import { fetchModels } from "../api";
 import { DRAFT_KEY, useChatStream } from "../features/chat/useChatStream";
 import { useComposer } from "../features/composer/useComposer";
 import { MENTION_LIST_ID, MENTION_OPTION_PREFIX, MentionMenu } from "../features/composer/MentionMenu";
-import { ExtensionsSettings, type ExtensionTarget } from "../features/extensions/ExtensionsSettings";
+import { ExtensionsSettings } from "../features/extensions/ExtensionsSettings";
 import { ModelPicker } from "../features/models/ModelPicker";
-import { currentTurn } from "../features/chat/chatStream";
-import type { ApprovalState, Item, ToolItem } from "../types";
 import { COMMAND_LIST_ID, CommandMenu } from "../features/composer/CommandMenu";
-import {
-  activeCommandId,
-  commandNameIn,
-} from "../features/composer/commands";
-import { Modal } from "../components/Modal";
+import { activeCommandId } from "../features/composer/commands";
 import { ChatMessages } from "../features/chat/ChatMessages";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { ComposerBar } from "../features/composer/ComposerBar";
@@ -44,10 +28,8 @@ import { usePersistedFlags } from "../lib/usePersistedFlags";
 import { useDrafts, type Draft } from "../features/composer/useDrafts";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import type { StickToBottom } from "../lib/useStickToBottom";
-import type { ProjectAction } from "../features/sidebar/ProjectMenu";
 import { basename, DEFAULT_PROJECT } from "../lib/paths";
 import {
-  CONTINUE_PROMPT,
   CURRENT_TAB_KEY,
   EMPTY_MODELS,
   NARROW_CHAT_PX,
@@ -60,13 +42,12 @@ import { ConfirmDialogs } from "./ConfirmDialogs";
 import { ProjectEditDialog } from "./ProjectEditDialog";
 import { useSessionLifecycle } from "./useSessionLifecycle";
 import { usePermission } from "./usePermission";
+import { useSessionView } from "./useSessionView";
+import { useSidebarDrawer } from "./useSidebarDrawer";
 import { useToast } from "./useToast";
-
-/** Foreground session load phase; null means ready. */
-type SessionLoad = { status: "loading" } | { status: "error"; message: string };
-
-/** One user message, as the transcript holds it. */
-type UserItem = Extract<Item, { kind: "user" }>;
+import { useMessageActions } from "./useMessageActions";
+import { useProjectActions } from "./useProjectActions";
+import { useTranscriptView } from "./useTranscriptView";
 
 /**
  * The `/` command a send from this draft carries, if it still carries one.
@@ -80,7 +61,23 @@ function commandIdFor(draft: Draft): string | null {
 }
 
 export default function App() {
-  const [currentId, setCurrentId] = useState<string | null>(null);
+  // View version: a response is applied only while it still matches, and the
+  // ref is readable at response time by child editors.
+  const openSeqRef = useRef(0);
+  const {
+    currentId,
+    setCurrentId,
+    chosenRoot,
+    chooseRoot,
+    secondary,
+    setSecondary,
+    sessionLoad,
+    setSessionLoad,
+    artifactRecords,
+    setArtifactRecords,
+    extensionsRevision,
+    setExtensionsRevision,
+  } = useSessionView(openSeqRef);
   // Unsent composer text, one record per conversation: switching sessions must
   // never carry what was typed here into another conversation's field.
   const drafts = useDrafts();
@@ -106,57 +103,18 @@ export default function App() {
   // hook's own object the rule asks for the whole per-render value.
   const { register: registerTab, open: openTabs } = tabList;
 
-  const [chosenRoot, setChosenRoot] = useState<string | null>(null);
-  // One pair of states serves both the new-session draft and the open session:
-  // a session event updates them in place, and openSession resets them.
-  const [secondary, setSecondary] = useState<string[]>([]);
-  // Foreground session load state: while loading (or after a failed load) the
-  // composer, permission picker and secondary editor are disabled, so no
-  // request can be sent against a target whose state is not confirmed yet.
-  const [sessionLoad, setSessionLoad] = useState<SessionLoad | null>(null);
-  /** Bumped whenever the extensions dialog installs or saves something: the `/`
-   *  menu reads its sources again, so a new skill is selectable without a reload. */
-  const [extensionsRevision, setExtensionsRevision] = useState(0);
-
-  // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
-  // drawer overlay so core session/project/model navigation stays reachable.
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  // Open session tabs: the tab list is the single record of opened conversations,
-  // in the order they were opened. Closing one closes only the view: the
-  // conversation stays in the sidebar and a running turn keeps streaming into
-  // its own slot.
-  // File-tool records per conversation, as fetched with the session. They are
-  // what the pane reads once a refresh (or a compaction) has taken the tool
-  // results out of the message history.
-  const [artifactRecords, setArtifactRecords] = useState<Record<string, ToolItem[]>>({});
+  const { open: sidebarOpen, setOpen: setSidebarOpen, close: closeSidebar } = useSidebarDrawer();
   const mainRef = useRef<HTMLDivElement>(null);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   // Height of the floating composer: the message stream reserves exactly that
   // much room at its bottom, so a grown input never hides the last reply.
   const [composerHeight, setComposerHeight] = useState(0);
-  // View version: a response is applied only while it still matches, and the
-  // ref is readable at response time by child editors.
-  const openSeqRef = useRef(0);
   const permission = usePermission({
     sessionId: currentId,
     sessionBlocked: sessionLoad !== null,
     viewToken: openSeqRef,
     onError: showToast,
   });
-
-  // Escape closes the mobile drawer. Scoped to when the drawer is open so
-  // the desktop layout and the composer's own Escape (command menu) are
-  // unaffected.
-  useEffect(() => {
-    if (!sidebarOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSidebarOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [sidebarOpen]);
-
-  const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   // Read at approval time, so the callback handed to the stream stays stable
   // while the pane hook below is (re)created with the foreground conversation.
@@ -230,24 +188,6 @@ export default function App() {
     stickyRef.current = sticky;
   }, [sticky]);
 
-  const decideApproval = useCallback(
-    async (item: Extract<Item, { kind: "approval" }>, approve: boolean, always: boolean) => {
-      const mark = (state: ApprovalState) =>
-        setItems((prev) =>
-          prev.map((it) => (it.kind === "approval" && it.id === item.id ? { ...it, state } : it)),
-        );
-      mark(approve ? "approved" : "denied");
-      try {
-        await submitApproval(item.id, approve, always);
-      } catch {
-        // The approval was already resolved (e.g. turn cancelled, timed out or
-        // the user refreshed) — mark it expired instead of reverting to pending.
-        mark("expired");
-      }
-    },
-    [setItems],
-  );
-
   useEffect(() => {
     refreshSessions();
     fetchModels().then(setModels).catch(() => {});
@@ -277,6 +217,20 @@ export default function App() {
   // expression the dependency rule asks for the whole (per-render) object.
   const { closeCmdMenu, dismissMention } = composer;
   const insertDraftText = composer.setInput;
+
+  const messageActions = useMessageActions({
+    drafts,
+    draftKey,
+    currentId,
+    busy,
+    sendBlocked,
+    fieldRef,
+    sticky,
+    insertDraftText,
+    setItems,
+    toast: showToast,
+  });
+  const { decideApproval, continueUnfinished, startEdit } = messageActions;
 
   useEffect(() => {
     refreshArchived();
@@ -318,11 +272,6 @@ export default function App() {
     return map;
   }, [workspaces]);
 
-  const chooseRoot = useCallback((root: string | null) => {
-    ++openSeqRef.current;
-    setChosenRoot(root);
-  }, []);
-
   // A conversation's main directory may move only before its first turn: once
   // one has run, its records, previews and tree report all describe a single
   // directory. The start page's draft holds no session, so it just chooses.
@@ -335,75 +284,8 @@ export default function App() {
       setSecondary(updated.secondary_roots ?? []);
       setProjects(projects);
     },
-    [setProjects, setSessions],
+    [setProjects, setSecondary, setSessions],
   );
-
-  /**
-   * Create the conversation the user just asked for, before anything is sent:
-   * the tab that appears is backed by a real session, so an empty one survives
-   * a refresh and closing it can remove it for good.
-   */
-
-
-  // ---- project row actions (new chat / more menu) ----
-  const [editTarget, setEditTarget] = useState<{ root: string | null; name: string } | null>(null);
-  /** The project whose skills and servers the extensions dialog is editing. */
-  const [extensionTarget, setExtensionTarget] = useState<ExtensionTarget | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
-
-
-  const togglePin = useCallback(
-    async (target: SessionSummary) => {
-      try {
-        await pinSession(target.id, !target.pinned);
-        // The server owns the flag: re-read the list rather than guessing.
-        refreshSessions();
-      } catch (e) {
-        showToast("err", `置顶失败: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    },
-    [refreshSessions, showToast],
-  );
-
-  const restoreArchived = useCallback(
-    async (session: SessionSummary) => {
-      try {
-        await setSessionArchived(session.id, false);
-      } catch (e) {
-        // A failed restore leaves the entry exactly where it was, with the
-        // reason on screen: it must not look like it moved and came back.
-        showToast("err", `恢复会话失败: ${e instanceof Error ? e.message : String(e)}`);
-        return;
-      }
-      setArchived((prev) => prev.filter((x) => x.id !== session.id));
-      refreshSessions();
-    },
-    [refreshSessions, setArchived, showToast],
-  );
-
-  /**
-   * Open the extensions dialog for one project.
-   *
-   * The target is fixed here, at the moment of the click: the dialog then
-   * describes one project's skills and servers even if the view moves on. A
-   * session is carried along only when it really runs in that project — its
-   * connection status says nothing about another project's servers.
-   */
-  const openExtensions = useCallback(
-    (initialTab: ExtensionTarget["initialTab"], root: string | null) => {
-      // Read from the session list rather than the view's own root: a session
-      // whose summary has not loaded yet must not be mistaken for a match.
-      const sameProject = currentSession !== undefined && (currentSession.root ?? null) === root;
-      setExtensionTarget({
-        root,
-        sessionId: sameProject && currentId ? currentId : null,
-        initialTab,
-      });
-    },
-    [currentId, currentSession],
-  );
-
-
 
   // Sidebar sections: directories, pinned conversations, projects, recents.
   const groups = useMemo(
@@ -440,36 +322,8 @@ export default function App() {
   const newSessionLabel = projectLabel(nextSessionRoot);
   // What the empty stage can promise: the directory this draft would run in.
   const draftContext = projectLabel(chosenRoot);
-  const exploration = useMemo(() => {
-    let reads = 0;
-    let searches = 0;
-    for (const item of items) {
-      if (item.kind !== "tool") continue;
-      if (/^(read_file|glob)$/.test(item.name)) reads += 1;
-      if (item.name === "grep") searches += 1;
-    }
-    return { reads, searches };
-  }, [items]);
-  const lastItem = items[items.length - 1];
-  const activeTool = lastItem?.kind === "tool" && !lastItem.done;
-  // Any turn on this page: a model switch rebinds every session, so a
-  // background turn blocks it just as the foreground one does.
-  const anyBusy = useMemo(() => Object.values(activity).some((a) => a.busy), [activity]);
-  const turn = useMemo(() => currentTurn(items), [items]);
-  // Scoped to the current turn (items after the last user message): restored
-  // history approvals must not read as work waiting on the user now.
-  const pendingApprovals = useMemo(
-    () =>
-      turn.filter(
-        (it): it is Extract<Item, { kind: "approval" }> =>
-          it.kind === "approval" && it.state === "pending",
-      ),
-    [turn],
-  );
-  const pendingApproval = pendingApprovals.length > 0;
-  // Turns are counted by user messages: a choice made in one turn must not
-  // carry over to the next.
-  const turnNo = useMemo(() => items.filter((it) => it.kind === "user").length, [items]);
+  const transcript = useTranscriptView(items, activity);
+  const { exploration, activeTool, anyBusy, turn, turnNo, pendingApproval } = transcript;
   // The pane covers the stream once the chat area gets narrow. Measured from
   // the element the CSS container query measures, so the two agree; a narrow
   // pane must not open on its own, since it would hide the reply it describes.
@@ -543,131 +397,33 @@ export default function App() {
     confirmDeleteSession,
     confirmRemoveProject,
   } = lifecycle;
-  const setRemoveTarget = lifecycle.setRemoveTarget;
-
-  const newChatInProject = useCallback(
-    (root: string | null) => {
-      // This row's project is the requested one, whatever is on screen now.
-      void createAndOpen(root);
-    },
-    [createAndOpen],
-  );
-
-  const runProjectAction = useCallback(
-    async (root: string | null, action: ProjectAction) => {
-      try {
-        if (action === "edit") {
-          const proj = root ? projectMeta.get(root) : projectMeta.get(null);
-          setEditTarget({ root, name: proj?.name ?? (root ? basename(root) : DEFAULT_PROJECT) });
-        } else if (action === "extensions") {
-          // The project whose row was acted on, not whatever is on screen.
-          openExtensions("skills", root);
-        } else if (action === "pin" || action === "unpin") {
-          const r = await pinProject(root, action === "pin");
-          setProjects(r.projects);
-          refreshSessions();
-          showToast("ok", action === "pin" ? "已置顶" : "已取消置顶");
-        } else if (action === "reveal") {
-          const r = await revealInFinder(root);
-          if (!r.ok) showToast("err", r.error ?? "无法打开目录");
-        } else if (action === "worktree") {
-          if (!root) {
-            showToast("err", "默认项目没有目录");
-            return;
-          }
-          const r = await createWorktree(root);
-          setProjects(r.projects);
-          refreshSessions();
-          if (r.warnings?.length) {
-            showToast("err", `工作树已创建，但有提示：${r.warnings.join("；")}`);
-          } else {
-            showToast("ok", `已创建永久工作树 ${r.name ?? ""}`);
-          }
-        } else if (action === "archive") {
-          const r = await archiveProjectChats(root);
-          refreshSessions();
-          refreshArchived();
-          showToast("ok", `已归档 ${r.archived_sessions} 条聊天`);
-        } else if (action === "remove") {
-          setRemoveTarget({ root, count: sessions.filter((s) => (s.root ?? null) === root).length });
-        }
-      } catch (e) {
-        showToast("err", e instanceof Error ? e.message : String(e));
-      }
-    },
-    [
-      openExtensions,
-      projectMeta,
-      refreshSessions,
-      refreshArchived,
-      sessions,
-      setEditTarget,
-      setProjects,
-      setRemoveTarget,
-      showToast,
-    ],
-  );
+  const projects = useProjectActions({
+    projectMeta,
+    sessions,
+    setProjects,
+    setArchived,
+    refreshSessions,
+    refreshArchived,
+    currentSession,
+    currentId,
+    createAndOpen,
+    setRemoveTarget: lifecycle.setRemoveTarget,
+    toast: showToast,
+  });
+  const {
+    editTarget,
+    extensionTarget,
+    showArchived,
+    newChatInProject,
+    togglePin,
+    restoreArchived,
+    openExtensions,
+    runProjectAction,
+  } = projects;
 
   // The centred first-run stage replaces the stream until a conversation has
   // something to show; a load in progress is never masked by it.
   const isEmptyStage = items.length === 0 && sessionLoad === null;
-
-  /**
-   * The one way a message leaves the composer.
-   *
-   * Enter and the send button both come through here. An edit rewrites the
-   * branch it was opened from, so a second path that called ``send()`` on its
-   * own would append a new turn beside the very message the user was editing —
-   * which is exactly what the retract arrow promised to replace.
-   */
-  /**
-   * A continuation the user has to agree to: the prompt goes into the composer
-   * and nothing is sent. What the interrupted turn already did is still on
-   * disk, so the message tells the model to look before it acts.
-   */
-  const continueUnfinished = useCallback(() => {
-    // Never overwrite what the user is writing: the draft is theirs.
-    if (!drafts.get(draftKey).text.trim()) insertDraftText(CONTINUE_PROMPT);
-    fieldRef.current?.focus();
-    sticky.stick();
-  }, [drafts, draftKey, insertDraftText, sticky]);
-
-  /**
-   * Send one earlier message back to the composer.
-   *
-   * The revision is read from the server right now rather than kept from the
-   * last load: an edit has to name the conversation as it is, and the view's
-   * copy can be older than the last turn it streamed. A failed read leaves the
-   * draft alone and explains itself — editing a conversation the server has
-   * moved past would either be refused or, worse, replace the wrong turn.
-   */
-  const startEdit = useCallback(
-    (item: UserItem) => {
-      if (busy || sendBlocked || currentId === null) return;
-      const key = draftKey;
-      // The command this message was sent with, taken from the message itself:
-      // the id the server recorded, and the name its own first token writes.
-      // Whatever the composer happens to be holding is not this message's.
-      const name = commandNameIn(item.text);
-      const command = item.commandId && name ? { id: item.commandId, name } : null;
-      fetchSession(currentId)
-        .then((detail) => {
-          if (detail.revision === undefined) return;
-          drafts.startEdit(key, {
-            turnId: item.turnId ?? "",
-            revision: detail.revision,
-            command,
-            text: item.text,
-          });
-          fieldRef.current?.focus();
-          sticky.stick();
-        })
-        .catch((e: unknown) => {
-          showToast("err", `无法开始编辑: ${e instanceof Error ? e.message : String(e)}`);
-        });
-    },
-    [busy, currentId, draftKey, drafts, sendBlocked, showToast, sticky],
-  );
 
   // One composer, two placements: the centred first-run card, or docked over
   // the message stream. Only one of them is mounted at a time.
@@ -776,7 +532,7 @@ export default function App() {
         onSetSecondary={setSecondary}
         onProjects={setProjects}
         onSessionWorkspace={sessionWorkspaceChanged}
-        onToggleArchived={() => setShowArchived(!showArchived)}
+        onToggleArchived={projects.toggleArchived}
         onTogglePin={togglePin}
         onDeleteSession={lifecycle.setDeleteTarget}
         onRestoreSession={restoreArchived}
@@ -904,6 +660,12 @@ export default function App() {
             permission.setConfirming(false);
             void permission.change("allow-all", true);
           }}
+          deleteTarget={lifecycle.deleteTarget}
+          onCancelDelete={() => lifecycle.setDeleteTarget(null)}
+          onConfirmDelete={confirmDeleteSession}
+          removeTarget={lifecycle.removeTarget}
+          onCancelRemove={() => lifecycle.setRemoveTarget(null)}
+          onConfirmRemove={confirmRemoveProject}
         />
         {extensionTarget && (
           <ExtensionsSettings
@@ -913,7 +675,7 @@ export default function App() {
             {...extensionTarget}
             projectName={projectLabel(extensionTarget.root)}
             projectPath={extensionTarget.root ?? workspaces.default ?? null}
-            onClose={() => setExtensionTarget(null)}
+            onClose={() => projects.setExtensionTarget(null)}
             onChanged={() => setExtensionsRevision((n) => n + 1)}
             onToast={showToast}
           />
@@ -924,57 +686,12 @@ export default function App() {
             target={editTarget}
             secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
             viewTokenRef={openSeqRef}
-            onClose={() => setEditTarget(null)}
+            onClose={() => projects.setEditTarget(null)}
             onProjects={setProjects}
             onSaved={() => showToast("ok", "已保存项目设置")}
             onError={(msg) => showToast("err", msg)}
             onSessionsChanged={refreshSessions}
           />
-        )}
-        {lifecycle.deleteTarget && (
-          <Modal
-            open={Boolean(lifecycle.deleteTarget)}
-            onClose={() => lifecycle.setDeleteTarget(null)}
-            title="删除会话"
-            variant="project-remove-modal"
-            actions={
-              <>
-                <button type="button" className="modal-cancel" onClick={() => lifecycle.setDeleteTarget(null)}>
-                  取消
-                </button>
-                <button type="button" className="danger" onClick={confirmDeleteSession}>
-                  确认删除
-                </button>
-              </>
-            }
-          >
-            <p className="modal-desc">
-              将永久删除「{lifecycle.deleteTarget.title}」及其全部消息（不可恢复）。
-            </p>
-          </Modal>
-        )}
-        {lifecycle.removeTarget && (
-          <Modal
-            open={Boolean(lifecycle.removeTarget)}
-            onClose={() => lifecycle.setRemoveTarget(null)}
-            title="移除项目"
-            variant="project-remove-modal"
-            actions={
-              <>
-                <button type="button" className="modal-cancel" onClick={() => lifecycle.setRemoveTarget(null)}>
-                  取消
-                </button>
-                <button type="button" className="danger" onClick={confirmRemoveProject}>
-                  确认移除
-                </button>
-              </>
-            }
-          >
-            <p className="modal-desc">
-              将删除「{lifecycle.removeTarget.root ? basename(lifecycle.removeTarget.root) : DEFAULT_PROJECT}」的绑定，
-              并删除其下 {lifecycle.removeTarget.count} 条会话（不可恢复）。
-            </p>
-          </Modal>
         )}
       </main>
     </div>
