@@ -1110,21 +1110,21 @@ export default function App() {
   }, [items]);
   const lastItem = items[items.length - 1];
   const activeTool = lastItem?.kind === "tool" && !lastItem.done;
-  // Scoped to the current turn (items after the last user message): restored
-  // history approvals must not read as work waiting on the user now.
-  const pendingApprovals = useMemo(
-    () =>
-      currentTurn(items).filter(
-        (it): it is Extract<Item, { kind: "approval" }> =>
-          it.kind === "approval" && it.state === "pending",
-      ),
-    [items],
-  );
-  const pendingApproval = pendingApprovals.length > 0;
   // Any turn on this page: a model switch rebinds every session, so a
   // background turn blocks it just as the foreground one does.
   const anyBusy = useMemo(() => Object.values(activity).some((a) => a.busy), [activity]);
   const turn = useMemo(() => currentTurn(items), [items]);
+  // Scoped to the current turn (items after the last user message): restored
+  // history approvals must not read as work waiting on the user now.
+  const pendingApprovals = useMemo(
+    () =>
+      turn.filter(
+        (it): it is Extract<Item, { kind: "approval" }> =>
+          it.kind === "approval" && it.state === "pending",
+      ),
+    [turn],
+  );
+  const pendingApproval = pendingApprovals.length > 0;
   // Turns are counted by user messages: a choice made in one turn must not
   // carry over to the next.
   const turnNo = useMemo(() => items.filter((it) => it.kind === "user").length, [items]);
