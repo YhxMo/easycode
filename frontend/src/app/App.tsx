@@ -55,7 +55,7 @@ import { Modal } from "../components/Modal";
 import { ChatMessages } from "../features/chat/ChatMessages";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { ComposerBar } from "../features/composer/ComposerBar";
-import { RightPane, type PaneSection } from "../features/pane/RightPane";
+import { RightPane } from "../features/pane/RightPane";
 import { EmptyState } from "../features/chat/EmptyState";
 import { LoadingState } from "../components/primitives/LoadingState";
 import { TabBar, type OpenTab } from "../features/sidebar/TabBar";
@@ -85,27 +85,16 @@ import type { StickToBottom } from "../lib/useStickToBottom";
 import type { ProjectAction } from "../features/sidebar/ProjectMenu";
 import { basename, DEFAULT_PROJECT } from "../lib/paths";
 import { SecondaryEditor } from "../features/sidebar/SecondaryEditor";
-
-const EMPTY_MODELS: ModelsInfo = { default: "", models: {}, providers: {}, limits: {} };
-
-/**
- * Chat width at which the pane covers the stream instead of sharing the row.
- * Mirrors the `@container` rule for `.right-pane` in styles.css: keeping the
- * conversation at least 560px wide is what both numbers express.
- */
-const NARROW_CHAT_PX = 950;
-
-/** Offered after a turn the server ended on purpose; filled in, never sent. */
-const CONTINUE_PROMPT =
-  "继续完成上一轮未完成的任务。先核对工作区里已经发生的改动和任务清单，再决定下一步。";
-
-/** Right-hand pane sections; phase 4 fills their bodies. */
-const PANE_SECTIONS: PaneSection[] = [
-  { id: "tasks", label: "任务" },
-  { id: "context", label: "上下文" },
-  { id: "changes", label: "变更" },
-  { id: "file", label: "文件" },
-];
+import {
+  CONTINUE_PROMPT,
+  CURRENT_TAB_KEY,
+  EMPTY_MODELS,
+  NARROW_CHAT_PX,
+  PANE_SECTIONS,
+  readStoredCurrentTab,
+  readStoredTabs,
+} from "./constants";
+import { useToast } from "./useToast";
 
 /** Foreground session load phase; null means ready. */
 type SessionLoad = { status: "loading" } | { status: "error"; message: string };
@@ -126,31 +115,6 @@ interface PaneState {
    * work, which outlives the turn that produced it. Collapsed until opened.
    */
   changesOpen?: boolean;
-}
-
-/** Restore the stored tab list: strings only, de-duplicated, never fatal. */
-function readStoredTabs(): string[] {
-  try {
-    const saved = window.localStorage.getItem("easycode:open_tabs");
-    if (!saved) return [];
-    const parsed: unknown = JSON.parse(saved);
-    if (!Array.isArray(parsed)) return [];
-    return [...new Set(parsed.filter((v): v is string => typeof v === "string" && v !== ""))];
-  } catch {
-    // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
-    return [];
-  }
-}
-
-/** The conversation that was on screen, so a refresh comes back to it. */
-const CURRENT_TAB_KEY = "easycode:current_tab";
-
-function readStoredCurrentTab(): string | null {
-  try {
-    return window.localStorage.getItem(CURRENT_TAB_KEY) || null;
-  } catch {
-    return null;
-  }
 }
 
 /** One user message, as the transcript holds it. */
@@ -649,18 +613,11 @@ export default function App() {
   }, [currentId]);
 
   // ---- toast (shared by openSession failure + project actions) ----
-  const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const toastTimer = useRef<number | null>(null);
+  const [toast, showToast] = useToast();
 
   // ---- sidebar collapse state (sections + project groups, in localStorage) ----
   const [collapsedProjects, toggleProjectCollapsed] = usePersistedFlags("easycode:collapsed_projects");
   const [collapsedSections, toggleSection] = usePersistedFlags("easycode:collapsed_sections");
-
-  const showToast = useCallback((kind: "ok" | "err", text: string) => {
-    setToast({ kind, text });
-    if (toastTimer.current) window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 3500);
-  }, []);
 
   const openSession = useCallback(
     async (id: string | null) => {
