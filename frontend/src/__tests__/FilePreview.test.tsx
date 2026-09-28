@@ -59,3 +59,28 @@ describe("FilePreview", () => {
     );
   });
 });
+
+describe("FilePreview · 行号", () => {
+  const ready = (text: string) =>
+    vi.spyOn(api, "fetchFileContent").mockResolvedValue({
+      path: "a.txt",
+      text,
+      start_line: 1,
+      total_lines: 1,
+      truncated: false,
+    });
+
+  it("末尾换行渲染成多出来的一个空行", async () => {
+    // The preview shows the file as it is, trailing newline included, so the
+    // last line number matches the file's own line count.
+    ready("a\nb\n");
+    render(<FilePreview key={"s1:a.txt"} sessionId="s1" path="a.txt" onBack={() => {}} />);
+    await screen.findByText("a");
+    const lines = Array.from(document.querySelectorAll(".file-preview-body .code-line"));
+    expect(lines.map((l) => l.querySelector(".code-text")?.textContent)).toEqual([
+      "a",
+      "b",
+      " ",
+    ]);
+  });
+});

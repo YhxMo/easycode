@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { DiffView } from "./DiffView";
+import { NumberedLines } from "./NumberedLines";
 
 const DIFF_START = /^(?:diff --git|--- |\+\+\+ |@@ )/m;
 
@@ -21,7 +22,6 @@ export function CodeBlock({ code, lang, path }: Props) {
   const isDiff = looksLikeDiff(code, lang);
   const [diffMode, setDiffMode] = useState(isDiff);
   const [copied, setCopied] = useState(false);
-  const lines = code.replace(/\n$/, "").split("\n");
 
   const copy = () => {
     const write = navigator.clipboard?.writeText(code);
@@ -72,14 +72,7 @@ export function CodeBlock({ code, lang, path }: Props) {
         <DiffView diff={code} path={path} />
       ) : (
         <pre className="code-body">
-          {lines.map((line, index) => (
-            <span key={index} className="code-line">
-              <span className="code-gutter" aria-hidden="true">
-                {index + 1}
-              </span>
-              <span className="code-text">{line || " "}</span>
-            </span>
-          ))}
+          <NumberedLines lines={code.replace(/\n$/, "").split("\n")} />
         </pre>
       )}
     </div>

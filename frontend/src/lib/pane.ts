@@ -120,6 +120,9 @@ function errorText(data: Record<string, unknown> | null, raw: string | undefined
   return str(data?.message) || raw || "工具执行失败";
 }
 
+/** The tools this pane has a card for; every other result is left unparsed. */
+const PANE_TOOLS = new Set(["write_file", "edit_file", "read_file", "grep", "glob"]);
+
 /**
  * Read/search calls become context cards; edits become change cards.
  *
@@ -134,8 +137,11 @@ export function paneData(turn: Item[], opts: { fullAccess?: boolean } = {}): Pan
   const changes: ChangeCard[] = [];
   for (const item of turn) {
     if (item.kind !== "tool") continue;
-    // A call that has not answered has produced nothing to show.
+    // A call that has not answered has produced nothing to show, and results
+    // from other tools (shell, MCP, delegation) never become cards here — so
+    // they must not pay for a JSON parse on every render either.
     if (!item.done || item.result === undefined) continue;
+    if (!PANE_TOOLS.has(item.name)) continue;
     const data = parseResult(item.result);
     if (item.name === "write_file" || item.name === "edit_file") {
       const diff = str(data?.diff);

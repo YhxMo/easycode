@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_HITS,
   fileRows,
@@ -9,7 +9,18 @@ import {
 } from "../lib/pane";
 import type { GitFileState } from "../api";
 import type { Item, ToolItem } from "../types";
+import type { Mock } from "vitest";
 import fixtures from "./fixtures/toolResults.json";
+
+// ``paneData`` runs on every render of the activity pane, so it must not pay
+// for a JSON parse on results it has no card for. Counting the parse is the
+// only way to see that from the outside — the cards themselves look identical.
+vi.mock("../lib/toolResult", async (orig) => {
+  const mod = await orig<typeof import("../lib/toolResult")>();
+  return { ...mod, parseResult: vi.fn(mod.parseResult) };
+});
+const parseCounter = async () =>
+  (await import("../lib/toolResult")).parseResult as unknown as ReturnType<typeof vi.fn>;
 
 // The samples come from the real Python tools; tests/test_tool_result_contract.py
 // regenerates them and fails when the shapes drift, so these cards assert
@@ -376,5 +387,46 @@ describe("会话记录与实时改动", () => {
     expect(gitStateLabel({ ...base, staged: "M", unstaged: "M" })).toBe("已暂存修改 · 未暂存修改");
     expect(gitStateLabel({ ...base, staged: "A" })).toBe("已暂存新增");
     expect(gitStateLabel(base)).toBe("已修改");
+  });
+});
+
+describe("paneData · 只解析自己有卡片的工具", () => {
+  it("其他工具的结果既不进面板，也不做 JSON 解析", async () => {
+    const counted = await parseCounter();
+    counted.mockClear();
+
+    const fileTools = [
+      tool("1", "read_file", { path: "src/app.ts" }, readOk),
+      tool("2", "grep", { pattern: "export" }, grepOk),
+      tool("3", "glob", { pattern: "*.md" }, globOk),
+      tool("4", "edit_file", { path: "src/app.ts" }, editApplied),
+    ];
+    const others = [
+      tool("5", "execute_shell", { command: "ls" }, JSON.stringify({ status: "ok", stdout: "x" })),
+      tool("6", "mcp__x__y", {}, "plain text"),
+      tool("7", "task", { prompt: "go" }, JSON.stringify({ status: "ok", message: "done" })),
+    ];
+
+    const withoutOthers = paneData(fileTools);
+    expect(counted.mock.calls).toHaveLength(fileTools.length);
+
+    counted.mockClear();
+    const withOthers = paneData([...fileTools, ...others]);
+
+    // The extra results change nothing about what the pane shows...
+    expect(withOthers).toEqual(withoutOthers);
+    // ...and they are never parsed: each file tool costs exactly one parse.
+    expect(counted.mock.calls).toHaveLength(fileTools.length);
+  });
+
+  it("未完成与未返回结果的调用不解析", async () => {
+    const counted = await parseCounter();
+    counted.mockClear();
+    paneData([
+      tool("1", "read_file", { path: "a.ts" }, undefined, false),
+      tool("2", "read_file", { path: "b.ts" }, undefined, true),
+    ]);
+    const mock = counted as unknown as Mock;
+    expect(mock).not.toHaveBeenCalled();
   });
 });

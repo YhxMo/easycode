@@ -53,3 +53,48 @@ describe("DiffView", () => {
     expect(document.querySelector(".diff-line.hunk")).toBeTruthy();
   });
 });
+
+describe("CodeBlock · 行号与空行", () => {
+  const lineTexts = () =>
+    Array.from(document.querySelectorAll(".code-line")).map(
+      (line) => line.querySelector(".code-text")?.textContent,
+    );
+
+  it("空字符串仍是一行，空行用空格占位", () => {
+    render(<CodeBlock code="" />);
+    expect(lineTexts()).toEqual([" "]);
+  });
+
+  it("末尾的一个换行不算额外的一行", () => {
+    render(<CodeBlock code={"a\nb\n"} />);
+    expect(lineTexts()).toEqual(["a", "b"]);
+  });
+
+  it("末尾两个换行会多出一个空行", () => {
+    render(<CodeBlock code={"a\nb\n\n"} />);
+    expect(lineTexts()).toEqual(["a", "b", " "]);
+  });
+
+  it("中间的空行照样占一行，行号连续", () => {
+    render(<CodeBlock code={"a\n\nb"} />);
+    expect(lineTexts()).toEqual(["a", " ", "b"]);
+    expect(
+      Array.from(document.querySelectorAll(".code-gutter")).map((g) => g.textContent),
+    ).toEqual(["1", "2", "3"]);
+  });
+
+  it("按 Diff 渲染时不算源码的行", () => {
+    render(<CodeBlock code={PATCH} lang="diff" />);
+    expect(document.querySelector(".code-body")).toBeNull();
+    expect(document.querySelectorAll(".code-line")).toHaveLength(0);
+  });
+
+  it("复制的是原始文本，不是去掉了末尾换行的显示文本", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<CodeBlock code={"a\n"} />);
+    await user.click(screen.getByRole("button", { name: "复制代码" }));
+    expect(writeText).toHaveBeenCalledWith("a\n");
+  });
+});

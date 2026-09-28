@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchFileContent } from "../../api";
+import { NumberedLines } from "./NumberedLines";
 
 type State =
   | { status: "loading" }
@@ -59,14 +60,7 @@ export function FilePreview({ sessionId, path, onBack }: Props) {
       {state.status === "ready" && (
         <>
           <pre className="code-body file-preview-body">
-            {state.text.split("\n").map((line, index) => (
-              <span key={index} className="code-line">
-                <span className="code-gutter" aria-hidden="true">
-                  {index + 1}
-                </span>
-                <span className="code-text">{line || " "}</span>
-              </span>
-            ))}
+            <NumberedLines lines={state.text.split("\n")} />
           </pre>
           {state.truncated && <p className="pane-empty">文件较大，仅显示开头部分。</p>}
         </>

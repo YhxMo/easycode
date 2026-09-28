@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThinkingTrace } from "../components/primitives/ThinkingTrace";
 import { traceOf, toolStep } from "../lib/trace";
 import type { Item } from "../types";
@@ -69,5 +69,48 @@ describe("ThinkingTrace · 展开后的结果", () => {
     await expand(user);
     expect(container.querySelector(".trace-step.error")).toBeTruthy();
     expect(screen.getByText("no such file")).toBeTruthy();
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("ThinkingTrace · 只为最终分支格式化", () => {
+  const expand = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole("button", { name: /展开工具调用/ }));
+    await user.click(screen.getAllByRole("button", { expanded: false })[0]);
+  };
+
+  it("补丁结果不经过 JSON 缩进", async () => {
+    const user = userEvent.setup();
+    const stringify = vi.spyOn(JSON, "stringify");
+    const raw = JSON.stringify({
+      status: "ok",
+      path: "src/a.ts",
+      diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b",
+    });
+    stringify.mockClear();
+
+    render(<ThinkingTrace trace={traceOf([tool("1", "edit_file", { path: "src/a.ts" }, raw)])} />);
+    await expand(user);
+
+    expect(document.querySelector(".diff-body")).toBeTruthy();
+    // Pretty-printing is `stringify(v, null, 2)`; other parts of the tree may
+    // still stringify for their own reasons, so assert on that exact form.
+    const prettyPrinted = stringify.mock.calls.some((call) => call[2] === 2);
+    expect(prettyPrinted).toBe(false);
+  });
+
+  it("对象结果仍然缩进显示", async () => {
+    const user = userEvent.setup();
+    const stringify = vi.spyOn(JSON, "stringify");
+    const raw = JSON.stringify({ status: "ok", path: "a.ts" });
+    stringify.mockClear();
+
+    render(<ThinkingTrace trace={traceOf([tool("1", "read_file", { path: "a.ts" }, raw)])} />);
+    await expand(user);
+
+    expect(stringify).toHaveBeenCalled();
   });
 });

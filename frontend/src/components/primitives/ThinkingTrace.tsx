@@ -20,22 +20,29 @@ function StatusIcon({ status }: { status: TraceStep["status"] }) {
   );
 }
 
+/** The indented payload, built only when this is the branch that renders. */
+function PrettyResult({
+  parsed,
+  raw,
+}: {
+  parsed: Record<string, unknown> | null;
+  raw: string;
+}) {
+  return <pre className="step-result">{parsed ? JSON.stringify(parsed, null, 2) : raw}</pre>;
+}
+
 /** A tool result, rendered as a patch, a payload body, or plain text. */
 function StepResult({ step }: { step: TraceStep }) {
-  // Parsed and indented only while expanded: a collapsed step never pays for it.
+  // Parsed only while expanded: a collapsed step never pays for it.
   const raw = step.raw ?? "";
   const parsed = useMemo(() => parseResult(raw), [raw]);
-  const pretty = useMemo(
-    () => (parsed ? JSON.stringify(parsed, null, 2) : raw),
-    [parsed, raw],
-  );
   const diff = str(parsed?.diff);
   if (diff) {
     return <DiffView path={str(parsed?.path) || undefined} diff={diff} />;
   }
   const message = str(parsed?.message) && !parsed?.content ? str(parsed?.message) : "";
   if (message) return <pre className="step-result">{message}</pre>;
-  return <pre className="step-result">{pretty}</pre>;
+  return <PrettyResult parsed={parsed} raw={raw} />;
 }
 
 function StepRow({ step }: { step: TraceStep }) {
