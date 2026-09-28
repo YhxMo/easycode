@@ -510,7 +510,6 @@ def glob(
                 if (
                     p.is_file()
                     and not _is_skipped(p, r, skip_dirs)
-                    and not _is_meta(p)
                     and not scope.is_protected(p)
                 ):
                     record(p, r)

@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from easycode.config import Config
-from easycode.skills import SkillRegistry
+from easycode.skills import MCP_COMMAND_PREFIX, SkillRegistry
 from easycode.web.bridge import (
     ApprovalBroker,
     approval_required_sse,
@@ -29,9 +29,6 @@ from easycode.web.session import Session, SessionStore
 from easycode.workspace import resolve_workspace_path, root_error
 
 log = logging.getLogger("easycode.web.chat")
-
-#: Reserved for the Web's MCP command syntax (``/mcp:<service> <task>``).
-MCP_COMMAND_PREFIX = "mcp:"
 
 
 @dataclass(frozen=True)
@@ -495,9 +492,16 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             )
 
         def _resolve_input(
-            text: str, command_id: str | None, roots: list[Path]
+            text: str,
+            command_id: str | None,
+            roots: list[Path],
+            skills: SkillRegistry | None = None,
         ) -> ResolvedChatInput:
-            """The model's text for ``text``, and what this message is recorded as."""
+            """The model's text for ``text``, and what this message is recorded as.
+
+            ``skills`` lets the locked path hand over the registry it just
+            refreshed instead of discovering the same directories again.
+            """
             stripped = text.strip()
             if stripped.startswith(f"/{MCP_COMMAND_PREFIX}"):
                 # The prefix is the Web's way of asking for one service, whether
@@ -513,7 +517,8 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                     model_input=_expand_by_id(command_id, text, cfg, store),
                     command_id=command_id,
                 )
-            skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
+            if skills is None and cfg.skills_enabled:
+                skills = SkillRegistry.discover(roots)
             return ResolvedChatInput(
                 model_input=_expand_command(stripped, roots, skills), command_id=command_id
             )
@@ -600,7 +605,12 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 # failure here changes nothing (no turn, no branch, no prompt).
                 try:
                     sess.agent.rediscover_extensions(with_skills=cfg.skills_enabled)
-                    resolved = _resolve_input(raw_message, command_id, _session_roots(sess, cfg))
+                    resolved = _resolve_input(
+                        raw_message,
+                        command_id,
+                        _session_roots(sess, cfg),
+                        skills=sess.agent.skills,
+                    )
                 except HTTPException as exc:
                     yield event_to_sse(
                         {"type": "error", "error": str(exc.detail), "code": "command_error"}

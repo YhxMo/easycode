@@ -31,17 +31,6 @@ CREDENTIALS_FILENAME = "mcp-credentials.json"
 #: Kinds of secret a record can hold.
 KINDS = ("env", "header", "bearer", "oauth")
 
-OAUTH_CREDENTIAL_FIELDS = (
-    "access_token",
-    "refresh_token",
-    "expires_at",
-    "scope",
-    "token_type",
-    "client_id",
-    "client_secret",
-    "client_metadata_url",
-)
-
 
 def credentials_path() -> Path:
     return data_home() / CREDENTIALS_FILENAME

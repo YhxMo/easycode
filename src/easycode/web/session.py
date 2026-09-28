@@ -318,8 +318,7 @@ class Session:
         """The conversation as the transcript reads it, plus the current revision."""
         from easycode.web.turns import project_detail, turn_statuses
 
-        running = self.turns[-1].get("id") if self.turns and self.running else None
-        out = project_detail(self.turns, self.history_base, running_turn=running)
+        out = project_detail(self.turns, self.history_base)
         out["revision"] = self.revision
         out["turn_status"] = turn_statuses(self.turns)
         return out

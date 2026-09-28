@@ -470,3 +470,53 @@ def test_secondary_roots_explicit_empty_vs_inherited(tmp_path, monkeypatch):
         )
         explicit = [s for s in store.list() if s.title == "explicit"][0]
         assert explicit.secondary_roots == []
+
+
+def test_discovery_keeps_priority_and_file_order(tmp_path):
+    """`discover_templates` reads through the same helpers the menu uses.
+
+    One project template and one personal template share a name, a reserved
+    name is refused, and the project's copy is what resolves.
+    """
+    user_cmds = tmp_path / "user_cmds"
+    proj_cmds = tmp_path / "proj" / ".easycode" / "commands"
+    user_cmds.mkdir(parents=True)
+    proj_cmds.mkdir(parents=True)
+
+    def template(path, description, body):
+        path.write_text(
+            f"---\ndescription: {description}\n---\n{body}\n", encoding="utf-8"
+        )
+
+    template(user_cmds / "shared.md", "personal", "personal body")
+    template(proj_cmds / "shared.md", "project", "project body")
+    template(user_cmds / "help.md", "reserved name", "must not register")
+    template(proj_cmds / "only-project.md", "project only", "project body")
+
+    reg = CommandRegistry()
+    reg.register(Command(name="help", description="Help", kind="builtin"))
+    reg.discover_templates([tmp_path / "proj"], user_dir=user_cmds)
+
+    assert reg.get("shared").description == "project"
+    assert reg.get("help").kind == "builtin"
+    # Filenames name the commands when the frontmatter does not.
+    assert reg.get("only-project").expand("") == "project body"
+
+
+def test_a_skill_command_keeps_the_name_over_a_template(tmp_path):
+    """A skill registered before discovery still wins the name."""
+    user_cmds = tmp_path / "user_cmds"
+    user_cmds.mkdir(parents=True)
+    (user_cmds / "lint.md").write_text(
+        "---\ndescription: Template lint\n---\nTemplate body\n", encoding="utf-8"
+    )
+
+    reg = CommandRegistry()
+    reg.add_skill_commands(
+        SkillRegistry({"lint": Skill(name="lint", description="Skill lint", body="Skill body")})
+    )
+    reg.discover_templates([], user_dir=user_cmds)
+
+    cmd = reg.get("lint")
+    assert cmd is not None
+    assert cmd.kind == "skill"

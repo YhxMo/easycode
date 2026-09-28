@@ -83,13 +83,16 @@ def register_skills(app: FastAPI, cfg: Config, store: SessionStore) -> None:
     def _snapshot(project_root: str) -> dict[str, Any]:
         errors: list[str] = []
         found: list[tuple[Skill, str]] = []
+        # The same precedence agents use — project overrides personal, later
+        # roots override earlier ones — but resolved from the loadables already
+        # in hand, so one request reads each SKILL.md once.
+        roots = _roots(project_root)
         found += _collect(personal_skills_dir(), "user", errors)
-        for root in _roots(project_root):
+        for root in roots:
             found += _collect(project_skills_dir(root), "project", errors)
-        # The same order the agents use, so ``effective`` cannot drift from what
-        # a conversation would actually load.
-        registry = SkillRegistry.discover(_roots(project_root))
-        effective = {s.name: s for s in registry.list()}
+        effective: dict[str, Skill] = {}
+        for skill, _scope in found:
+            effective[skill.name] = skill
         skills = [_view(skill, scope, effective) for skill, scope in found]
         skills.sort(key=lambda row: (row["name"], row["scope"], row["directory"]))
         return {

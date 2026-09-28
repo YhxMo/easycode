@@ -29,7 +29,6 @@ RUNNING = "running"
 COMPLETED = "completed"
 FAILED = "failed"
 CANCELLED = "cancelled"
-TERMINAL = (COMPLETED, FAILED, CANCELLED)
 
 
 def new_turn_id() -> str:
@@ -81,21 +80,6 @@ class TurnRecord:
             todos_before=copy.deepcopy(list(todos or [])),
         )
 
-    @classmethod
-    def from_dict(cls, data: dict) -> TurnRecord:
-        """Rebuild one persisted turn; a field an old file lacks takes its default."""
-        return cls(
-            id=str(data.get("id") or new_turn_id()),
-            created_at=str(data.get("created_at") or now_iso()),
-            raw_input=str(data.get("raw_input") or ""),
-            model_input=str(data.get("model_input") or data.get("raw_input") or ""),
-            messages=list(data.get("messages") or []),
-            status=str(data.get("status") or COMPLETED),
-            todos_before=list(data.get("todos_before") or []),
-            command_id=data.get("command_id") or None,
-            failures=list(data.get("failures") or []),
-        )
-
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -109,14 +93,6 @@ class TurnRecord:
             "failures": self.failures,
         }
 
-    def record_failure(self, message: str, code: str | None) -> None:
-        """Attach a terminal error to this turn, once."""
-        entry: dict = {"message": message}
-        if code:
-            entry["code"] = code
-        if entry in self.failures:
-            return
-        self.failures.append(entry)
 
 
 class TurnRecorder:
@@ -152,12 +128,7 @@ def _failure_entry(failure: dict) -> dict:
     return out
 
 
-def project_detail(
-    turns: list[dict],
-    history_base: list[dict],
-    *,
-    running_turn: str | None = None,
-) -> dict:
+def project_detail(turns: list[dict], history_base: list[dict]) -> dict:
     """The display projection: every message of the conversation, in order.
 
     ``messages`` is what the transcript renders and its per-message ``turn_id``
@@ -165,9 +136,8 @@ def project_detail(
     the turn it opened, and everything the model did in reply sits after it, so
     the pair survives a reload, a compaction and an edit.
 
-    ``failures`` says what a terminal error was and which turn it ended; a live
-    ``running_turn`` is marked so a reader can tell "still working" from "stopped
-    and left unfinished" while the stream itself is quiet.
+    ``failures`` says what a terminal error was and which turn it ended; whether
+    a turn is still working is the session's own state, not this projection's.
     """
     # The baseline is the model context's own head, and a compaction summary in
     # it is the model's bookkeeping, not something the user said.
@@ -189,15 +159,7 @@ def project_detail(
         if status in (FAILED, CANCELLED):
             for failure in turn.get("failures") or []:
                 failures.append({"turn_id": tid, **_failure_entry(failure)})
-    out: dict[str, Any] = {
-        "messages": messages,
-        "failures": failures,
-        "turn_ids": [str(t.get("id") or "") for t in turns],
-        "revision": None,
-    }
-    if running_turn:
-        out["running_turn"] = running_turn
-    return out
+    return {"messages": messages, "failures": failures}
 
 
 def turn_statuses(turns: list[dict]) -> list[dict]:

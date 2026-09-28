@@ -417,3 +417,85 @@ def client_session(app, store, roots) -> str:
     """An open session in the default project, as the Web UI would have it."""
     sess = store.create(root=str(roots["default"]))
     return sess.id
+
+
+def test_effective_flags_match_what_discovery_resolves(tmp_path):
+    """The panel's ``effective`` must agree with what a conversation loads.
+
+    Three scopes define the same name: the last project root wins, exactly as
+    ``SkillRegistry.discover`` resolves it for an agent running in that project.
+    """
+    from easycode.skills import SkillRegistry
+
+    app, _cfg, _store, roots = build(tmp_path)
+    make_skill(Path.home() / ".easycode" / "skills", "same", "personal copy")
+    make_skill(roots["default"] / ".easycode" / "skills", "same", "primary copy")
+    make_skill(roots["attached"] / ".easycode" / "skills", "same", "secondary copy")
+    client = TestClient(app)
+
+    body = client.get("/api/skills").json()
+
+    panel = {row["scope"] + ":" + row["directory"]: row["effective"] for row in body["skills"]}
+    assert set(panel.values()) == {False, True}
+    loaded = SkillRegistry.discover(
+        [roots["default"], roots["attached"]]
+    ).get("same")
+    winner = [
+        row for row in body["skills"] if row["effective"]
+    ]
+    assert len(winner) == 1
+    # Same directory the agent would load, not merely the same name.
+    assert winner[0]["directory"] == str(loaded.directory)
+
+
+def test_one_panel_request_reads_each_skill_file_once(tmp_path, monkeypatch):
+    """Listing skills must not re-read the same SKILL.md a second time."""
+    app, _cfg, _store, roots = build(tmp_path)
+    make_skill(roots["default"] / ".easycode" / "skills", "alpha")
+    make_skill(roots["default"] / ".easycode" / "skills", "beta")
+    make_skill(Path.home() / ".easycode" / "skills", "gamma")
+    real = routes_skills.load_skill
+    reads: list[Path] = []
+
+    def counted(directory, source):
+        reads.append(Path(directory))
+        return real(directory, source)
+
+    monkeypatch.setattr(routes_skills, "load_skill", counted)
+    TestClient(app).get("/api/skills")
+
+    assert sorted(p.name for p in reads) == ["alpha", "beta", "gamma"]
+
+
+def test_picked_command_does_not_discover_skills_twice(tmp_path, monkeypatch):
+    """The locked path reuses the registry it just refreshed.
+
+    Typed ``/`` text is resolved once before the stream and again inside the
+    session lock. The locked half must expand it against the registry
+    ``rediscover_extensions`` just built, not read every SKILL.md again.
+    """
+    from easycode.skills import SkillRegistry
+
+    app, _cfg, store, roots = build(tmp_path)
+    session_id = client_session(app, store, roots)
+    client = TestClient(app)
+    make_skill(roots["default"] / ".easycode" / "skills", "greet", body="Say hi")
+    real = SkillRegistry.discover
+    seen: list[list[Path]] = []
+
+    def counted(cls, roots_arg, user_dir=None):
+        seen.append(list(roots_arg))
+        return real(roots_arg, user_dir)
+
+    monkeypatch.setattr(SkillRegistry, "discover", classmethod(counted))
+    r = client.post(
+        "/api/chat",
+        json={"session_id": session_id, "message": "/greet 任务"},
+    )
+
+    assert r.status_code == 200, r.text
+    sess = store.get(session_id)
+    assert "Say hi" in sess.agent.provider.calls[-1][-1]["content"]
+    # Pre-request check, then the locked path's refresh. The locked resolve
+    # itself contributes none: it was handed the registry from that refresh.
+    assert len(seen) == 2, seen

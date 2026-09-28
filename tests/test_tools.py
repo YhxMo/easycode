@@ -51,9 +51,13 @@ def test_glob_skips_meta_and_git(reg, tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "f.py").write_text("x")
     (tmp_path / "._junk.py").write_text("x")
+    (tmp_path / ".DS_Store").write_text("x")
     (tmp_path / "keep.py").write_text("x")
     out = _run(reg, "glob", {"pattern": "**/*.py"}, tmp_path)
     assert out["matches"] == ["keep.py"]
+    all_files = _run(reg, "glob", {"pattern": "**/*"}, tmp_path)
+    assert ".DS_Store" not in all_files["matches"]
+    assert "._junk.py" not in all_files["matches"]
 
 
 def test_grep(reg, tmp_path):

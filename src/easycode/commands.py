@@ -158,15 +158,10 @@ class CommandRegistry:
 
     def discover_templates(self, roots: list[Path], user_dir: Path | None = None) -> None:
         """Register user markdown commands (project wins over personal)."""
-        user = user_dir or Path.home() / ".easycode" / "commands"
-        if user.is_dir():
-            for p in sorted(user.glob("*.md")):
-                self._add_template(p, source="user")
-        for root in roots:
-            proj = root / ".easycode" / "commands"
-            if proj.is_dir():
-                for p in sorted(proj.glob("*.md")):
-                    self._add_template(p, source="project")
+        for cmd in personal_commands(user_dir):
+            self._add_command(cmd)
+        for cmd in project_commands(roots):
+            self._add_command(cmd)
 
     def add_skill_commands(self, skills: SkillRegistry) -> None:
         """Expose skills as commands; skills beat templates but not built-ins."""
@@ -175,10 +170,8 @@ class CommandRegistry:
                 continue
             self._commands[skill.name] = skill_command(skill)
 
-    def _add_template(self, path: Path, source: str) -> None:
-        cmd = read_template(path, source)
-        if cmd is None:
-            return
+    def _add_command(self, cmd: Command) -> None:
+        """Register one template, unless a reserved or skill command owns the name."""
         name = cmd.name
         if name in self._reserved:
             return
