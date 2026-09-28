@@ -37,8 +37,8 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 | `src/permissions/` | `policy.py` 权限策略、`approval.py` 审批、`boundary.py` 路径边界与硬保护、`reviewer.py`、`sandbox/` 执行沙箱。 |
 | `src/web/` | FastAPI 应用与 `routes/`（chat、files、mcp、models、sessions、skills、workspaces）、会话存储（`session.py`、`store.py`、`persistence.py`、`locks.py`）、SSE 事件桥接 `bridge.py`、面板读取的文件工具记录 `artifacts.py`、工作区 Git 状态 `git.py`、项目绑定 `projects.py`、`/` 菜单输入 `chat_input.py`。 |
 | `src/extensions/` | 从 markdown 或配置发现的扩展：Skill 与模板（`skills.py`、`skill_import.py`、`commands.py`）、子 Agent 规格 `subagents.py`，以及 `mcp/` 下的配置、凭据、连接与会话管理。 |
-| `frontend/src/app/` | 界面外壳：`App.tsx` 组合 hook 并布局，`useSessionLifecycle.ts` 管会话的打开/关闭/删除，另有标签页、会话列表、权限、抽屉、项目动作、消息动作、回合派生与会话状态各自的 hook。 |
-| `frontend/src/features/`、`components/`、`lib/` | 按功能分目录：`chat/` 消息流与流状态、`composer/` 输入框与草稿及两个菜单、`pane/` 右侧面板、`sidebar/`、`models/`（`ModelPicker` 菜单与 `ModelDialog` 表单）、`extensions/`（扩展弹窗、MCP 表单与 Skills 面板）；`components/`、`lib/` 放跨功能组件、纯函数与共享 hook。 |
+| `frontend/src/app/` | 界面外壳：`App.tsx` 组合 hook 并布局，`useSessionLifecycle.ts` 管会话的打开/关闭/删除，另有标签页、会话列表、项目派生、聊天区测量、权限、抽屉、项目动作、消息动作、回合派生与会话状态各自的 hook。 |
+| `frontend/src/features/`、`components/`、`lib/` | 按功能分目录：`chat/` 消息流与流状态、`composer/` 输入框（`Composer` 接线、`useComposer` 状态）与草稿及两个菜单、`pane/` 右侧面板、`sidebar/`、`models/`（`ModelPicker` 菜单与 `ModelDialog` 表单）、`extensions/`（扩展弹窗、MCP 表单与 Skills 面板）；`components/`、`lib/` 放跨功能组件、纯函数与共享 hook。 |
 | `frontend/src/styles.css`、`styles/` | 入口只留 `@import`（顺序即级联顺序）；`tokens.css` 存令牌与基础规则，其余每份对应一个区域（layout、tabs、pane、sidebar、models、permission、messages、markdown、composer、menus、modal、extensions、toast、mobile）。 |
 | `tests/`、`frontend/src/__tests__/` | 后端和前端测试。 |
 | `examples/task-list/` | 浏览器验收用的零依赖示例（原生 HTML/CSS/JS）与其数据行为检查脚本。 |
