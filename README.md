@@ -121,8 +121,18 @@ uv run easycode main --help
   nothing else.
 - MCP servers: connect external stdio or Streamable HTTP servers and let the model call their tools.
   Servers come from three scopes — your personal file, the app's startup config, and the current
-  project — and the settings panel (sidebar → MCP) edits all three, stores tokens separately from the
-  configuration, and shows why a server is not connecting.
+  project — and the extensions dialog (sidebar → 扩展 → MCP 服务) edits all three, stores tokens
+  separately from the configuration, and shows why a server is not connecting. `/mcp:<service> <task>`
+  asks for one service by name: the model is told to prefer its tools, a service that is off or
+  unreachable fails the turn with `mcp_unavailable` instead of quietly answering without it, and the
+  menu only ever offers the services of the project the conversation runs in.
+- Extensions in one place: the dialog's Skills tab lists what is installed for the personal scope and
+  the current project, and imports a local folder by copying the whole package into
+  `.easycode/skills/` (or `~/.easycode/skills/`). Nothing is executed during the import, the source is
+  not referenced again, and the same name may exist in both scopes — each row says where it came from
+  and whether a higher scope shadows it.
+- Pinning: a pinned conversation is listed once, in the pinned section, and hovering it says which
+  project it belongs to — the row no longer has to carry both facts in one tooltip.
 
 ## Configuration
 
@@ -148,8 +158,16 @@ writable only through the settings panel.
 | Command | `commands/<name>.md` | [prompt template](examples/commands/btw.md) |
 
 Each of these can live in the project's `.easycode/` directory or in `~/.easycode/`. MCP servers are
-configured in the three scopes described above and speak stdio or HTTP; the settings panel edits those
-same files, so hand-written entries keep working.
+configured in the three scopes described above and speak stdio or HTTP; the extensions dialog edits
+those same files, so hand-written entries keep working.
+
+An imported skill is called with `/name`, and `/name your task` appends the task to the skill's
+instructions before sending them. Relative paths inside a skill resolve against its installed
+directory, which is stated to the model along with the body.
+
+The shell sandbox treats the data directory `~/.easycode/` as a writable root (writes to state
+directories such as `sessions/` need approval), so a script inside a personal skill runs under the
+workspace mode; paths outside the workspace are still refused.
 
 ## Project layout
 

@@ -36,7 +36,8 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 | `src/easycode/policy.py`、`src/easycode/approval.py`、`src/easycode/sandbox/` | 权限策略、审批和执行沙箱。 |
 | `src/easycode/web/` | FastAPI 应用与路由（chat、models、sessions、workspaces、files、mcp）、会话存储、SSE 事件桥接，以及面板读取的文件工具记录 `artifacts.py` 与工作区 Git 状态 `git.py`。 |
 | `src/easycode/mcp.py`、`mcp_config.py`、`mcp_auth.py` | MCP 连接、三层作用域配置与凭据存取（约定见下）。 |
-| `frontend/src/` | React 界面；`useChatStream.ts` 按会话管理流生命周期，`chatStream.ts` 转换消息状态，`McpSettings.tsx` 是 MCP 设置面板。 |
+| `src/easycode/skills.py`、`skill_import.py`、`web/routes_skills.py` | Skill 加载与资源基准、文件夹导入（校验/复制/原子发布）、管理 API。 |
+| `frontend/src/` | React 界面；`useChatStream.ts` 按会话管理流生命周期，`chatStream.ts` 转换消息状态，`ExtensionsSettings.tsx` 是扩展弹窗，`McpSettings.tsx`/`SkillsSettings.tsx` 是它的两个面板。 |
 | `frontend/src/components/`、`lib/` | `layout/` 标签栏、右侧面板与输入框，`primitives/` 消息流组件，`lib/` 纯函数。 |
 | `frontend/src/styles.css`、`styles/` | 样式入口；`tokens.css` 存令牌、基础规则与 keyframes，`primitives.css` 存组件样式。 |
 | `tests/`、`frontend/src/__tests__/` | 后端和前端测试。 |
@@ -61,10 +62,17 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 - `/` 菜单的命令来自所有已登记项目与个人目录，同名的按来源分别列出：选中项发送稳定标识 `<来源>:<项目目录>:<名称>`，服务端重新发现列表后校验并展开，仍按当前会话的目录与权限执行；直接输入 `/名称` 只按当前项目与个人命令解析。菜单在加载、无匹配、无命令和加载失败时都要保持可见，不因结果为空整块消失。
 - 文件、Shell、子任务和外部工具的变化须沿实际执行路径检查权限边界，不能仅依赖界面或模型提示中的限制。Web 的只读接口同样复用会话 `PathContext`：文件列举与预览（`/api/files`、`/api/files/content`）的越界与硬保护路径由服务端拒绝、沿用工具的忽略规则与读取上限（列举始终只覆盖工作区与次目录；完全访问下预览与其工具一致地放行宿主机绝对路径，面板也据此决定是否给出预览入口，见 `lib/pane.ts`），工作区 Git 状态（`web/git.py`）只读取会话 roots 所在的仓库，都不需要审批。
 - 变更面板默认收起，只显示当前工作区相对各仓库 `HEAD` 的增删统计（目录不在 Git 仓库时回退到会话自己的 diff 统计，避免已有记录凭空消失），展开后按文件列出统计与 diff，两组来源（会话操作记录、工作区未提交改动）不合并。Git 统计含已暂存、未暂存与未跟踪文件；二进制、已删除和超出上限的 diff 保留文件状态与行数，只是不下发无法使用的预览内容。
+- 设置表单是平面控件：`.modal` 的文本类字段用 `var(--field)`、`1px solid var(--line)`、`box-shadow: none`、36px 高，规则显式排除 checkbox/radio/file；原生 select 一律包在 `.modal-select-wrap` 里（`appearance: none` + CSS 画的箭头）。不要在这里加回内阴影或平台箭头。
+- 文本字段的焦点状态由**字段自己**承担（`--accent` 边框 + 贴边的 `--accent-tint` 光圈），不要用基础规则那圈带 offset 的外轮廓：文本类控件无论怎样获得焦点都会命中 `:focus-visible`（包括弹窗打开时给首个字段的程序化聚焦），外轮廓会在已经显示焦点的字段外面再画一个方框，每个弹窗一打开就带一圈蓝框。checkbox/radio 仍保留外轮廓——它们只由键盘到达，那是唯一的焦点提示。改焦点样式时同时看弹窗首字段（程序化聚焦）与键盘 Tab 两条路径。
 - 前端样式以 `styles/tokens.css` 的令牌为准，不在组件规则里散落硬编码色值；`styles.css` 的类名与 TSX 标记一一对应，改名时两边同步。
 - 输入框是受控组件，中文输入法组词期间由输入法持有序选区、回车和候选：组词中只同步文本值，不动光标状态、不驱动 `@`/`/` 菜单，上屏后（compositionend）同步一次光标与菜单；改输入框、菜单触发或光标恢复逻辑时覆盖这条路径。
 - 发送消息只有一个出口：回车与发送按钮都走同一个函数，由它按当前草稿决定是普通发送还是编辑重发。编辑态下另开一条直接调 `send()` 的路径，会把「替换这条消息之后的对话」变成「在末尾追加一个回合」，而用户要改的那条原样留在会话里——界面看起来却是成功的。改发送、编辑入口或输入框键盘处理时，同时覆盖「编辑中回车」与「编辑中点击发送」两条路径。
 - 布局按可用宽度决定形态：聊天区窄于 560px 时右侧面板改为覆盖式抽屉（不自行展开，提供关闭、Escape 和焦点返回），阈值同时写在 CSS 容器查询和 App 常量里，改动需同步；消息流的直接子元素不参与 flex 收缩，否则长历史会把带 `overflow: hidden` 的卡片压成 0 高度。
+- 扩展入口只有一个：侧栏品牌区下方的「扩展」按钮，打开单个 `role="dialog"`，内含 Skills / MCP 两个页签；项目菜单的「扩展…」用**被点击项目**的 root 打开同一个弹窗。两个面板始终挂载、非当前页签设 `hidden`（未提交的表单要跨页签保留），`Modal` 的初始焦点与 Tab 循环跳过 `[hidden]`/`[inert]` 子树；面板自己的操作按钮经 `footerRef` + `createPortal` 放进 `.modal-actions`，父组件不复制子面板的表单与 busy 状态。打开时冻结目标项目，只有当前会话主目录与目标一致才带 `sessionId`（连接状态属于那一个会话）。
+- Skill 是**复制进来的包**，不是引用：导入要求文件夹根下直接有 `SKILL.md`，整包复制（内部符号链接解引用、拒绝越界链接/环/特殊文件、条目与体积有上限），临时目录建在安装根的同级并在同一文件系统上以不覆盖的方式 rename 发布——同名冲突报错，绝不覆盖。安装根只有 `<项目>/.easycode/skills` 与 `~/.easycode/skills`，路径由服务端计算，不取自请求。加载路径共用 `skill_context()`（名称 + SKILL.md 路径 + 资源目录 + 正文），`/名称` 与 `use_skill` 对它不可能分叉；正文没有占位符时 `/名称 任务` 把任务追加成一段，有占位符时按模板规则替换且不重复追加。
+- MCP 命令 `/mcp:<服务名> <任务>` 是 Web 专用语法：菜单只列**当前项目**生效且已启用的服务，id 为 `mcp:<percent-encoded-root>:<percent-encoded-service>`（root 参与 id，跨项目选择必然不匹配），读路径用不展开凭据的 `resolve()`。选择服务是「优先用它的工具」的意图，不是强制调用或禁用其他工具；指定的服务不可用时以 `mcp_unavailable` 结束这一轮且不调用模型，其他坏服务仍按原样降级。`/mcp:` 前缀保留给服务命令，同名 Skill/模板不进入菜单并在 `errors` 里提示改名。
+- 命令选择随草稿按会话保存（`PlainDraft.command`），`activeCommandId(draft.command, draft.text)` 是发送标识的唯一来源；不要恢复与草稿并行的第二份选择状态。从服务端读回历史时，`historyToItems` 用 turns 里的 `command_id` 还原每条消息的来源，编辑历史只在这条消息自己的选择上重建。
+- 会话置顶只在「置顶」分区显示一次，但项目分区保留它的**全量成员表**（排序、运行态与项目操作都读全量）；成员全被置顶时给出空态。置顶行用浮层（portal、`role="tooltip"`、`pointer-events: none`、500ms 悬停延迟、聚焦立即）说明所属项目与路径，因此不再带 `title`。图钉是灰白两态：仅封闭的针帽填充 `currentColor`，不用橙色。
 - 共用弹窗和模型菜单通过 portal 脱离聊天卡片的裁剪；命令、提及和权限菜单留在卡片内，按输入框上方可用空间限高。修改浮层时核对定位、内外点击、Escape、焦点返回和内部滚动，不只调整层级或固定高度。
 - 模型切换当前会更新全局默认值并重绑定已有会话；`api_format` 决定模型调用路由，`provider` 只用于展示分组。修改模型表单、切换或删除时核对凭据及旧会话后续发送；当前“清除连接凭据”会同时删除 API Key 和 Base URL。
 - 进入 `完全访问`（关闭沙箱与审批）必须显式确认，确认状态由服务端持有：Web 权限选择器选中它先弹风险确认，确认后带 `confirm_full_access` 调用 `POST /api/sessions/{id}/permission`；取消、Escape 不发请求，已是该模式不再重复确认，草稿会话只改本地值。建会话、切权限、`/api/chat` 都带该字段，未确认一律 422；配置里的 `permission: allow-all` 是用户自己的长期设置，会话继承它即算已确认，CLI 启动时这条设置同样要过一次启动确认。`full_access_confirmed` 是会话字段，缺失即未确认，切回其他模式清掉确认、再次进入要重新确认，旧 `allow-all` 会话恢复时降级为 `ask` 并落盘；权限写入统一走 `Session.set_permission_mode`，模式与确认标记同生共死，不直接改 `agent.permission_mode`。新增权限入口（CLI 的 `--confirm-full-access`）时保留这道确认，并覆盖「取消不改变权限」「确认后才发请求」「降级后显示请求批准」几条路径。
