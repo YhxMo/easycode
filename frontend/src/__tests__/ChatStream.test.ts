@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyChatEvent, expirePending } from "../chatStream";
+import { applyChatEvent, expirePending } from "../features/chat/chatStream";
 import type { Item } from "../types";
 
 describe("interrupted turns", () => {

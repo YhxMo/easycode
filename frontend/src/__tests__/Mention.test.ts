@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyMention, mentionRef, mentionToken } from "../lib/mention";
+import { applyMention, mentionRef, mentionToken } from "../features/composer/mention";
 
 describe("mentionToken", () => {
   it("识别光标所在位置的 @ token", () => {

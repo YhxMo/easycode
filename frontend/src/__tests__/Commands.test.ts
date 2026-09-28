@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeCommandId, filterCommands } from "../lib/commands";
+import { activeCommandId, filterCommands } from "../features/composer/commands";
 import type { CommandInfo } from "../api";
 
 const picked = { id: "project:/b:deploy", name: "deploy" };

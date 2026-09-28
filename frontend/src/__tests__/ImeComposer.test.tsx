@@ -1,7 +1,7 @@
 // 中文输入法（IME）：组词期间输入法拥有输入框，程序不能动光标、菜单或发送。
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import App from "../App";
+import App from "../app/App";
 import * as api from "../api";
 import { composerField, primeApiMock } from "./helpers";
 

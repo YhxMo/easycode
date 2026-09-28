@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import App from "../App";
+import App from "../app/App";
 import * as api from "../api";
 import { composerField, deferred, detail, primeApiMock, session, sidebarRow } from "./helpers";
 

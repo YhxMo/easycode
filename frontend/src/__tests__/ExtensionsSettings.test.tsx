@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import type { McpInfo } from "../api";
 import * as api from "../api";
-import { ExtensionsSettings } from "../ExtensionsSettings";
+import { ExtensionsSettings } from "../features/extensions/ExtensionsSettings";
 
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 

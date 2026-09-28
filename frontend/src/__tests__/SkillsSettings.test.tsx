@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillView, SkillsInfo } from "../api";
 import * as api from "../api";
-import { ExtensionsSettings } from "../ExtensionsSettings";
+import { ExtensionsSettings } from "../features/extensions/ExtensionsSettings";
 
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 

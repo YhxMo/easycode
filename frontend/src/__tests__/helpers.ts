@@ -3,7 +3,7 @@
 import { vi } from "vitest";
 import { screen } from "@testing-library/react";
 import type { CommandInfo, CommandsInfo, SessionDetail, SessionSummary } from "../api";
-import type { HistoryMessage } from "../lib/history";
+import type { HistoryMessage } from "../features/chat/history";
 
 export const apiMock = {
   fetchSessions: vi.fn(),

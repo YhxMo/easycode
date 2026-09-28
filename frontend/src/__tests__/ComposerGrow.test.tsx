@@ -1,7 +1,7 @@
 import { render } from "@testing-library/react";
 import type { RefObject } from "react";
 import { describe, expect, it } from "vitest";
-import { ComposerBar } from "../components/layout/ComposerBar";
+import { ComposerBar } from "../features/composer/ComposerBar";
 
 // jsdom has no layout, so the test controls the content height: the point here
 // is the cap-and-shrink behaviour, not the metrics themselves.

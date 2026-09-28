@@ -2,9 +2,9 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../api";
 import type { SessionSummary, WorkspaceProject, WorkspacesInfo } from "../api";
-import { Sidebar } from "../components/Sidebar";
-import { groupSessions } from "../lib/sessionGroups";
-import type { StreamActivityMap } from "../useChatStream";
+import { Sidebar } from "../features/sidebar/Sidebar";
+import { groupSessions } from "../features/sidebar/sessionGroups";
+import type { StreamActivityMap } from "../features/chat/useChatStream";
 import { primeApiMock } from "./helpers";
 
 vi.mock("../api", async () => (await import("./helpers")).apiMock);

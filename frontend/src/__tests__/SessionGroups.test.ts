@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupSessions } from "../lib/sessionGroups";
+import { groupSessions } from "../features/sidebar/sessionGroups";
 import type { SessionSummary, WorkspaceProject } from "../api";
 
 function s(id: string, root: string | null, created: string, extra: Partial<SessionSummary> = {}): SessionSummary {

@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FilePreview } from "../components/primitives/FilePreview";
+import { FilePreview } from "../features/pane/FilePreview";
 import * as api from "../api";
 import { deferred } from "./helpers";
 

@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { ApprovalCard } from "../components/primitives/ApprovalCard";
+import { ApprovalCard } from "../features/chat/ApprovalCard";
 import type { Item } from "../types";
 
 type ApprovalItem = Extract<Item, { kind: "approval" }>;

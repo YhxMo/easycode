@@ -1,8 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ThinkingTrace } from "../components/primitives/ThinkingTrace";
-import { traceOf, toolStep } from "../lib/trace";
+import { ThinkingTrace } from "../features/chat/ThinkingTrace";
+import { traceOf, toolStep } from "../features/chat/trace";
 import type { Item } from "../types";
 
 const tool = (id: string, name: string, args: Record<string, unknown>, result: string): Item => ({

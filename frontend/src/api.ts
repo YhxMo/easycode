@@ -1,4 +1,4 @@
-import type { HistoryMessage } from "./lib/history";
+import type { HistoryMessage } from "./features/chat/history";
 import type { ApprovalState, TodoItem } from "./types";
 
 export interface ToolCall {

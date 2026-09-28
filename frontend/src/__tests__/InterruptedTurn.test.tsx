@@ -2,7 +2,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import App from "../App";
+import App from "../app/App";
 import * as api from "../api";
 import { composerField, detail, primeApiMock, session, sidebarRow } from "./helpers";
 

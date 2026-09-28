@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
-import App from "../App";
+import App from "../app/App";
 import * as api from "../api";
 import { activeTitle, commandsInfo, composerField, session, sidebarRow } from "./helpers";
 import { Modal } from "../components/Modal";

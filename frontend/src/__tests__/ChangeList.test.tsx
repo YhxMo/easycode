@@ -1,8 +1,8 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { ChangeList } from "../components/primitives/ChangeList";
-import type { ChangeRow } from "../lib/pane";
+import { ChangeList } from "../features/pane/ChangeList";
+import type { ChangeRow } from "../features/pane/pane";
 
 // The working tree's rows carry counts, not diffs: the diff of a row arrives
 // when the reader opens it, and again whenever the counts were re-read — a diff

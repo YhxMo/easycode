@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { currentTurn } from "../chatStream";
-import { toolStep, traceOf } from "../lib/trace";
+import { currentTurn } from "../features/chat/chatStream";
+import { toolStep, traceOf } from "../features/chat/trace";
 import type { Item } from "../types";
 
 const tool = (id: string, name: string, args: Record<string, unknown>, result?: string): Item => ({

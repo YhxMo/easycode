@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ProjectMenu } from "../ProjectMenu";
+import { ProjectMenu } from "../features/sidebar/ProjectMenu";
 
 // The ProjectMenu computes a `position: fixed` coordinate
 // once on open and never re-calibrates. Scrolling an inner overflow container or
