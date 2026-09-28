@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type {
   ModelsInfo,
@@ -22,12 +22,10 @@ import { usePane } from "../features/pane/usePane";
 import { EmptyState } from "../features/chat/EmptyState";
 import { LoadingState } from "../components/primitives/LoadingState";
 import { SelectionActions } from "../features/chat/SelectionActions";
-import { groupSessions } from "../features/sidebar/sessionGroups";
 import { usePersistedFlags } from "../lib/usePersistedFlags";
 import { useDrafts, type Draft } from "../features/composer/useDrafts";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import type { StickToBottom } from "../lib/useStickToBottom";
-import { basename, DEFAULT_PROJECT } from "../lib/paths";
 import { EMPTY_MODELS, PANE_SECTIONS } from "./constants";
 import { useChatLayout } from "./useChatLayout";
 import { useSessionList } from "./useSessionList";
@@ -42,6 +40,7 @@ import { useSidebarDrawer } from "./useSidebarDrawer";
 import { useToast } from "./useToast";
 import { useMessageActions } from "./useMessageActions";
 import { useProjectActions } from "./useProjectActions";
+import { useProjectLabels } from "./useProjectLabels";
 import { useTranscriptView } from "./useTranscriptView";
 
 /**
@@ -184,8 +183,10 @@ export default function App() {
     fetchModels().then(setModels).catch(() => {});
   }, [refreshSessions]);
 
-  // Changes whenever the registered projects do, so the menu re-reads them.
-  const projectSig = (workspaces.projects ?? []).map((p) => p.root ?? "").join("\u0000");
+  const { projectMeta, projectLabel, groups, signature: projectSig } = useProjectLabels(
+    workspaces,
+    sessions,
+  );
 
   const composer = useComposer({
     key: draftKey,
@@ -227,12 +228,6 @@ export default function App() {
   const [collapsedProjects, toggleProjectCollapsed] = usePersistedFlags("easycode:collapsed_projects");
   const [collapsedSections, toggleSection] = usePersistedFlags("easycode:collapsed_sections");
 
-  const projectMeta = useMemo(() => {
-    const map = new Map<string | null, WorkspaceProject>();
-    for (const p of workspaces.projects ?? []) map.set(p.root ?? null, p);
-    return map;
-  }, [workspaces]);
-
   // A conversation's main directory may move only before its first turn: once
   // one has run, its records, previews and tree report all describe a single
   // directory. The start page's draft holds no session, so it just chooses.
@@ -248,28 +243,13 @@ export default function App() {
     [setProjects, setSecondary, setSessions],
   );
 
-  // Sidebar sections: directories, pinned conversations, projects, recents.
-  const groups = useMemo(
-    () => groupSessions(sessions, workspaces.projects ?? []),
-    [sessions, workspaces.projects],
-  );
-
   // Every opened conversation is registered exactly once, by opening it or by
   // the moment the backend named a draft.
   const tabs = tabStrip(openTabs, currentId, sessionById);
 
   // The project a new conversation from the sidebar joins: the one on screen,
-  // so the button's hint names what the user will actually get. A project's own
-  // name comes first — the directory it points at is what the path says.
-  const nextSessionRoot = currentId ? currentRoot : chosenRoot;
-  /** What to call a directory: its configured project name, else the folder's. */
-  const projectLabel = useCallback(
-    (root: string | null) =>
-      projectMeta.get(root)?.name ||
-      (root ? basename(root) : workspaces.default ? basename(workspaces.default) : DEFAULT_PROJECT),
-    [projectMeta, workspaces.default],
-  );
-  const newSessionLabel = projectLabel(nextSessionRoot);
+  // so the button's hint names what the user will actually get.
+  const newSessionLabel = projectLabel(currentId ? currentRoot : chosenRoot);
   // What the empty stage can promise: the directory this draft would run in.
   const draftContext = projectLabel(chosenRoot);
   const transcript = useTranscriptView(items, activity);
