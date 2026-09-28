@@ -1,4 +1,4 @@
-import { diffStats } from "../../features/pane/pane";
+import { diffStats } from "../../lib/diff";
 
 function lineClass(line: string): string {
   if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ")) return "meta";

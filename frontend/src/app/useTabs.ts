@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { OPEN_TABS_KEY, readStoredCurrentTab, readStoredTabs } from "./constants";
+import {
+  CURRENT_TAB_KEY,
+  OPEN_TABS_KEY,
+  readStoredCurrentTab,
+  readStoredTabs,
+} from "./constants";
 
 /**
  * The open tabs: the conversations the reader has opened, in order.
@@ -8,8 +13,11 @@ import { OPEN_TABS_KEY, readStoredCurrentTab, readStoredTabs } from "./constants
  * the sidebar and a background turn keeps streaming into its own slot — so the
  * list is pruned only when the server says the conversation is gone, or when it
  * left the main list on purpose.
+ *
+ * `currentId` is the conversation on screen; remembering it lives here so both
+ * ends of that storage key are this hook's.
  */
-export function useTabs() {
+export function useTabs(currentId: string | null) {
   const [open, setOpen] = useState<string[]>(() => readStoredTabs());
   // The conversation that was on screen, read once: the effect that writes the
   // current (still empty) view back to the same key runs before a later read
@@ -23,6 +31,14 @@ export function useTabs() {
       // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
     }
   }, [open]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CURRENT_TAB_KEY, currentId ?? "");
+    } catch {
+      // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
+    }
+  }, [currentId]);
 
   const register = useCallback((id: string) => {
     setOpen((prev) => (prev.includes(id) ? prev : [...prev, id]));

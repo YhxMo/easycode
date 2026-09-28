@@ -97,11 +97,15 @@ describe("App · 标签生命周期", () => {
 
     const stored = JSON.parse(window.localStorage.getItem("easycode:open_tabs") ?? "[]");
     expect(stored).toEqual(["A", "B"]);
+    expect(window.localStorage.getItem("easycode:current_tab")).toBe("A");
 
     // A reload restores the same strip instead of only the foreground.
     unmount();
     render(<App />);
     await waitFor(() => expect(tabTitles()).toEqual(["会话A", "会话B"]));
+    await waitFor(() =>
+      expect(window.localStorage.getItem("easycode:current_tab")).not.toBe(""),
+    );
   });
 
   it("恢复存储里的标签时去重并忽略非字符串", async () => {

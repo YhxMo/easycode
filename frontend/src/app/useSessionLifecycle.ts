@@ -36,7 +36,6 @@ export interface SessionLifecycleInputs {
     archived: SessionSummary[];
     setArchived: (update: (prev: SessionSummary[]) => SessionSummary[]) => void;
     sessionById: Map<string, SessionSummary>;
-    setSessions: (update: (prev: SessionSummary[]) => SessionSummary[]) => void;
     setProjects: (projects: WorkspaceProject[]) => void;
     refresh: () => void;
     refreshArchived: () => void;
@@ -397,7 +396,6 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
     closeTab,
     confirmDeleteSession,
     confirmRemoveProject,
-    forgetSession,
     deleteTarget,
     setDeleteTarget,
     removeTarget,

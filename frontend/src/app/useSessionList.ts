@@ -63,7 +63,6 @@ export function useSessionList({ onListLoaded, onArchivedLoaded }: SessionListIn
     archived,
     setArchived,
     workspaces,
-    setWorkspaces,
     workspacesLoaded,
     setProjects,
     sessionById,

@@ -62,8 +62,8 @@ export function activeCommandId(
 
 /**
  * Single source of truth for the command-menu boundary logic. Both the
- * CommandMenu component and App's textarea onKeyDown use this so the ArrowUp /
- * ArrowDown clamp behavior cannot drift between the two implementations.
+ * CommandMenu component and the composer's `onKeyDown` use this, so the
+ * ArrowUp / ArrowDown clamp behavior cannot drift between the two.
  * @param filtered the filtered command list under the current query
  * @param index    the current cursor index
  * @param delta    +1 (ArrowDown) or -1 (ArrowUp)

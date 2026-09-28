@@ -5,7 +5,7 @@ export const EMPTY_MODELS: ModelsInfo = { default: "", models: {}, providers: {}
 
 /**
  * Chat width at which the pane covers the stream instead of sharing the row.
- * Mirrors the `@container` rule for `.right-pane` in styles.css: keeping the
+ * Mirrors the `@container` rule for `.right-pane` in styles/pane.css: keeping the
  * conversation at least 560px wide is what both numbers express.
  */
 export const NARROW_CHAT_PX = 950;

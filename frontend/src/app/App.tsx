@@ -29,12 +29,7 @@ import { useDrafts, type Draft } from "../features/composer/useDrafts";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import type { StickToBottom } from "../lib/useStickToBottom";
 import { basename, DEFAULT_PROJECT } from "../lib/paths";
-import {
-  CURRENT_TAB_KEY,
-  EMPTY_MODELS,
-  NARROW_CHAT_PX,
-  PANE_SECTIONS,
-} from "./constants";
+import { EMPTY_MODELS, NARROW_CHAT_PX, PANE_SECTIONS } from "./constants";
 import { useSessionList } from "./useSessionList";
 import { useTabs } from "./useTabs";
 import { ChatHeader } from "./ChatHeader";
@@ -86,7 +81,7 @@ export default function App() {
   const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
   // The sidebar's two lists and the tabs opened from them. The list hands its
   // ids to the tabs, which is what keeps a tab from outliving its conversation.
-  const tabList = useTabs();
+  const tabList = useTabs(currentId);
   const {
     sessions,
     setSessions,
@@ -195,8 +190,6 @@ export default function App() {
   // Changes whenever the registered projects do, so the menu re-reads them.
   const projectSig = (workspaces.projects ?? []).map((p) => p.root ?? "").join("\u0000");
 
-  // Bound by name: the two callbacks below depend on these, and a member
-  // expression would make the rule ask for the whole (per-render) object.
   const composer = useComposer({
     key: draftKey,
     drafts,
@@ -212,8 +205,6 @@ export default function App() {
     sticky,
     fieldRef,
   });
-  // Bound by name: two callbacks below depend on these, and through a member
-  // expression the dependency rule asks for the whole (per-render) object.
   const { closeCmdMenu, dismissMention } = composer;
   const insertDraftText = composer.setInput;
 
@@ -234,14 +225,6 @@ export default function App() {
   useEffect(() => {
     refreshArchived();
   }, [refreshArchived]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(CURRENT_TAB_KEY, currentId ?? "");
-    } catch {
-      // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
-    }
-  }, [currentId]);
 
   // ---- sidebar collapse state (sections + project groups, in localStorage) ----
   const [collapsedProjects, toggleProjectCollapsed] = usePersistedFlags("easycode:collapsed_projects");
@@ -295,10 +278,6 @@ export default function App() {
   }));
   const tabs: OpenTab[] =
     currentId === null ? [{ id: DRAFT_KEY, title: "新会话", draft: true }, ...sessionTabs] : sessionTabs;
-
-  // Selecting the tab that is already open changes nothing: the draft tab in
-  // particular must never be mistaken for a stored session.
-
 
   // The project a new conversation from the sidebar joins: the one on screen,
   // so the button's hint names what the user will actually get. A project's own
@@ -360,7 +339,6 @@ export default function App() {
       archived,
       setArchived,
       sessionById,
-      setSessions,
       setProjects,
       refresh: refreshSessions,
       refreshArchived,

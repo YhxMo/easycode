@@ -7,6 +7,7 @@
 import type { GitFileState } from "../../api";
 import type { Item, ToolItem } from "../../types";
 import { basename } from "../../lib/paths";
+import { diffStats } from "../../lib/diff";
 import { num, parseResult, resultStatus, str } from "../chat/toolResult";
 
 /** Search hits offered as preview links before the rest are summarised. */
@@ -335,18 +336,6 @@ const GIT_CODE: Record<string, string> = {
   C: "复制",
   T: "类型变更",
 };
-
-/** +/- line counts for a unified diff (headers excluded). */
-export function diffStats(diff: string): { added: number; removed: number } {
-  let added = 0;
-  let removed = 0;
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) added += 1;
-    else if (line.startsWith("-")) removed += 1;
-  }
-  return { added, removed };
-}
 
 /** One file's uncommitted state, as the working tree reports it right now. */
 export function gitStateLabel(file: GitFileState): string {
