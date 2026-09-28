@@ -637,6 +637,52 @@ export function removeMcpCredential(
   });
 }
 
+export interface SkillView {
+  name: string;
+  description: string;
+  /** Which install root it came from; a same-named entry can exist in both. */
+  scope: "personal" | "project";
+  /** Absolute path of the SKILL.md it was read from. */
+  path: string;
+  /** The package root its relative resources resolve against. */
+  directory: string;
+  /** False when a same-named entry in a higher scope would load instead. */
+  effective: boolean;
+}
+
+export interface SkillsInfo {
+  root: string;
+  /** ``skills.enabled`` from the configuration; false means calls are off. */
+  enabled: boolean;
+  /** Where an install would land, per scope. Display only. */
+  install_roots: { personal: string; project: string };
+  skills: SkillView[];
+  /** Packages that could not be read: reported, never silently dropped. */
+  errors: string[];
+}
+
+export interface ImportSkillBody {
+  source_path: string;
+  scope?: "personal" | "project";
+  root?: string | null;
+}
+
+export interface ImportSkillResult {
+  imported: SkillView;
+  root: string;
+  /** Non-empty when the install succeeded but a session could not be refreshed. */
+  warnings: string[];
+}
+
+export function fetchSkills(root: string | null): Promise<SkillsInfo> {
+  return request(root ? `/api/skills?root=${encodeURIComponent(root)}` : "/api/skills");
+}
+
+/** Install a local folder as a skill; the server decides where it lands. */
+export function importSkill(body: ImportSkillBody): Promise<ImportSkillResult> {
+  return request("/api/skills/import", { method: "POST", body });
+}
+
 export interface McpStatusServer {
   name: string;
   scope: McpScope;

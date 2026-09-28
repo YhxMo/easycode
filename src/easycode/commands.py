@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from easycode.frontmatter import parse_spec
-from easycode.skills import SkillRegistry
+from easycode.skills import SkillRegistry, skill_context
 
 log = logging.getLogger(__name__)
 
@@ -38,15 +38,26 @@ class Command:
     handler: Callable[..., Any] | None = None
 
     def expand(self, rest: str) -> str:
-        """Substitute $ARGUMENTS/$1..$9 into a template body."""
+        """Substitute $ARGUMENTS/$1..$9 into a template body.
+
+        A skill body is instructions, not a template: one that names no
+        placeholder would otherwise swallow the task typed after ``/name``, so
+        the task is appended to it. A template command keeps its own meaning —
+        there the body is the whole prompt — and a skill that does use
+        placeholders keeps the plain substitution it already had.
+        """
         if not self.body:
             return rest
+        placeholders = ("$ARGUMENTS", "$ARGS", *(f"${i}" for i in range(1, 10)))
+        used = any(p in self.body for p in placeholders)
         text = self.body.replace("$ARGUMENTS", rest).replace("$ARGS", rest)
         args = rest.split()
         for i in range(1, 10):
             if f"${i}" in text:
                 text = text.replace(f"${i}", args[i - 1] if i <= len(args) else "")
-        return text
+        if used or not rest or self.kind != "skill":
+            return text
+        return f"{text}\n\n## 用户任务\n\n{rest}"
 
 
 def build_registry(
@@ -65,12 +76,16 @@ def build_registry(
 
 
 def skill_command(skill) -> Command:
-    """Expose one skill as the ``/name`` command that loads it."""
+    """Expose one skill as the ``/name`` command that loads it.
+
+    The body is the skill's context, not the raw markdown: running a skill by
+    hand must hand the model the same resource directory ``use_skill`` does.
+    """
     return Command(
         name=skill.name,
         description=skill.description,
         kind="skill",
-        body=skill.body,
+        body=skill_context(skill),
         arg_hint="",
         source=skill.source,
     )

@@ -202,8 +202,12 @@ async def run_use_skill(agent: Agent, name: str) -> str:
             ensure_ascii=False,
         )
     # inject the body into the conversation once (stays for the session); the
-    # loop flushes it after this batch's tool results to keep the tool protocol
-    agent._pending_system.append(f"[skill: {skill.name}]\n{skill.body}")
+    # loop flushes it after this batch's tool results to keep the tool protocol.
+    # The text is the same ``skill_context`` the ``/name`` command expands to,
+    # so both paths name the same resource directory.
+    from easycode.skills import skill_context
+
+    agent._pending_system.append(skill_context(skill))
     return json.dumps(
         {"status": "ok", "skill": skill.name, "loaded": True},
         ensure_ascii=False,

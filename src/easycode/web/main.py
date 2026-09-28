@@ -18,6 +18,7 @@ from easycode.web.routes_files import register_files
 from easycode.web.routes_mcp import register_mcp
 from easycode.web.routes_models import register_models
 from easycode.web.routes_sessions import register_sessions
+from easycode.web.routes_skills import register_skills
 from easycode.web.routes_workspaces import register_workspaces
 from easycode.web.session import SessionBusyError, SessionStore
 
@@ -97,6 +98,7 @@ def create_app(
     register_chat(app, cfg, store, broker)
     register_files(app, cfg, store)
     register_mcp(app, cfg, store)
+    register_skills(app, cfg, store)
 
     dist = static_dir or FRONTEND_DIST
     if dist.is_dir():

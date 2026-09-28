@@ -3783,6 +3783,139 @@
   text-overflow: ellipsis;
 }
 
+/* The skills list: same shape as the MCP rows, with the package's own
+   description and command name to read. */
+.skill-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+}
+
+/* Shadowed by the same name in a higher scope: still listed, visibly inert. */
+.skill-row.shadowed .mcp-name,
+.skill-row.shadowed .skill-desc {
+  opacity: 0.6;
+}
+
+.skill-shadowed {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.skill-desc {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.skill-command {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: var(--field);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.skill-source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skill-source-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-source-row button {
+  flex: none;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.skill-source-row button:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--line-strong);
+}
+
+.skill-source-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.skill-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.skill-preview code {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* A notice, not a failure: nothing here needs retrying. */
+.modal-note,
+.modal-warn {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.modal-warn {
+  border-color: oklch(74.6% 0.156 55.6 / 0.35);
+  background: var(--orange-tint);
+  color: var(--orange);
+}
+
+.modal-warn p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.modal-note code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.modal-error button {
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid oklch(66.6% 0.18 21.4 / 0.35);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--red);
+  font-size: 11px;
+  cursor: pointer;
+}
+
 .mcp-note,
 .mcp-error {
   margin: 0;

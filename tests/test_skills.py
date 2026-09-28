@@ -106,9 +106,15 @@ Special instructions to follow
     assert data["loaded"] is True
     assert "body" not in data  # P7-2: skill body is injected once via system message
 
-    # After use_skill, system message is injected into history
-    assert any("[skill: my-skill]" in str(m.get("content")) for m in agent.history.messages)
-    assert any("Special instructions to follow" in str(m.get("content")) for m in agent.history.messages)
+    # After use_skill, the skill context is injected into history: the body, and
+    # the directory its relative paths resolve against.
+    injected = "\n".join(
+        str(m.get("content")) for m in agent.history.messages if m.get("role") == "system"
+    )
+    assert "# Skill: my-skill" in injected
+    assert "Special instructions to follow" in injected
+    assert str(skills_dir / "my-skill" / "SKILL.md") in injected
+    assert str(skills_dir / "my-skill") in injected
 
 
 @pytest.mark.asyncio
@@ -157,7 +163,7 @@ Safety instructions
         "tool",
     ]
     assert payload[assistant_idx + 3]["role"] == "system"
-    assert "[skill: safety]" in payload[assistant_idx + 3]["content"]
+    assert "# Skill: safety" in payload[assistant_idx + 3]["content"]
     assert_valid_tool_protocol(payload)
 
 
@@ -197,3 +203,79 @@ Known body
     data = json.loads(results[0])
     assert data["status"] == "error"
     assert "unknown skill" in data["message"]
+
+
+def test_skill_context_names_the_resource_directory(tmp_path):
+    """Both loading paths must describe the same package the same way."""
+    from easycode.commands import build_registry
+    from easycode.skills import skill_context
+
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "pack").mkdir(parents=True)
+    (skills_dir / "pack" / "SKILL.md").write_text(
+        """---
+description: Packaged skill
+---
+Read references/guide.md first
+""",
+        encoding="utf-8",
+    )
+    reg = SkillRegistry.discover([], user_dir=skills_dir)
+    skill = reg.get("pack")
+    assert skill is not None and skill.path is not None
+    assert skill.directory == skills_dir / "pack"
+
+    context = skill_context(skill)
+    assert str(skills_dir / "pack" / "SKILL.md") in context
+    assert str(skills_dir / "pack") in context
+    assert "Read references/guide.md first" in context
+
+    # The same text is what ``/pack`` expands to, so a hand-run skill and a
+    # model-loaded one cannot disagree about where their resources are.
+    cmds = build_registry([], reg)
+    cmd = cmds.get("pack")
+    assert cmd is not None
+    assert cmd.body == context
+
+
+def test_skill_without_placeholders_keeps_the_task(tmp_path):
+    """A skill body is instructions: the task typed after /name must survive."""
+    from easycode.commands import Command
+
+    skill = Command(name="review", description="Review", kind="skill", body="Follow the checklist")
+    expanded = skill.expand("检查这个 PR")
+    assert expanded.startswith("Follow the checklist")
+    assert "检查这个 PR" in expanded
+
+    # A skill that does name a placeholder keeps the plain substitution, and
+    # the task is not appended a second time.
+    templated = Command(
+        name="review", description="Review", kind="skill", body="Checklist for $ARGUMENTS"
+    )
+    assert templated.expand("检查这个 PR") == "Checklist for 检查这个 PR"
+
+    # A template command is a prompt, not instructions: unchanged behaviour.
+    template = Command(name="t", description="T", kind="template", body="Do it")
+    assert template.expand("ignored") == "Do it"
+
+
+def test_broken_skill_is_skipped_by_discovery(tmp_path, caplog):
+    """One unusable package must not hide the rest, and must say why."""
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "good").mkdir(parents=True)
+    (skills_dir / "good" / "SKILL.md").write_text(
+        "---\ndescription: Fine\n---\nbody\n", encoding="utf-8"
+    )
+    (skills_dir / "bad-yaml").mkdir()
+    (skills_dir / "bad-yaml" / "SKILL.md").write_text(
+        "---\ndescription: [unclosed\n---\nbody\n", encoding="utf-8"
+    )
+    (skills_dir / "no-frontmatter").mkdir()
+    (skills_dir / "no-frontmatter" / "SKILL.md").write_text("body only\n", encoding="utf-8")
+    (skills_dir / "not-a-dir.txt").write_text("x", encoding="utf-8")
+
+    reg = SkillRegistry.discover([], user_dir=skills_dir)
+    assert reg.names() == ["good"]
+    # Skipping is reported, not silent: a user whose skill vanished needs the
+    # reason in the log rather than an empty list.
+    assert "bad-yaml" in caplog.text

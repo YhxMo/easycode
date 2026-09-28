@@ -62,6 +62,13 @@ const openDialog = async (user: ReturnType<typeof userEvent.setup>) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.fetchSkills.mockResolvedValue({
+    root: PROJECT,
+    enabled: true,
+    install_roots: { personal: "/home/u/.easycode/skills", project: `${PROJECT}/.easycode/skills` },
+    skills: [],
+    errors: [],
+  });
   m.fetchMcp.mockResolvedValue(info());
   m.fetchMcpStatus.mockResolvedValue({ started: false, servers: [] });
 });

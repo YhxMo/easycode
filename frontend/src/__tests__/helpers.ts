@@ -36,6 +36,8 @@ export const apiMock = {
   deleteModel: vi.fn(),
   fetchModel: vi.fn(),
   updateModel: vi.fn(),
+  fetchSkills: vi.fn(),
+  importSkill: vi.fn(),
   fetchMcp: vi.fn(),
   fetchMcpStatus: vi.fn(),
   saveMcpServer: vi.fn(),

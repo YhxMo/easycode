@@ -88,7 +88,9 @@ def test_skills_as_commands_priority():
     assert cmd is not None
     assert cmd.kind == "skill"
     assert cmd.description == "Skill lint"
-    assert cmd.body == "Skill body"
+    # A skill registered as a command carries its skill context, not the raw
+    # body: the two loading paths must name the same resource directory.
+    assert cmd.body == "# Skill: lint\n\nSkill body"
 
 
 def test_web_commands_endpoint(tmp_path):

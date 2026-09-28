@@ -308,9 +308,13 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 return _expand_by_id(command_id, text, cfg, store)
             if existing_sess is not None:
                 # Typed by hand rather than picked from the menu: the current
-                # project's and the personal commands are what resolve it.
+                # project's and the personal commands are what resolve it. The
+                # registry is built from what is on disk right now rather than
+                # from the agent's copy — a skill imported since this session
+                # last looked must resolve here, not only inside the turn.
+                roots = _session_roots(existing_sess, cfg)
                 return _expand_command(
-                    text, _session_roots(existing_sess, cfg), existing_sess.agent.skills
+                    text, roots, SkillRegistry.discover(roots) if cfg.skills_enabled else None
                 )
             # A brand-new session: resolve before creating it, so an unknown
             # command does not leave an empty session behind.
@@ -321,10 +325,12 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
             return _expand_command(text, roots, skills)
 
-        # Splitting the message in two is what keeps an edit honest in the
-        # transcript: the user sees the text they wrote, while the model is given
-        # the command expansion of it.
-        model_input = _resolve_message(raw_message)
+        # Resolve once here so an unknown command is a plain 400 before any
+        # stream starts. The text the model is actually given is resolved again
+        # inside ``gen``, against the skills this session will run with by then:
+        # an import that landed a moment ago must not be expanded by the
+        # registry this request happened to read first.
+        _resolve_message(raw_message)
         try:
             # Session creation and turn preparation read cfg/credentials; the
             # config guard keeps them from interleaving with a model/project
@@ -378,6 +384,28 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 # must not run a turn: the request holds a stale object only.
                 if store.get(sess.id) is None:
                     return
+                # This session's skills may have changed since it last looked —
+                # an import, or a refresh that failed when it happened — and the
+                # prompt has to be built from what this turn will really run
+                # with, not from what the session saw last time. Rediscovery and
+                # re-expansion are both synchronous: no configuration change can
+                # slip between the registry and the text expanded from it, and a
+                # failure here changes nothing (no turn, no branch, no prompt).
+                try:
+                    sess.agent.rediscover_extensions(with_skills=cfg.skills_enabled)
+                    turn_input = _resolve_message(raw_message)
+                except HTTPException as exc:
+                    yield event_to_sse(
+                        {"type": "error", "error": str(exc.detail), "code": "command_error"}
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001 - a failed refresh ends the turn
+                    # Nothing was prepared and nothing was accepted: the turn
+                    # simply does not start, with the reason on screen.
+                    yield event_to_sse(
+                        {"type": "error", "error": f"{type(exc).__name__}: {exc}"}
+                    )
+                    return
                 # Mutations belong under the lock so they cannot race a concurrent
                 # permission change (which is rejected with 409 while busy).
                 if perm_mode:
@@ -405,10 +433,10 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                     # conversation it read exactly as it was, in memory as well as
                     # on disk, and report that nothing was accepted.
                     snapshot = _session_state(sess)
-                    turn = sess.replace_turns_from(index, raw_message, model_input, command_id)
+                    turn = sess.replace_turns_from(index, raw_message, turn_input, command_id)
                 else:
                     snapshot = None
-                    turn = sess.begin_turn(raw_message, model_input, command_id)
+                    turn = sess.begin_turn(raw_message, turn_input, command_id)
                 try:
                     store.record_exchange(sess)
                 except OSError as exc:
@@ -421,7 +449,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 async with aclosing(
                     stream_chat_with_approval(
                         sess.agent,
-                        model_input,
+                        turn_input,
                         broker,
                         cancel_event=cancel_event,
                         session=sess,
