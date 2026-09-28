@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from easycode.tools import build_registry
+from easycode.tools.files import MAX_LINE_LEN, MAX_READ_BYTES, ReadFileArgs, read_file
 
 
 @pytest.fixture
@@ -162,6 +163,71 @@ def test_read_file_empty_offset_out_of_range(tmp_path, reg):
     (tmp_path / "e.txt").write_text("", encoding="utf-8")
     out = _run(reg, "read_file", {"path": "e.txt", "offset": 5}, tmp_path)
     assert out["status"] == "error"
+
+
+def _whole_file_read_result(path: Path, root: Path, offset: int, limit: int) -> dict:
+    """The original read_text/splitlines result, including its output envelope."""
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    total = len(lines)
+    selected = []
+    bytes_used = 0
+    truncated = False
+    for line in lines[offset - 1 : offset - 1 + limit]:
+        out_line = line
+        if len(line) > MAX_LINE_LEN:
+            out_line = line[:MAX_LINE_LEN] + "…[truncated line]"
+            truncated = True
+        size = len(out_line.encode("utf-8", errors="replace")) + 1
+        if selected and bytes_used + size > MAX_READ_BYTES:
+            truncated = True
+            break
+        selected.append(out_line)
+        bytes_used += size
+    if offset - 1 + len(selected) < total:
+        truncated = True
+    content = "\n".join(f"{i}: {line}" for i, line in enumerate(selected, start=offset))
+    if truncated:
+        content += f"\n\n(Showing lines {offset}-{offset + len(selected) - 1} of {total}. Use offset={offset + len(selected)} to continue.)"
+    else:
+        content += f"\n\n(End of file - total {total} lines)"
+    return {
+        "status": "ok",
+        "path": path.relative_to(root).as_posix(),
+        "absolute_path": str(path),
+        "in_allowed": True,
+        "start_line": offset,
+        "end_line": offset + len(selected) - 1,
+        "total_lines": total,
+        "truncated": truncated,
+        "lines": len(selected),
+        "chars": len(content),
+        "content": content,
+    }
+
+
+@pytest.mark.parametrize(
+    ("data", "offset", "limit"),
+    [
+        (b"a\r\nb\rc\n", 1, 10),
+        (b"a" * (64 * 1024 - 1) + b"\r\nb", 2, 1),
+        ("a\u2028b\x85c".encode(), 1, 10),
+        (b"a" * 1999, 1, 1),
+        (b"a" * 2000, 1, 1),
+        (b"a" * 2001, 1, 1),
+        ((b"x" * 1000 + b"\n") * 60, 1, 100),
+        (b"a" * (64 * 1024 - 1) + b"\xe4\xb8\xad\xff", 1, 1),
+        (b"\n", 1, 1),
+        (b"a\r", 1, 1),
+    ],
+)
+def test_read_file_streaming_matches_whole_file_result(tmp_path, data, offset, limit):
+    path = tmp_path / "sample.txt"
+    path.write_bytes(data)
+    expected = _whole_file_read_result(path, tmp_path, offset, limit)
+    actual = json.loads(
+        read_file(ReadFileArgs(path=path.name, offset=offset, limit=limit), root=tmp_path)
+    )
+    assert actual == expected
 
 
 def test_write_file_big_diff_stays_valid_json(tmp_path, reg):

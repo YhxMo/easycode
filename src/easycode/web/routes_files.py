@@ -14,133 +14,16 @@ distinguish "no secondary roots given, inherit the project binding" from
 
 from __future__ import annotations
 
-import codecs
-import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from easycode.tools.files import MAX_READ_BYTES, _iter_files
+from easycode.tools.files import MAX_READ_BYTES, _iter_files, _read_window
 from easycode.workspace import PathContext, root_error
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 1000
-
-#: Read granularity for a preview. Large enough that the per-chunk overhead is
-#: irrelevant, small enough that a huge file is never resident in memory.
-CHUNK_BYTES = 64 * 1024
-
-#: Everything ``str.splitlines`` treats as a line break.
-_TEXT_BREAK = re.compile("[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
-
-
-class _LineWindow:
-    """A streaming ``str.splitlines`` that keeps only part of its input.
-
-    A preview needs two things the whole-file read gave for free: an exact line
-    count, and the text of one window of lines. It does not need the rest of
-    the file, so text is kept only while it can still land in the window and
-    only up to the byte budget; every line is still counted to the end. Once
-    the window is closed, the partial line is dropped as well. A long line
-    inside the window is only buffered up to the byte budget.
-    """
-
-    def __init__(self, start: int, limit: int, max_bytes: int) -> None:
-        self.start = start
-        self.limit = limit
-        self.max_bytes = max_bytes
-        #: lines completed so far, i.e. the total line count
-        self.total = 0
-        #: text of the lines inside the window
-        self.lines: list[str] = []
-        self.bytes = 0
-        self._buf: list[str] = []
-        self._pending = 0
-        #: text seen since the last line break (an unterminated final line)
-        self._open = False
-        #: the previous chunk ended on a bare ``\r``, which may pair with ``\n``
-        self._cr = False
-
-    def _wanted(self, index: int) -> bool:
-        if index < self.start:
-            return False
-        if self.limit > 0 and index >= self.start + self.limit:
-            return False
-        return self.bytes <= self.max_bytes
-
-    def _keep(self, text: str) -> None:
-        """Keep at most the remaining budget plus one overflow character."""
-        room = self.max_bytes - self.bytes + 1 - self._pending
-        if room > 0:
-            piece = text[:room]
-            self._buf.append(piece)
-            self._pending += len(piece)
-
-    def feed(self, chunk: str) -> None:
-        if self._cr:
-            self._cr = False
-            if chunk.startswith("\n"):
-                # the ``\r`` already closed its line; this ``\n`` is its partner
-                chunk = chunk[1:]
-        pos = 0
-        for match in _TEXT_BREAK.finditer(chunk):
-            if match.start() < pos:
-                # the ``\n`` of a ``\r\n`` pair: the ``\r`` already ended the line
-                continue
-            index = self.total
-            if self._wanted(index):
-                self._keep(chunk[pos : match.start()])
-                line = "".join(self._buf)
-                self.lines.append(line)
-                self.bytes += len(line.encode("utf-8", errors="replace")) + 1
-            self._buf.clear()
-            self._pending = 0
-            self.total = index + 1
-            self._open = False
-            pos = match.end()
-            if match.group() == "\r":
-                if pos < len(chunk):
-                    if chunk[pos] == "\n":
-                        pos += 1
-                else:
-                    self._cr = True
-        if pos < len(chunk):
-            self._open = True
-            if self._wanted(self.total):
-                self._keep(chunk[pos:])
-
-    def finish(self) -> None:
-        """Close the last line when the text did not end on a line break."""
-        if not self._open:
-            return
-        index = self.total
-        if self._wanted(index):
-            self.lines.append("".join(self._buf))
-        self._buf.clear()
-        self._pending = 0
-        self.total = index + 1
-        self._open = False
-
-
-def _read_window(target: Path, start: int, limit: int) -> _LineWindow:
-    """Read one file window in chunks, decoding across chunk boundaries."""
-    window = _LineWindow(start, limit, MAX_READ_BYTES)
-    decoder = codecs.getincrementaldecoder("utf-8")("replace")
-    with target.open("rb") as handle:
-        while True:
-            chunk = handle.read(CHUNK_BYTES)
-            if not chunk:
-                break
-            text = decoder.decode(chunk)
-            if text:
-                window.feed(text)
-    tail = decoder.decode(b"", final=True)
-    if tail:
-        window.feed(tail)
-    window.finish()
-    return window
-
 
 class FilesRequest(BaseModel):
     session_id: str | None = None

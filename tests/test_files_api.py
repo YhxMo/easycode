@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.tools import build_registry
-from easycode.tools.files import MAX_READ_BYTES
+from easycode.tools.files import CHUNK_BYTES, MAX_READ_BYTES, _LineWindow, _read_window
 from easycode.web.main import create_app
 from easycode.web.session import SessionStore
 from tests.conftest import FakeProvider
@@ -399,10 +399,8 @@ def test_preview_matches_the_unbounded_read_for_tricky_files(tmp_path):
 
 def test_preview_reads_a_large_file_in_bounded_chunks(tmp_path, monkeypatch):
     """The point of the chunked read: a preview never loads the whole file."""
-    import easycode.web.routes_files as routes
-
     huge = tmp_path / "huge.txt"
-    huge.write_text("x" * (routes.CHUNK_BYTES * 3 + 10) + "\nend\n", encoding="utf-8")
+    huge.write_text("x" * (CHUNK_BYTES * 3 + 10) + "\nend\n", encoding="utf-8")
 
     sizes: list[int] = []
     real_open = Path.open
@@ -423,13 +421,13 @@ def test_preview_reads_a_large_file_in_bounded_chunks(tmp_path, monkeypatch):
             return self._handle.__exit__(*exc)
 
     monkeypatch.setattr(Path, "open", lambda self, *a, **kw: Spy(real_open(self, *a, **kw)))
-    window = routes._read_window(huge, 0, 0)
+    window = _read_window(huge, 0, 0)
 
     # every line is counted, but once the byte budget is spent the text stops
     # being kept — the trailing "end" line is deliberately not retained
     assert window.total == 2
     assert window.lines == ["x" * (MAX_READ_BYTES + 1)]
-    assert sizes and all(0 < size <= routes.CHUNK_BYTES for size in sizes)
+    assert sizes and all(0 < size <= CHUNK_BYTES for size in sizes)
     assert len(sizes) > 1
 
 
@@ -472,8 +470,6 @@ def test_full_access_previews_any_host_path(tmp_path):
 
 
 def test_line_window_bounds_an_unterminated_line():
-    from easycode.web.routes_files import _LineWindow
-
     window = _LineWindow(0, 0, 50 * 1024)
     for _ in range(128):
         window.feed("a" * 64 * 1024)
