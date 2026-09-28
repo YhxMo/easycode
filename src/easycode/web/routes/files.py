@@ -44,13 +44,13 @@ def _scope(req: FilesRequest, cfg, store) -> PathContext:
             raise HTTPException(404, "session not found")
         return sess.agent.path_context()
 
-    from easycode.web.routes.chat import _draft_roots
+    from easycode.web.chat_input import draft_roots
 
     # A draft root that cannot be resolved or validated is a bad request, the
     # same as it is for /api/commands and /api/chat: 422, never a 500 from a
     # validation that happens to raise.
     try:
-        roots = _draft_roots(req.root, req.secondary_roots, cfg, store)
+        roots = draft_roots(req.root, req.secondary_roots, cfg, store)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     primary, *secondary = roots
