@@ -77,18 +77,22 @@ class History:
         return out
 
     @staticmethod
-    def _text(messages: list[Message]) -> str:
-        """Concatenated content + tool-call arguments of a message list."""
-        text = "".join(str(m.get("content") or "") for m in messages)
-        text += "".join(
-            str(tc.get("function", {}).get("arguments") or "")
-            for m in messages
-            for tc in (m.get("tool_calls") or [])
-        )
-        return text
+    def _char_stats(messages: list[Message]) -> tuple[int, int]:
+        """Total characters and non-ASCII characters without joining messages."""
+        total = wide = 0
+        for message in messages:
+            pieces = [str(message.get("content") or "")]
+            pieces.extend(
+                str(call.get("function", {}).get("arguments") or "")
+                for call in (message.get("tool_calls") or [])
+            )
+            for piece in pieces:
+                total += len(piece)
+                wide += sum(1 for char in piece if ord(char) > 127)
+        return total, wide
 
     def estimate_chars(self) -> int:
-        return len(self._text(self.messages))
+        return self._char_stats(self.messages)[0]
 
     def estimate_tokens(self) -> int:
         """Token estimate via litellm if possible, else the cheap heuristic.
@@ -130,7 +134,8 @@ class History:
         chars/4 assumption badly under-counts non-ASCII-heavy transcripts,
         so count non-ASCII separately.
         """
-        return History.estimate_text_tokens(History._text(messages))
+        total, wide = History._char_stats(messages)
+        return wide + (total - wide + 3) // 4
 
     def over_budget(self, extra: int = 0) -> bool:
         """Cheap-gated budget check for the completion payload.

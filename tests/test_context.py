@@ -40,6 +40,27 @@ def test_over_budget_small_history_is_false() -> None:
     assert h.over_budget() is False
 
 
+def test_character_statistics_preserve_content_and_tool_arguments() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": "ab中🙂",
+            "tool_calls": [
+                {"function": {"arguments": "xyz中"}},
+                {"function": {"arguments": None}},
+            ],
+        },
+        {"role": "user", "content": None},
+        {"role": "user", "content": ["a"]},
+    ]
+    # 4 content chars + 4 argument chars + 5 in str(["a"]); 3 non-ASCII.
+    assert History._char_stats(messages) == (13, 3)
+    assert History.estimate_messages_tokens(messages) == 6
+    history = History(messages=messages)
+    assert history.estimate_chars() == 13
+    assert History.estimate_text_tokens("ab中🙂") == 3
+
+
 def test_over_budget_char_backstop() -> None:
     h = History()
     h.max_tokens = 1_000_000
@@ -353,3 +374,20 @@ def test_protocol_survives_condense_cut_between_adjacent_batches() -> None:
     assert h.condense_from("SUMMARY", start) is True
     assert_valid_tool_protocol(h.messages)
     assert History.is_summary(h.messages[0])  # summary exempt, but present
+
+
+def test_message_estimate_matches_the_joined_text_estimate() -> None:
+    """The list-based estimate must equal estimating the concatenated text.
+
+    Rounding the ASCII 4-chars/token allowance once per message would inflate
+    a long transcript by a token per message, so the rounding has to happen
+    once for the whole list — which is what joining the text does.
+    """
+    messages = [
+        {"role": "user", "content": "ab中🙂"},
+        {"role": "assistant", "content": "ab中🙂"},
+        {"role": "user", "content": "a"},
+    ]
+    joined = "".join(str(m.get("content") or "") for m in messages)
+    assert History.estimate_messages_tokens(messages) == 6
+    assert History.estimate_messages_tokens(messages) == History.estimate_text_tokens(joined)

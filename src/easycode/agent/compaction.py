@@ -91,7 +91,14 @@ class Compactor:
     async def condense(
         self, history: History, summarizer: Summarizer | None, extra: int = 0
     ) -> None:
-        if not self.settings.get("auto", True) or not history.over_budget(extra):
+        if history.over_budget(extra):
+            await self._shrink(history, summarizer, extra)
+
+    async def _shrink(
+        self, history: History, summarizer: Summarizer | None, extra: int
+    ) -> None:
+        """Bring an over-budget history back under it; the caller has checked."""
+        if not self.settings.get("auto", True):
             return
         self.prune(history)
         if not history.over_budget(extra):
@@ -122,5 +129,7 @@ class Compactor:
     async def prepare(
         self, history: History, summarizer: Summarizer | None, extra: int = 0
     ) -> None:
-        await self.condense(history, summarizer, extra)
+        if not history.over_budget(extra):
+            return
+        await self._shrink(history, summarizer, extra)
         self.check_budget(history, extra)

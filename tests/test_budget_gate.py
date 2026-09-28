@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from easycode.agent.compaction import BudgetExceededError
+from easycode.agent.compaction import BudgetExceededError, Compactor
+from easycode.agent.context import History
 from easycode.agent.loop import Agent
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
@@ -90,3 +91,25 @@ async def test_budget_error_reaches_web_sse_channel(tmp_path):
     assert provider.calls == []
     errs = [e for e in events if e.kind == "error"]
     assert errs and "预算" in errs[0].error
+
+
+@pytest.mark.asyncio
+async def test_prepare_checks_an_under_budget_history_once(monkeypatch):
+    """The common small-history path must estimate the budget a single time.
+
+    The gate is called on every turn, so a redundant second estimate is paid
+    on every message, not just when compaction fires.
+    """
+    history = History(max_tokens=32_000)
+    history.add_user("small request")
+    calls = 0
+    original = History.over_budget
+
+    def counted(self, extra=0):
+        nonlocal calls
+        calls += 1
+        return original(self, extra)
+
+    monkeypatch.setattr(History, "over_budget", counted)
+    await Compactor({}).prepare(history, None, extra=100)
+    assert calls == 1
