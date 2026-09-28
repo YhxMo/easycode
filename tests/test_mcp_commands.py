@@ -237,6 +237,7 @@ def sent_prompt(store, session_id) -> str:
     return calls[-1][-1]["content"]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="MCP children run under the macOS sandbox")
 def test_typing_the_command_sends_the_service_the_task_and_the_id(tmp_path):
     app, _cfg, store, roots = build(tmp_path, app_servers={"demo": demo_server()})
     sess = store.create(root=str(roots["a"]))
