@@ -155,15 +155,19 @@ class CredentialStore:
     def get(self, credential_id: str) -> MCPCredential | None:
         return self._load().get(credential_id)
 
-    def find(self, *, scope: str, server: str, root: str = "", kind: str | None = None) -> MCPCredential | None:
+    def find(
+        self, *, scope: str, server: str, root: str = "", kind: str | None = None
+    ) -> MCPCredential | None:
         """The grant for one server in one scope, if there is exactly one."""
-        for cred in self._load().values():
-            if cred.scope != scope or cred.server != server or cred.root != root:
-                continue
-            if kind is not None and cred.kind != kind:
-                continue
-            return cred
-        return None
+        return self.snapshot().find(scope=scope, server=server, root=root, kind=kind)
+
+    def snapshot(self) -> CredentialSnapshot:
+        """One read of the file, for looking up several servers consistently.
+
+        Read-only on purpose: writes still read-modify-write the real file, so
+        a snapshot can never be mistaken for something to save into.
+        """
+        return CredentialSnapshot(self._load())
 
     def save(self, cred: MCPCredential) -> MCPCredential:
         """Insert or replace one record, atomically."""
@@ -225,6 +229,24 @@ class CredentialStore:
             raw = json.dumps(cred.to_dict(), ensure_ascii=False, sort_keys=True)
             out[cid] = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
         return out
+
+
+@dataclass(frozen=True)
+class CredentialSnapshot:
+    """One read of the credential file, queried like a store."""
+
+    records: dict[str, MCPCredential]
+
+    def find(
+        self, *, scope: str, server: str, root: str = "", kind: str | None = None
+    ) -> MCPCredential | None:
+        for cred in self.records.values():
+            if cred.scope != scope or cred.server != server or cred.root != root:
+                continue
+            if kind is not None and cred.kind != kind:
+                continue
+            return cred
+        return None
 
 
 def store() -> CredentialStore:

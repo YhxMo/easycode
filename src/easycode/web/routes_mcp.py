@@ -156,10 +156,13 @@ def register_mcp(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         # ``resolve`` rather than ``effective_servers``: the panel sees where a
         # secret comes from, never the value a connect would fill in.
         servers = []
+        # Every server is looked up in one snapshot, so a write that lands while
+        # the panel is being built cannot make the list describe two file states.
+        credentials = credential_store().snapshot()
         for entry in resolve(
             personal=stored["personal"], app=stored["app"], project=stored["project"]
         ):
-            cred = credential_store().find(
+            cred = credentials.find(
                 scope=entry.scope,
                 server=entry.name,
                 root=_credential_root(entry.scope, project_root),

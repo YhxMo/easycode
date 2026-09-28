@@ -329,3 +329,38 @@ def test_fingerprint_tracks_credential_rotation(tmp_path):
 
     credential_store().replace_values("c1", {"token": "b"})
     assert fingerprint(servers, ctx) != issued
+
+
+def test_configured_servers_parse_each_entry_once(tmp_path):
+    """One read, one validation per entry: the scope dicts are not re-parsed."""
+    from easycode.mcp_config import MCPServerConfig, configured_servers
+
+    path = personal_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "mcp_servers": {
+                    "alpha": {"transport": "http", "url": "http://127.0.0.1:9/a"},
+                    "beta": {"transport": "http", "url": "http://127.0.0.1:9/b"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = {"n": 0}
+    real = MCPServerConfig.parse
+
+    def counted(name, entry):
+        calls["n"] += 1
+        return real(name, entry)
+
+    MCPServerConfig.parse = staticmethod(counted)
+    try:
+        servers = configured_servers(None, str(tmp_path))
+    finally:
+        MCPServerConfig.parse = real
+
+    assert [s.name for s in servers] == ["alpha", "beta"]
+    # Two entries, two parses: resolving must not re-parse what was just read.
+    assert calls["n"] == 2, calls

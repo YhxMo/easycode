@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -27,14 +28,24 @@ class Tool:
         self.description = description
         self.params_model = params_model
         self.handler = handler
+        self._params_schema: dict[str, Any] | None = None
 
     def schema(self) -> dict[str, Any]:
+        """The OpenAI tool definition, generated once and copied out.
+
+        ``param_json_schema`` is an order of magnitude slower than a deep copy,
+        and the same six tools are described on every model round-trip. The
+        cache lives here rather than in ``__init__``: a tool that is never
+        described never pays for it.
+        """
+        if self._params_schema is None:
+            self._params_schema = self.params_model.model_json_schema()
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.params_model.model_json_schema(),
+                "parameters": copy.deepcopy(self._params_schema),
             },
         }
 

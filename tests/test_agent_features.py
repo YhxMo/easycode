@@ -208,3 +208,39 @@ async def test_parallel_tasks_subagent_error_reported(tmp_path):
     data = json.loads(result_ev.tool_result)
     assert data["results"][0]["name"] == "t1"
     assert "error" in data["results"][0]
+
+
+def test_tool_schema_is_generated_once_and_copied_out():
+    """Describing the same tool repeatedly must not re-derive its JSON schema."""
+    from pydantic import BaseModel
+
+    from easycode.tools.registry import Tool
+
+    class Args(BaseModel):
+        path: str
+        limit: int = 10
+
+    calls = {"n": 0}
+    real = Args.model_json_schema
+
+    def counted(cls, *args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    Args.model_json_schema = classmethod(counted)
+    try:
+        tool = Tool("read_file", "read", Args, lambda a: "x")
+        first = tool.schema()
+        second = tool.schema()
+    finally:
+        Args.model_json_schema = real
+
+    assert calls["n"] == 1
+    assert first == second
+    # Each call gets its own copy: a caller mutating the returned definition
+    # (the model-facing payload is not ours alone) must not poison the cache.
+    first["function"]["parameters"]["properties"]["path"]["type"] = "number"
+    first["function"]["name"] = "hacked"
+    third = tool.schema()
+    assert third["function"]["name"] == "read_file"
+    assert third["function"]["parameters"]["properties"]["path"]["type"] == "string"

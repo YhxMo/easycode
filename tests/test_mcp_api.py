@@ -406,3 +406,55 @@ async def test_editing_is_refused_while_a_turn_is_running(tmp_path):
 
     assert busy.status_code == 409, busy.text
     assert after.status_code == 200, after.text
+
+
+def test_panel_reads_the_credential_file_once_per_request(tmp_path):
+    """Five credentialed servers, one read: the panel is one snapshot."""
+    from easycode.mcp_auth import MCPCredential
+    from easycode.mcp_auth import store as credential_store
+
+    app, _cfg, _store, roots = build(tmp_path)
+    store = credential_store()
+    names = [f"srv{i}" for i in range(5)]
+    for name in names:
+        store.save(
+            MCPCredential(
+                id=f"model-{name}",
+                kind="bearer",
+                scope="project",
+                server=name,
+                root=str(roots["default"]),
+                values={"token": f"tok-{name}"},
+            )
+        )
+    project_path = roots["default"] / "easycode.config.json"
+    project_path.write_text(
+        json.dumps(
+            {
+                "mcp_servers": {
+                    name: {"transport": "http", "url": f"http://127.0.0.1:9/{name}"}
+                    for name in names
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    real_load = CredentialStore._load
+    reads = {"n": 0}
+
+    def counted(self):
+        reads["n"] += 1
+        return real_load(self)
+
+    CredentialStore._load = counted
+    try:
+        body = TestClient(app).get("/api/mcp", params={"root": str(roots["default"])}).json()
+    finally:
+        CredentialStore._load = real_load
+
+    assert {row["name"] for row in body["servers"]} == set(names)
+    assert all(row["credential"] is not None for row in body["servers"])
+    # The token itself never reaches the browser, only its identity.
+    assert "tok-srv0" not in json.dumps(body)
+    assert reads["n"] == 1, reads

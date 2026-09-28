@@ -317,8 +317,8 @@ def _is_loopback(url: str) -> bool:
 # ------------------------------------------------------------------ scopes
 
 
-def read_scope(path: Path) -> dict[str, dict[str, Any]]:
-    """Every server stored in one config file, validated.
+def read_scope_configs(path: Path) -> dict[str, MCPServerConfig]:
+    """Every server stored in one config file, parsed and validated.
 
     A missing file is an empty scope; a malformed one is an error the caller
     reports rather than a scope that silently loses servers.
@@ -334,11 +334,16 @@ def read_scope(path: Path) -> dict[str, dict[str, Any]]:
         return {}
     if not isinstance(servers, dict):
         raise MCPConfigError(f"{path} 的 mcp_servers 必须是对象")
-    out: dict[str, dict[str, Any]] = {}
+    out: dict[str, MCPServerConfig] = {}
     for name, entry in servers.items():
         config = MCPServerConfig.parse(str(name), entry)
-        out[config.name] = config.to_dict()
+        out[config.name] = config
     return out
+
+
+def read_scope(path: Path) -> dict[str, dict[str, Any]]:
+    """The same servers as plain dicts, for callers that hand them around."""
+    return {name: config.to_dict() for name, config in read_scope_configs(path).items()}
 
 
 def write_scope(path: Path, servers: dict[str, dict[str, Any]]) -> None:
@@ -392,7 +397,9 @@ def resolve(
     out: dict[str, ResolvedServer] = {}
     for scope, servers in layers:
         for name, raw in servers.items():
-            config = MCPServerConfig.parse(name, raw)
+            # A caller that already validated its file passes the parsed
+            # configs; one that read plain JSON passes the dicts.
+            config = raw if isinstance(raw, MCPServerConfig) else MCPServerConfig.parse(name, raw)
             previous = out.get(name)
             overrides = [*(previous.overrides if previous else []), previous.scope] if previous else []
             out[name] = ResolvedServer(config=config, scope=scope, overrides=overrides)
@@ -414,8 +421,8 @@ def configured_servers(
     :func:`effective_servers`, which is this list plus the stored values.
     """
     project_root = str(root or "")
-    personal = read_scope(personal_config_path())
-    project = read_scope(project_config_path(Path(project_root))) if project_root else {}
+    personal = read_scope_configs(personal_config_path())
+    project = read_scope_configs(project_config_path(Path(project_root))) if project_root else {}
     return resolve(personal=personal, app=app or {}, project=project)
 
 
@@ -430,7 +437,9 @@ def effective_servers(
     from easycode.mcp_auth import store as credential_store
 
     project_root = str(root or "")
-    credentials = credential_store()
+    # One read for the whole list: every server is looked up in the same view of
+    # the credential file, and the file is read once instead of once per server.
+    credentials = credential_store().snapshot()
     out: list[ResolvedServer] = []
     for server in configured_servers(app, root):
         cred_root = project_root if server.scope == "project" else ""
