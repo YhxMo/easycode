@@ -23,7 +23,6 @@ import {
   revealInFinder,
   saveProject,
   setSessionArchived,
-  setSessionPermission,
   submitApproval,
 } from "../api";
 import { DRAFT_KEY, useChatStream } from "../features/chat/useChatStream";
@@ -67,6 +66,8 @@ import {
   readStoredCurrentTab,
   readStoredTabs,
 } from "./constants";
+import { ConfirmDialogs } from "./ConfirmDialogs";
+import { usePermission } from "./usePermission";
 import { useToast } from "./useToast";
 
 /** Foreground session load phase; null means ready. */
@@ -94,6 +95,8 @@ export default function App() {
   // Unsent composer text, one record per conversation: switching sessions must
   // never carry what was typed here into another conversation's field.
   const drafts = useDrafts();
+  // ---- toast (shared by openSession failure + project actions) ----
+  const [toast, showToast] = useToast();
   const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
   const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ projects: [] });
   // False until the workspace list has been answered once, so the directory
@@ -104,18 +107,10 @@ export default function App() {
   // One pair of states serves both the new-session draft and the open session:
   // a session event updates them in place, and openSession resets them.
   const [secondary, setSecondary] = useState<string[]>([]);
-  const [permission, setPermission] = useState<string>("ask");
   // Foreground session load state: while loading (or after a failed load) the
   // composer, permission picker and secondary editor are disabled, so no
   // request can be sent against a target whose state is not confirmed yet.
   const [sessionLoad, setSessionLoad] = useState<SessionLoad | null>(null);
-  // A permission change is server-confirmed: while the request is in flight the
-  // view keeps the old value and sending is blocked, so a turn can never write
-  // an unconfirmed mode back to the server.
-  const [permissionPending, setPermissionPending] = useState(false);
-  // Full host access is a security boundary, so selecting it from the menu
-  // opens an explicit risk confirmation before the server-side mode changes.
-  const [allowAllConfirm, setAllowAllConfirm] = useState(false);
   /** Bumped whenever the extensions dialog installs or saves something: the `/`
    *  menu reads its sources again, so a new skill is selectable without a reload. */
   const [extensionsRevision, setExtensionsRevision] = useState(0);
@@ -143,6 +138,15 @@ export default function App() {
   // Newest session-list request: an out-of-order reply must not prune tabs the
   // list it lost to still has.
   const sessionsSeqRef = useRef(0);
+
+  const permission = usePermission({
+    sessionId: currentId,
+    sessionBlocked: sessionLoad !== null,
+    viewToken: openSeqRef,
+    onError: showToast,
+  });
+  const { reset: resetPermission, clearPending: clearPermissionPending } = permission;
+
   // Escape closes the mobile drawer. Scoped to when the drawer is open so
   // the desktop layout and the composer's own Escape (command menu) are
   // unaffected.
@@ -210,8 +214,7 @@ export default function App() {
     (currentId ? (models.models[currentSession?.model_alias ?? ""]?.model ?? currentSession?.model_alias) : null) ??
     models.models[models.default]?.model ??
     models.default;
-  const sessionBlocked = sessionLoad !== null;
-  const sendBlocked = sessionBlocked || permissionPending;
+  const sendBlocked = permission.sendBlocked;
 
   // The composer edits exactly one conversation's draft: the one on screen.
   const draftKey = currentId ?? DRAFT_KEY;
@@ -243,7 +246,7 @@ export default function App() {
     currentId,
     chosenRoot,
     secondary,
-    permission,
+    permission: permission.mode,
     commandId: commandIdFor(draft),
     currentModelName,
     sendBlocked,
@@ -368,9 +371,6 @@ export default function App() {
     }
   }, [currentId]);
 
-  // ---- toast (shared by openSession failure + project actions) ----
-  const [toast, showToast] = useToast();
-
   // ---- sidebar collapse state (sections + project groups, in localStorage) ----
   const [collapsedProjects, toggleProjectCollapsed] = usePersistedFlags("easycode:collapsed_projects");
   const [collapsedSections, toggleSection] = usePersistedFlags("easycode:collapsed_sections");
@@ -390,7 +390,7 @@ export default function App() {
       setCurrentId(id);
       setSidebarOpen(false);
       // An unconfirmed permission change belongs to the view that started it.
-      setPermissionPending(false);
+      clearPermissionPending();
       // Menus belong to the composer's text, which is about to change: a
       // dismissed state keeps them closed until the user types again.
       closeCmdMenu();
@@ -423,7 +423,7 @@ export default function App() {
           // silently become a different turn.
           drafts.revalidateEdit(id, (detail.turns ?? []).map((t) => t.id), detail.revision);
           setSecondary(detail.secondary_roots ?? []);
-          setPermission(detail.permission_mode ?? "ask");
+          resetPermission(detail.permission_mode ?? "ask");
           // Records describe the whole conversation, not one turn, so they are
           // adopted even while a turn runs: the live items fill in whatever the
           // server had not recorded when this reply was sent.
@@ -448,7 +448,7 @@ export default function App() {
         dropEntry(DRAFT_KEY);
         setSessionLoad(null);
         setSecondary([]);
-        setPermission("ask");
+        resetPermission("ask");
       }
     },
     [
@@ -463,6 +463,8 @@ export default function App() {
       drafts,
       closeCmdMenu,
       dismissMention,
+      resetPermission,
+      clearPermissionPending,
     ],
   );
 
@@ -535,7 +537,7 @@ export default function App() {
     async (root: string | null) => {
       setSidebarOpen(false);
       try {
-        const created = await createSession(root, permission);
+        const created = await createSession(root, permission.mode);
         // Text typed on the start page was meant for the conversation the user
         // just asked for, so it comes along instead of being parked on a page
         // they have left.
@@ -910,7 +912,7 @@ export default function App() {
     items,
     turnItems: turn,
     turnNo,
-    fullAccess: permission === "allow-all",
+    fullAccess: permission.mode === "allow-all",
     narrow: chatNarrow,
     toggleRef: paneToggleRef,
   });
@@ -922,50 +924,6 @@ export default function App() {
   // The centred first-run stage replaces the stream until a conversation has
   // something to show; a load in progress is never masked by it.
   const isEmptyStage = items.length === 0 && sessionLoad === null;
-
-  const changePermission = useCallback(
-    async (mode: string, confirmFullAccess = false) => {
-      // One permission request at a time: the picker is disabled while pending,
-      // so a second request can never race the first (no request token needed).
-      if (sendBlocked) return;
-      const id = currentId;
-      // The draft's mode is a local choice for the next send: update at once.
-      if (id === null) {
-        setPermission(mode);
-        return;
-      }
-      const viewToken = openSeqRef.current;
-      // The view keeps the confirmed mode until the server answers; a failed
-      // request therefore leaves the old value in place with no rollback.
-      setPermissionPending(true);
-      try {
-        const r = await setSessionPermission(id, mode, confirmFullAccess);
-        if (openSeqRef.current !== viewToken) return;
-        setPermission(r.permission_mode);
-      } catch (e) {
-        if (openSeqRef.current !== viewToken) return;
-        showToast("err", `修改权限失败: ${e instanceof Error ? e.message : String(e)}`);
-      } finally {
-        // A response from a superseded view must not release a newer request.
-        if (openSeqRef.current === viewToken) setPermissionPending(false);
-      }
-    },
-    [currentId, showToast, sendBlocked],
-  );
-
-  const requestPermissionChange = useCallback(
-    (mode: string) => {
-      // Entering full access is the one change that removes every boundary, so
-      // it goes through the risk dialog first; only that dialog's own button
-      // states the consent to the server.
-      if (mode === "allow-all" && permission !== "allow-all") {
-        setAllowAllConfirm(true);
-        return;
-      }
-      void changePermission(mode, mode === "allow-all");
-    },
-    [changePermission, permission],
-  );
 
   /**
    * The one way a message leaves the composer.
@@ -1034,9 +992,9 @@ export default function App() {
       ariaLabel="给 Easy code 发送消息"
       busy={busy}
       sendBlocked={sendBlocked}
-      permission={permission}
+      permission={permission.mode}
       permissionDisabled={busy || sendBlocked}
-      onPermission={requestPermissionChange}
+      onPermission={permission.request}
       onChange={composer.handleChange}
       onKeyDown={composer.onKeyDown}
       onSelectionChange={composer.setCaret}
@@ -1111,7 +1069,7 @@ export default function App() {
         collapsedSections={collapsedSections}
         collapsedProjects={collapsedProjects}
         busy={busy}
-        sessionBlocked={sessionBlocked}
+        sessionBlocked={sessionLoad !== null}
         viewToken={openSeqRef}
         workspaces={workspaces}
         workspacesLoaded={workspacesLoaded}
@@ -1282,34 +1240,14 @@ export default function App() {
             {toast.text}
           </div>
         )}
-        <Modal
-          open={allowAllConfirm}
-          onClose={() => setAllowAllConfirm(false)}
-          title="确认完全访问"
-          variant="permission-warning-modal"
-          actions={
-            <>
-              <button type="button" className="modal-cancel" onClick={() => setAllowAllConfirm(false)}>
-                取消
-              </button>
-              <button
-                type="button"
-                className="danger"
-                onClick={() => {
-                  setAllowAllConfirm(false);
-                  void changePermission("allow-all", true);
-                }}
-              >
-                确认完全访问
-              </button>
-            </>
-          }
-        >
-          <p className="modal-desc">
-            完全访问会关闭文件沙箱和审批，让 Easy code 可以读写宿主机上的文件并执行命令。
-            仅在你确认模型和任务可信时使用。
-          </p>
-        </Modal>
+        <ConfirmDialogs
+          fullAccess={permission.confirming}
+          onDismissFullAccess={() => permission.setConfirming(false)}
+          onConfirmFullAccess={() => {
+            permission.setConfirming(false);
+            void permission.change("allow-all", true);
+          }}
+        />
         {extensionTarget && (
           <ExtensionsSettings
             // A new target is a new dialog: its tab, its loaded panels and the
