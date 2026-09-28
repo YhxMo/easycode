@@ -508,6 +508,30 @@ def test_one_file_diff_explains_what_it_cannot_show(tmp_path):
 
 
 @requires_git
+def test_oversized_files_say_why_there_is_no_diff(tmp_path, monkeypatch):
+    """A row that opens onto nothing must still say why, tracked or untracked."""
+    import easycode.web.git as gitmod
+
+    monkeypatch.setattr(gitmod, "MAX_DIFF_CHARS", 10)
+    workspace = _repo_with_changes(tmp_path)
+    repo = workspace / "repo"
+    (repo / "loose.txt").write_text("x" * 50 + "\n", encoding="utf-8")
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(repo))
+        base = f"/api/sessions/{sess.id}/changes/diff"
+        tracked = client.get(base, params={"repo": str(repo), "path": "tracked.txt"}).json()
+        loose = client.get(base, params={"repo": str(repo), "path": "loose.txt"}).json()
+        stats = client.get(f"/api/sessions/{sess.id}/changes?diffs=0").json()
+
+    assert tracked == {"diff": None, "diff_note": "改动过大，未生成预览"}
+    assert loose == {"diff": None, "diff_note": "改动过大，未生成预览"}
+    # Counting an untracked file reads it, so the summary already knows too.
+    by_path = {f["path"]: f for f in stats["files"]}
+    assert by_path["loose.txt"]["diff_note"] == "改动过大，未生成预览"
+
+
+@requires_git
 def test_one_file_diff_refuses_anything_outside_the_session(tmp_path):
     """The repository and the path are both checked against this session."""
     workspace = _repo_with_changes(tmp_path)

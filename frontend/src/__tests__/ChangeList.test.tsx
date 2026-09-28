@@ -13,7 +13,7 @@ const row: ChangeRow = {
   label: "src/app.ts",
   added: 1,
   removed: 1,
-  gitSource: { repo: "/ws", path: "src/app.ts", absolutePath: "/ws/src/app.ts" },
+  gitSource: { repo: "/ws", path: "src/app.ts" },
 };
 
 const deferred = () => {
@@ -28,7 +28,7 @@ const other: ChangeRow = {
   ...row,
   key: "git:/ws/src/other.ts",
   label: "src/other.ts",
-  gitSource: { repo: "/ws", path: "src/other.ts", absolutePath: "/ws/src/other.ts" },
+  gitSource: { repo: "/ws", path: "src/other.ts" },
 };
 
 describe("ChangeList · 按需取 diff", () => {
@@ -94,6 +94,67 @@ describe("ChangeList · 按需取 diff", () => {
     await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
     await waitFor(() => expect(screen.getByText(/该文件没有未提交改动/)).toBeTruthy());
     expect(screen.getByRole("button", { name: /src\/app\.ts/ })).toBeTruthy();
+  });
+
+  it("没有 diff 的回答说明原因，且不再重复请求", async () => {
+    const user = userEvent.setup();
+    const loadDiff = vi.fn().mockResolvedValue({ diff: null, diff_note: "改动过大，未生成预览" });
+    render(<ChangeList rows={[row]} loadDiff={loadDiff} statsVersion={1} />);
+
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await waitFor(() => expect(screen.getByText("改动过大，未生成预览")).toBeTruthy());
+    // "No diff" is an answer: collapsing and reopening must not ask again.
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    expect(screen.getByText("改动过大，未生成预览")).toBeTruthy();
+    expect(loadDiff).toHaveBeenCalledTimes(1);
+  });
+
+  it("既没有 diff 也没有原因时不留空白", async () => {
+    const user = userEvent.setup();
+    const loadDiff = vi.fn().mockResolvedValue({ diff: null, diff_note: null });
+    render(<ChangeList rows={[row]} loadDiff={loadDiff} statsVersion={1} />);
+
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await waitFor(() => expect(screen.getByText("没有可显示的改动。")).toBeTruthy());
+  });
+
+  it("失败后重新展开会再试一次", async () => {
+    const user = userEvent.setup();
+    const loadDiff = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("网络中断"))
+      .mockResolvedValue({ diff: "+retry\n", diff_note: null });
+    render(<ChangeList rows={[row]} loadDiff={loadDiff} statsVersion={1} />);
+
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await waitFor(() => expect(screen.getByText(/网络中断/)).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await waitFor(() => expect(screen.getByText("+retry")).toBeTruthy());
+    expect(loadDiff).toHaveBeenCalledTimes(2);
+  });
+
+  it("统计刷新前发出、已收起那一行的迟到回复不会落下", async () => {
+    const user = userEvent.setup();
+    const first = deferred();
+    const loadDiff = vi.fn().mockReturnValueOnce(first.promise);
+    const { rerender, container } = render(
+      <ChangeList rows={[row]} loadDiff={loadDiff} statsVersion={1} />,
+    );
+
+    // Opened and closed again while its request is still out.
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    rerender(<ChangeList rows={[row]} loadDiff={loadDiff} statsVersion={2} />);
+    await act(async () => first.resolve({ diff: "+stale\n", diff_note: null }));
+
+    // Reopened under the new counts: it asks again and shows only that answer.
+    loadDiff.mockResolvedValue({ diff: "+fresh\n", diff_note: null });
+    await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));
+    await waitFor(() => expect(screen.getByText("+fresh")).toBeTruthy());
+    expect(container.textContent).not.toContain("+stale");
+    expect(loadDiff).toHaveBeenCalledTimes(2);
   });
 
   it("没有可打开的来源时不请求也不展开", async () => {

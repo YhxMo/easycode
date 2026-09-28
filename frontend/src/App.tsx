@@ -245,10 +245,6 @@ export default function App() {
   // The working tree as it is right now, for the pane's change and file
   // sections. Tagged with the conversation it was read for.
   const [gitChanges, setGitChanges] = useState<{ session: string; data: GitChanges } | null>(null);
-  // Diffs the reader has opened, keyed by absolute path. They describe the same
-  // working tree as the stats they were fetched beside, so a new stats snapshot
-  // clears them rather than letting the two tell different stories.
-  const [gitDiffs, setGitDiffs] = useState<Record<string, string>>({});
   // Bumped with every stats snapshot, so the open rows re-fetch their diffs
   // against the same reading their counts came from.
   const [gitStatsVersion, setGitStatsVersion] = useState(0);
@@ -1329,8 +1325,6 @@ export default function App() {
       .then((data) => {
         if (!live) return;
         setGitChanges({ session: currentId, data });
-        // Those diffs described the same snapshot as the one being replaced.
-        setGitDiffs((prev) => (Object.keys(prev).length ? {} : prev));
         setGitStatsVersion((prev) => prev + 1);
       })
       .catch((e: unknown) => {
@@ -1350,16 +1344,15 @@ export default function App() {
     };
   }, [currentId, paneWantsGit, busy, currentRoot]);
 
-  /** One working-tree row's diff, fetched when the reader opens it. */
+  /**
+   * One working-tree row's diff, fetched when the reader opens it. The list
+   * keeps the answers itself: it is what knows which reply is still current.
+   */
   const loadGitDiff = useCallback(
     async (row: ChangeRow) => {
       const source = row.gitSource;
       if (!currentId || !source) return { diff: null, diff_note: null };
-      const res = await fetchGitFileDiff(currentId, source.repo, source.path);
-      // Remembered so collapsing and reopening does not ask again, and so the
-      // row can render the diff the pane's rows are built from.
-      if (res.diff) setGitDiffs((prev) => ({ ...prev, [source.absolutePath]: res.diff as string }));
-      return res;
+      return fetchGitFileDiff(currentId, source.repo, source.path);
     },
     [currentId],
   );
@@ -1369,7 +1362,7 @@ export default function App() {
   // The change section lists the two sources as rows of counts: the files this
   // conversation changed, and the repository's uncommitted state right now.
   const changeRows = useMemo(() => sessionChangeRows(changeCards), [changeCards]);
-  const treeRows = useMemo(() => workingTreeRows(git?.files ?? [], gitDiffs), [git, gitDiffs]);
+  const treeRows = useMemo(() => workingTreeRows(git?.files ?? []), [git]);
   // What the collapsed line reports is the working tree — "changes on this
   // branch" is its answer, not the session's. A directory outside Git has no
   // tree to report, and this conversation's own record must not vanish with it.

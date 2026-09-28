@@ -199,20 +199,15 @@ def _describe(
     """
     if entry["untracked"]:
         added, binary, text = _untracked_text(Path(entry["absolute_path"]), MAX_DIFF_CHARS)
-        if not diffs:
-            return {
-                "added": added,
-                "removed": 0,
-                "binary": binary,
-                "diff": None,
-                "diff_note": "二进制文件" if binary else None,
-            }
+        # Reading the file is how it is counted, so an oversized one is known
+        # without a diff either way: both modes carry the same reason.
+        note = "二进制文件" if binary else ("改动过大，未生成预览" if text is None else None)
         return {
             "added": added,
             "removed": 0,
             "binary": binary,
-            "diff": text,
-            "diff_note": "二进制文件" if binary else None,
+            "diff": text if diffs else None,
+            "diff_note": note,
         }
     added, removed, binary = counts.get(entry["path"], (0, 0, False))
     out = {"added": added, "removed": removed, "binary": binary, "diff": None, "diff_note": None}
