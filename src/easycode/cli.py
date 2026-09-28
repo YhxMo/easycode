@@ -14,8 +14,8 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
+from easycode.agent.factory import bind_agent, make_agent
 from easycode.agent.loop import Agent, file_change
-from easycode.agentfactory import bind_agent, make_agent
 from easycode.config import Config
 from easycode.permissions.boundary import root_error
 from easycode.permissions.policy import PERM_ALLOW_ALL

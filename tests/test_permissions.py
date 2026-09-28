@@ -496,7 +496,7 @@ def test_approval_reason_is_categorical(tmp_path):
 def test_data_home_state_dirs_need_approval_but_worktrees_stay_writable(tmp_path, monkeypatch):
     """DEC-T3: ~/.easycode state dirs are no longer silently writable."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
     from easycode.permissions.approval import needs_approval
 
     proj = tmp_path / "proj"
@@ -538,7 +538,7 @@ def test_writable_roots_keep_the_temp_dir_with_a_data_home_inside_it(tmp_path, m
     home.mkdir(parents=True)
     monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
     monkeypatch.setenv("HOME", str(home))
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
 
     ctx = PathContext(primary=tmp_path / "proj")
     roots = ctx.writable_roots()
@@ -554,7 +554,7 @@ def test_writable_roots_drop_the_data_home_when_a_root_lives_inside_it(tmp_path,
     sibling worktree still needs approval rather than riding on the data home.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
 
     worktree = data_home() / "worktrees" / "repo"
     worktree.mkdir(parents=True)
@@ -980,7 +980,7 @@ def _full_access_ctx(primary: Path, **kw) -> PathContext:
 def test_full_access_reports_no_protected_paths(tmp_path, monkeypatch):
     """保护判定随模式变化：完全访问下没有任何永久边界，模式之外一律保留。"""
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
     from easycode.permissions.boundary import CONFIG_FILENAME
 
     proj = tmp_path / "proj"
@@ -1018,7 +1018,7 @@ def test_full_access_reports_no_protected_paths(tmp_path, monkeypatch):
 def test_full_access_file_tools_read_and_write_protected_paths(tmp_path, monkeypatch):
     """`.git`、`.easycode`、项目配置、凭据、会话文件与工作区外绝对路径都可读写。"""
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
     from easycode.permissions.boundary import CONFIG_FILENAME
 
     proj = tmp_path / "proj"
@@ -1099,7 +1099,7 @@ def test_full_access_shell_runs_unwrapped_on_every_platform(tmp_path, monkeypatc
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-secret")
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
 
     proj = tmp_path / "proj"
     proj.mkdir()

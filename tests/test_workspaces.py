@@ -513,7 +513,7 @@ def test_save_project_with_session_id_updates_session(tmp_path):
 
 def test_root_error_rejects_sensitive_descendants_and_symlinks(tmp_path, monkeypatch):
     """DEC-T5: the whole media path is checked, not only the last name."""
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
     from easycode.permissions.boundary import root_error
 
     proj = tmp_path / "proj"
@@ -566,7 +566,7 @@ def test_shell_grant_root_keeps_sensitive_children_protected(tmp_path):
 def test_primary_root_validated_like_other_roots(tmp_path):
     """DEC-T5: the primary root must pass root_error; worktrees stay exempt."""
     from easycode.agent.loop import Agent
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
     from easycode.permissions.boundary import root_error
     from easycode.tools import build_registry
     from easycode.web.session import SessionStore

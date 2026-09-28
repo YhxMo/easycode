@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from easycode.credentials import data_home
+from easycode.paths import data_home
 from easycode.permissions.boundary import (
     CONFIG_FILENAME,
     DATA_HOME_STATE_DIRS,

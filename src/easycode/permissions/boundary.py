@@ -17,7 +17,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from easycode.credentials import data_home
+from easycode.paths import data_home
 from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS, SANDBOX_WORKSPACE_WRITE
 
 #: Project configuration filename (protected inside every workspace root).

@@ -7,7 +7,7 @@ import json
 import pytest
 
 from easycode.config import Config
-from easycode.credentials import Credential, save_credential
+from easycode.models.credentials import Credential, save_credential
 
 
 def test_history_token_budget():
@@ -263,7 +263,7 @@ def test_make_agent_wires_summarizer(tmp_path, monkeypatch):
     cfg = Config.load()
     cfg.root = tmp_path
 
-    from easycode.agentfactory import make_agent
+    from easycode.agent.factory import make_agent
 
     agent = make_agent(cfg, "fake-a", tmp_path)
     assert agent.summarizer is not None

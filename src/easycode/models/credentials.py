@@ -14,12 +14,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-CREDENTIALS_DIR = ".easycode"
+from easycode.paths import DATA_DIR_NAME, data_home
+
 CREDENTIALS_FILENAME = "credentials.json"
-
-
-def data_home() -> Path:
-    return Path.home() / CREDENTIALS_DIR
 
 
 @dataclass
@@ -47,7 +44,7 @@ def new_credential_id() -> str:
 
 def credentials_path(home: Path | None = None) -> Path:
     if home is not None:
-        return home / CREDENTIALS_DIR / CREDENTIALS_FILENAME
+        return home / DATA_DIR_NAME / CREDENTIALS_FILENAME
     return data_home() / CREDENTIALS_FILENAME
 
 

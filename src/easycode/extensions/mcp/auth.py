@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from easycode.credentials import data_home
+from easycode.paths import data_home
 
 log = logging.getLogger("easycode.extensions.mcp.client.auth")
 

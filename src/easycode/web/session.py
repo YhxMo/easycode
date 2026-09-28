@@ -15,11 +15,20 @@ from pathlib import Path
 from typing import Any
 
 from easycode.agent.loop import Agent
-from easycode.credentials import data_home
+from easycode.agent.turns import (
+    RUNNING,
+    TurnRecord,
+    full_messages,
+    project_detail,
+    rebuild_history,
+    repair_interrupted,
+    split_legacy,
+    turn_statuses,
+)
 from easycode.models.base import DeferredProvider
+from easycode.paths import data_home
 from easycode.permissions.boundary import normalise_secondary, root_error
 from easycode.permissions.policy import PERM_ALLOW_ALL, PERM_ASK
-from easycode.web.turns import full_messages, repair_interrupted, split_legacy
 
 log = logging.getLogger("easycode.web.session")
 
@@ -90,7 +99,7 @@ class Session:
     #: The whole conversation, one record per user turn: what the transcript
     #: renders, what an edit replays, and the only place the turns the model
     #: context has since dropped still exist. ``messages`` is just the most
-    #: recently saved model context; see ``web/turns``.
+    #: recently saved model context; see ``agent/turns``.
     turns: list[dict] = field(default_factory=list)
     #: Incremented when a turn is accepted. An edit states the revision it read,
     #: so a stale page cannot rewrite a conversation that has moved on.
@@ -186,7 +195,6 @@ class Session:
         this turn has to restore the list as it stood *before* the turn ran, and
         the live list is the model's to change as it works.
         """
-        from easycode.web.turns import TurnRecord
 
         record = TurnRecord.start(
             raw_input=raw_input,
@@ -218,7 +226,6 @@ class Session:
         A later turn is never restored afterwards: once the new branch fails, the
         old one is already gone.
         """
-        from easycode.web.turns import TurnRecord, rebuild_history
 
         if index < 0 or index >= len(self.turns):
             raise IndexError(f"turn index out of range: {index}")
@@ -289,7 +296,6 @@ class Session:
         if index < 0:
             return
         turn = self.turns[index]
-        from easycode.web.turns import RUNNING
 
         if turn.get("status") != RUNNING:
             return
@@ -316,7 +322,6 @@ class Session:
 
     def projection(self) -> dict:
         """The conversation as the transcript reads it, plus the current revision."""
-        from easycode.web.turns import project_detail, turn_statuses
 
         out = project_detail(self.turns, self.history_base)
         out["revision"] = self.revision

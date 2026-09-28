@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from easycode.agent.context import SUMMARY_PREFIX, History
 from easycode.agent.loop import Agent
 from easycode.config import Config
-from easycode.credentials import Credential, save_credential
+from easycode.models.credentials import Credential, save_credential
 from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.session import SessionStore

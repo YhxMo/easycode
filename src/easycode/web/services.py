@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from easycode.agentfactory import bind_agent, defer_binding, provider_kwargs
+from easycode.agent.factory import bind_agent, defer_binding, provider_kwargs
 from easycode.config import DEFAULT_MODEL_ALIAS, Config, ModelSpec
-from easycode.credentials import (
+from easycode.models.credentials import (
     Credential,
     delete_credential,
     load_credentials,

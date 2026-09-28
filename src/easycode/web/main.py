@@ -41,7 +41,7 @@ def create_app(
     They default to the loopback CLI values. To be safe this should match the
     actual listener; the CLI passes the resolved host/port through to uvicorn.
     """
-    from easycode.agentfactory import make_agent
+    from easycode.agent.factory import make_agent
 
     cfg = cfg or Config.load()
     broker = approval_broker or ApprovalBroker()

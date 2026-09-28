@@ -720,7 +720,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                             # reader that simply went away mid-turn is. Either way
                             # the turn is over, and saying so keeps a reload from
                             # showing it as still working.
-                            from easycode.web.turns import CANCELLED, COMPLETED, FAILED
+                            from easycode.agent.turns import CANCELLED, COMPLETED, FAILED
 
                             # Four ways a turn can end without having closed
                             # itself out: the model reported an error, the user

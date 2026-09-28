@@ -187,7 +187,7 @@ def test_resolve_cwd_stays_inside_the_workspace(tmp_path):
 
 
 def test_the_launcher_cache_is_outside_the_data_home():
-    from easycode.credentials import data_home
+    from easycode.paths import data_home
 
     cache = mcp_cache_dir("npx")
     assert cache.is_relative_to(cache_home())

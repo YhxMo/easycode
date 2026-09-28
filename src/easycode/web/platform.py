@@ -8,7 +8,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from easycode.credentials import data_home
+from easycode.paths import data_home
 from easycode.permissions.boundary import PathContext
 from easycode.permissions.sandbox import child_env
 

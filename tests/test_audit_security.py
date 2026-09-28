@@ -24,7 +24,8 @@ from fastapi.testclient import TestClient
 
 from easycode.agent.loop import Agent
 from easycode.config import Config
-from easycode.credentials import Credential, data_home, new_credential_id, save_credential
+from easycode.models.credentials import Credential, new_credential_id, save_credential
+from easycode.paths import data_home
 from easycode.permissions.boundary import PathContext, ToolGrant
 from easycode.permissions.sandbox import child_env
 from easycode.tools import build_registry

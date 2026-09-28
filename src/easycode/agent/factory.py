@@ -6,8 +6,8 @@ from pathlib import Path
 
 from easycode.agent.loop import Agent
 from easycode.config import API_FORMATS, Config
-from easycode.credentials import load_credentials
 from easycode.models.base import DeferredProvider, Provider
+from easycode.models.credentials import load_credentials
 from easycode.models.litellm_provider import LiteLLMProvider
 from easycode.tools import build_registry
 

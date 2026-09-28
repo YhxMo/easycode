@@ -429,9 +429,9 @@ def test_subagent_model_alias_resolved_with_own_credentials(tmp_path, monkeypatc
     """A spec model alias resolves through the parent's factory: its own
     credential and a summarizer; a spec without model inherits the parent alias."""
     from easycode.agent.builtin_tools import make_subagent
-    from easycode.agentfactory import make_agent
+    from easycode.agent.factory import make_agent
     from easycode.config import Config
-    from easycode.credentials import Credential, save_credential
+    from easycode.models.credentials import Credential, save_credential
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     proj = tmp_path / "proj"
@@ -512,10 +512,10 @@ def test_make_agent_carries_the_configured_iteration_limit_to_subagents(tmp_path
     """CLI, Web and delegated subagents are built by the same assembly path, so
     a ceiling configured once governs every one of them."""
     from easycode.agent.builtin_tools import make_subagent
-    from easycode.agentfactory import make_agent
+    from easycode.agent.factory import make_agent
     from easycode.config import Config
-    from easycode.credentials import Credential, save_credential
     from easycode.extensions.subagents import AgentRegistry, AgentSpec
+    from easycode.models.credentials import Credential, save_credential
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     proj = tmp_path / "proj"
@@ -550,9 +550,9 @@ def test_subtasks_follow_the_agent_into_its_new_workspace(tmp_path):
     The subagent factory is built with the agent, but a session that moved
     afterwards must not hand its subtasks the directories it left behind.
     """
-    from easycode.agentfactory import make_agent
+    from easycode.agent.factory import make_agent
     from easycode.config import Config
-    from easycode.credentials import Credential, save_credential
+    from easycode.models.credentials import Credential, save_credential
 
     proj_a = tmp_path / "a"
     proj_b = tmp_path / "b"

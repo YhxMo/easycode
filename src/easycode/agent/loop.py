@@ -22,6 +22,7 @@ from easycode.agent.compaction import COMPACTION_DEFAULTS, Compactor
 from easycode.agent.context import History
 from easycode.agent.summarizer import Summarizer
 from easycode.agent.system import build_system_prompt, find_agents_rules
+from easycode.agent.turns import TurnRecorder
 from easycode.models.base import Provider, ToolCall
 from easycode.permissions.approval import (
     approval_key,
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from easycode.extensions.mcp.client import MCPSessionManager
     from easycode.extensions.skills import SkillRegistry
     from easycode.extensions.subagents import AgentRegistry
+
 
 @dataclass
 class AgentEvent:
@@ -361,8 +363,6 @@ class Agent:
         """
         recorder: TurnRecorder | None = None
         if self.active_turn is not None:
-            from easycode.web.turns import TurnRecorder
-
             recorder = TurnRecorder(self.active_turn)
             self.history.on_message = recorder.on_add
         try:

@@ -20,8 +20,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from easycode.credentials import data_home
 from easycode.extensions.frontmatter import FrontmatterError, parse_spec
+from easycode.paths import data_home
 
 log = logging.getLogger(__name__)
 

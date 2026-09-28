@@ -10,7 +10,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from easycode.config import Config
-from easycode.credentials import Credential, delete_credential, load_credentials, save_credential
+from easycode.models.credentials import (
+    Credential,
+    delete_credential,
+    load_credentials,
+    save_credential,
+)
 from easycode.web.main import create_app
 
 
@@ -188,7 +193,7 @@ def test_each_added_model_gets_its_own_credential(tmp_path, monkeypatch):
     assert creds[first_id].api_key == "sk-first"
     assert creds[second_id].api_key == "sk-second"
 
-    from easycode.agentfactory import provider_kwargs
+    from easycode.agent.factory import provider_kwargs
 
     cfg = Config.load(start=tmp_path)
     first_model, first_kwargs = provider_kwargs(cfg, "first")
@@ -320,7 +325,7 @@ def test_update_model_without_credential_persists_api_format(tmp_path):
     assert "key_id" not in raw["models"]["plain"]
 
     # a model without an independent credential cannot connect
-    from easycode.agentfactory import provider_kwargs
+    from easycode.agent.factory import provider_kwargs
 
     cfg = Config.load(start=tmp_path)
     with pytest.raises(ValueError, match="no credential configured"):
@@ -337,7 +342,7 @@ def test_provider_kwargs_uses_config_api_format(tmp_path, monkeypatch):
     cfg.set_model_alias(
         "mixed", {"model": "gemini-2.0-flash", "key_id": "k1", "api_format": "anthropic"}
     )
-    from easycode.agentfactory import provider_kwargs
+    from easycode.agent.factory import provider_kwargs
 
     model, kwargs = provider_kwargs(cfg, "mixed")
     assert model == "gemini-2.0-flash"
@@ -458,7 +463,7 @@ def test_delete_default_model_falls_back(tmp_path):
 
 def test_switch_model_rebuilds_provider_with_credentials(tmp_path):
     """POST /api/models rebuilds the provider with a credentials lookup."""
-    from easycode.credentials import save_credential
+    from easycode.models.credentials import save_credential
 
     save_credential(
         Credential(key_id="web-keyed", api_key="sk-k"),
@@ -1319,7 +1324,7 @@ def test_provider_kwargs_forwards_credentials(tmp_path, monkeypatch):
         "keyed", {"model": "gpt-4o", "key_id": "k1", "api_format": "openai_compatible"}
     )
 
-    from easycode.agentfactory import provider_kwargs
+    from easycode.agent.factory import provider_kwargs
 
     model, kwargs = provider_kwargs(cfg, "keyed")
     assert model == "gpt-4o"
@@ -1347,7 +1352,7 @@ def test_make_agent_binds_provider_from_credentials(tmp_path, monkeypatch):
         "keyed", {"model": "gpt-4o", "key_id": "k1", "api_format": "openai_compatible"}
     )
 
-    from easycode.agentfactory import make_agent
+    from easycode.agent.factory import make_agent
 
     agent = make_agent(cfg, "keyed", tmp_path)
     assert agent.provider.model == "gpt-4o"
@@ -1362,7 +1367,7 @@ def test_provider_kwargs_missing_credential_raises(tmp_path, monkeypatch):
     cfg = Config()
     cfg.set_model_alias("keyed", {"model": "gpt-4o", "key_id": "nope"})
 
-    from easycode.agentfactory import make_agent, provider_kwargs
+    from easycode.agent.factory import make_agent, provider_kwargs
 
     with pytest.raises(ValueError, match="credential 'nope' not found"):
         provider_kwargs(cfg, "keyed")
@@ -1372,7 +1377,7 @@ def test_provider_kwargs_missing_credential_raises(tmp_path, monkeypatch):
 
 
 def test_apply_api_format_routing():
-    from easycode.agentfactory import apply_api_format
+    from easycode.agent.factory import apply_api_format
 
     assert apply_api_format("gpt-4o", "openai_compatible") == ("gpt-4o", "openai")
     assert apply_api_format("gpt-5", "openai_responses") == ("responses/gpt-5", "openai")
@@ -1386,7 +1391,7 @@ def test_apply_api_format_routing():
 
 
 def test_apply_api_format_overrides_model_prefix():
-    from easycode.agentfactory import apply_api_format
+    from easycode.agent.factory import apply_api_format
 
     # the chosen format wins over a stored provider prefix
     assert apply_api_format("deepseek/deepseek-v4-flash", "anthropic") == (
@@ -1410,7 +1415,7 @@ def test_provider_kwargs_forwards_api_format(tmp_path, monkeypatch):
         "keyed", {"model": "gpt-5", "key_id": "k1", "api_format": "openai_responses"}
     )
 
-    from easycode.agentfactory import provider_kwargs
+    from easycode.agent.factory import provider_kwargs
 
     model, kwargs = provider_kwargs(cfg, "keyed")
     assert model == "responses/gpt-5"
@@ -1451,7 +1456,7 @@ def test_provider_kwargs_format_overrides_prefixed_model(tmp_path, monkeypatch):
         "ds", {"model": "deepseek/deepseek-v4-flash", "key_id": "k1", "api_format": "anthropic"}
     )
 
-    from easycode.agentfactory import provider_kwargs
+    from easycode.agent.factory import provider_kwargs
 
     model, kwargs = provider_kwargs(cfg, "ds")
     assert model == "deepseek-v4-flash"
