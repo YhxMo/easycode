@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import type { SessionSummary } from "../api";
+import { DRAFT_KEY } from "../features/chat/useChatStream";
+import type { OpenTab } from "../features/sidebar/TabBar";
 import {
   CURRENT_TAB_KEY,
   OPEN_TABS_KEY,
@@ -64,4 +67,18 @@ export function useTabs(currentId: string | null) {
   }, []);
 
   return { open, setOpen, register, keepOnly, drop, remembered };
+}
+
+/**
+ * The strip as drawn: tabs are ids, and the titles come from the session list
+ * so a rename shows up. The start page keeps its own leading tab so the strip
+ * always names what is on screen.
+ */
+export function tabStrip(
+  open: string[],
+  currentId: string | null,
+  sessionById: Map<string, SessionSummary>,
+): OpenTab[] {
+  const sessionTabs = open.map((id) => ({ id, title: sessionById.get(id)?.title ?? "会话" }));
+  return currentId === null ? [{ id: DRAFT_KEY, title: "新会话", draft: true }, ...sessionTabs] : sessionTabs;
 }

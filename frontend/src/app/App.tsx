@@ -21,7 +21,6 @@ import { PaneBody } from "../features/pane/PaneBody";
 import { usePane } from "../features/pane/usePane";
 import { EmptyState } from "../features/chat/EmptyState";
 import { LoadingState } from "../components/primitives/LoadingState";
-import type { OpenTab } from "../features/sidebar/TabBar";
 import { SelectionActions } from "../features/chat/SelectionActions";
 import { groupSessions } from "../features/sidebar/sessionGroups";
 import { usePersistedFlags } from "../lib/usePersistedFlags";
@@ -32,7 +31,7 @@ import { basename, DEFAULT_PROJECT } from "../lib/paths";
 import { EMPTY_MODELS, PANE_SECTIONS } from "./constants";
 import { useChatLayout } from "./useChatLayout";
 import { useSessionList } from "./useSessionList";
-import { useTabs } from "./useTabs";
+import { tabStrip, useTabs } from "./useTabs";
 import { ChatHeader } from "./ChatHeader";
 import { ConfirmDialogs } from "./ConfirmDialogs";
 import { ProjectEditDialog } from "./ProjectEditDialog";
@@ -255,16 +254,9 @@ export default function App() {
     [sessions, workspaces.projects],
   );
 
-  // Tabs are ids; the titles come from the session list so a rename shows up.
   // Every opened conversation is registered exactly once, by opening it or by
-  // the moment the backend named a draft; the draft keeps its own tab so the
-  // strip always names what is on screen.
-  const sessionTabs: OpenTab[] = openTabs.map((id) => ({
-    id,
-    title: sessionById.get(id)?.title ?? "会话",
-  }));
-  const tabs: OpenTab[] =
-    currentId === null ? [{ id: DRAFT_KEY, title: "新会话", draft: true }, ...sessionTabs] : sessionTabs;
+  // the moment the backend named a draft.
+  const tabs = tabStrip(openTabs, currentId, sessionById);
 
   // The project a new conversation from the sidebar joins: the one on screen,
   // so the button's hint names what the user will actually get. A project's own
