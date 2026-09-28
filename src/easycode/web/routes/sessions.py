@@ -8,7 +8,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.web.bridge import ApprovalBroker
-from easycode.web.session import SessionStore, idle_sessions, run_mutation
+from easycode.web.locks import idle_sessions, run_mutation
+from easycode.web.store import SessionStore
 
 
 class PermissionRequest(BaseModel):
@@ -151,7 +152,7 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
             # every other config reader, so a concurrent project edit cannot be
             # half applied to this session.
             try:
-                secondary = store._resolve_secondary(root, req.secondary_roots)
+                secondary = store.resolve_secondary(root, req.secondary_roots)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
             try:

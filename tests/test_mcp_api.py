@@ -20,7 +20,7 @@ def build(tmp_path):
     """An app with a default project and one registered second project."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     default = tmp_path / "default"
@@ -346,7 +346,7 @@ def test_the_app_scope_is_not_listed_when_it_is_the_projects_own_file(tmp_path):
     """
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     cfg_file = tmp_path / "easycode.config.json"

@@ -347,7 +347,7 @@ async def test_session_delete_closes_owned_mcp(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.config import Config
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     cfg = Config.load(start=tmp_path)
@@ -386,7 +386,7 @@ def test_web_shutdown_closes_owned_mcp(tmp_path):
     from easycode.extensions.mcp.manager import mcp_tool_name
     from easycode.tools import build_registry
     from easycode.web.main import create_app
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     cfg_file = tmp_path / "easycode.config.json"
@@ -443,7 +443,7 @@ async def test_chat_permission_change_drops_stale_mcp(tmp_path):
     from easycode.config import Config
     from easycode.tools import build_registry
     from easycode.web.main import create_app
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     cfg_file = tmp_path / "easycode.config.json"

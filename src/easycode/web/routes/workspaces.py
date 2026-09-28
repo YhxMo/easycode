@@ -19,12 +19,13 @@ from easycode.web.finder import (
 from easycode.web.finder import (
     reveal_in_finder as finder_reveal,
 )
+from easycode.web.locks import idle_sessions, project_key, run_mutation
 from easycode.web.projects import (
     build_projects,
     normalise_root,
     session_primary,
 )
-from easycode.web.session import SessionStore, idle_sessions, project_key, run_mutation
+from easycode.web.store import SessionStore
 from easycode.web.worktree import WorktreeAddError
 from easycode.web.worktree import create_worktree as worktree_add
 

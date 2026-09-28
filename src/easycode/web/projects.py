@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from easycode.config import Config
-from easycode.web.session import Session, SessionStore, project_key
+from easycode.web.locks import project_key
+from easycode.web.session import Session
+from easycode.web.store import SessionStore
 
 
 def normalise_root(root: str | None) -> str | None:

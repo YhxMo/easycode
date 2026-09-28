@@ -28,7 +28,8 @@ from easycode.web.chat_input import (
     mcp_command_entries,
     resolve_input,
 )
-from easycode.web.session import Session, SessionStore
+from easycode.web.session import Session
+from easycode.web.store import SessionStore
 
 log = logging.getLogger("easycode.web.chat")
 
@@ -64,42 +65,10 @@ def _session_roots(sess: Session, cfg: Config) -> list[Path]:
     return [Path(p) for p in raw if p]
 
 
-
-
-def _session_state(sess: Session) -> dict:
-    """Everything rewriting a branch touches, for an all-or-nothing edit."""
-    import copy
-
-    return {
-        "turns": copy.deepcopy(sess.turns),
-        "revision": sess.revision,
-        "artifacts": copy.deepcopy(sess.artifacts),
-        "approval_log": copy.deepcopy(sess.approval_log),
-        "history": copy.deepcopy(sess.agent.history.messages),
-        "todos": copy.deepcopy(sess.agent.todos),
-    }
-
-
-def _restore_state(sess: Session, state: dict) -> None:
-    import copy
-
-    sess.turns = state["turns"]
-    sess.revision = state["revision"]
-    sess.artifacts = state["artifacts"]
-    sess.approval_log = state["approval_log"]
-    sess.agent.history.messages = state["history"]
-    sess.agent.todos = copy.deepcopy(state["todos"])
-
-
-
-
-
-
-
 def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: ApprovalBroker) -> None:
     """Connect chat and command endpoints to this app's session store."""
+    from easycode.web.locks import project_key
     from easycode.web.projects import normalise_root, session_primary
-    from easycode.web.session import project_key
 
     def _get_session(session_id: str | None, **agent_kwargs: object) -> Session:
         if session_id:
@@ -360,7 +329,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                     # disk: an edit that could not be persisted must leave the
                     # conversation it read exactly as it was, in memory as well as
                     # on disk, and report that nothing was accepted.
-                    snapshot = _session_state(sess)
+                    snapshot = sess.snapshot_state()
                     turn = sess.replace_turns_from(
                         index, raw_message, resolved.model_input, resolved.command_id
                     )
@@ -373,7 +342,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                     store.record_exchange(sess)
                 except OSError as exc:
                     if snapshot is not None:
-                        _restore_state(sess, snapshot)
+                        sess.restore_state(snapshot)
                     yield event_to_sse({"type": "error", "error": f"保存会话失败: {exc}"})
                     return
                 yield session_sse(sess.id)

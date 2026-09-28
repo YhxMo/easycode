@@ -15,7 +15,7 @@ from easycode.web.main import create_app
 def test_session_create_with_root_uses_session_root(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -47,7 +47,7 @@ def test_session_root_persistence_roundtrip(tmp_path):
 
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -78,7 +78,7 @@ def test_session_root_persistence_roundtrip(tmp_path):
 def test_default_project_session_loads(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -111,7 +111,7 @@ def test_default_project_session_loads(tmp_path):
 def test_workspaces_endpoints(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -148,7 +148,7 @@ def test_chat_root_creates_session_in_project(tmp_path):
     """First message with root creates a session bound to that project."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -186,7 +186,7 @@ def test_chat_root_creates_session_in_project(tmp_path):
 def test_session_secondary_roots_persist(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -232,7 +232,7 @@ def test_session_secondary_roots_persist(tmp_path):
 def test_chat_root_with_secondary_roots(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -283,7 +283,7 @@ def test_choose_workspaces_endpoint(tmp_path, monkeypatch):
     )
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -320,7 +320,7 @@ def test_choose_unsupported_returns_empty(tmp_path, monkeypatch):
     )
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -348,7 +348,7 @@ def test_workspaces_projects_from_sessions_and_save(tmp_path):
     """GET merges config + session bindings; POST /projects persists per-root."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -418,7 +418,7 @@ def test_spa_fallback_no_405_on_api_posts(tmp_path):
     """Production static serving must not turn unknown /api POSTs into 405s."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -455,7 +455,7 @@ def test_save_project_with_session_id_updates_session(tmp_path):
     """Editing secondary roots on a locked session updates its agent + disk state."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -569,7 +569,7 @@ def test_primary_root_validated_like_other_roots(tmp_path):
     from easycode.paths import data_home
     from easycode.permissions.boundary import root_error
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"
@@ -606,7 +606,7 @@ def _project_app(tmp_path, projects=None, script=None):
     """
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "primary"
@@ -669,7 +669,7 @@ def test_blank_session_moves_and_inherits_the_target_project(tmp_path):
     raw = json.loads((store.dir / f"{sess.id}.json").read_text(encoding="utf-8"))
     assert raw["root"] == str(proj_b)
     assert raw["secondary_roots"] == [str(sec_b)]
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
 
     restored = SessionStore(store.cfg, store.root, store.agent_factory)
     restored.dir = store.dir
@@ -808,7 +808,7 @@ def _worktree_client(tmp_path):
     """An app whose default project is the throwaway root."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     (tmp_path / "easycode.config.json").write_text(

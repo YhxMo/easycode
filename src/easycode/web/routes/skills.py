@@ -29,8 +29,10 @@ from easycode.extensions.skills import (
     personal_skills_dir,
     project_skills_dir,
 )
+from easycode.web.locks import idle_sessions, project_key, run_mutation
 from easycode.web.projects import known_projects, normalise_root
-from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
+from easycode.web.session import Session
+from easycode.web.store import SessionStore
 
 log = logging.getLogger("easycode.web.skills")
 
@@ -55,7 +57,7 @@ def register_skills(app: FastAPI, cfg: Config, store: SessionStore) -> None:
 
     def _roots(project_root: str) -> list[Path]:
         """Where skills come from for one project: primary, then secondaries."""
-        secondary = store._resolve_secondary(project_root, None)
+        secondary = store.resolve_secondary(project_root, None)
         return [Path(project_root), *(Path(p) for p in secondary)]
 
     def _install_root(project_root: str, scope: str) -> Path:

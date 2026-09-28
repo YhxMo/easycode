@@ -16,7 +16,8 @@ from easycode.models.credentials import (
 )
 
 if TYPE_CHECKING:
-    from easycode.web.session import Session, SessionStore
+    from easycode.web.session import Session
+    from easycode.web.store import SessionStore
 
 FORMAT_PROVIDERS = {
     "openai_responses": "openai",

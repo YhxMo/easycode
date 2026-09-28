@@ -18,7 +18,7 @@ from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.tools import build_registry
 from easycode.web.main import create_app
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
 from tests.helpers_web import GateProvider, wait_until
 

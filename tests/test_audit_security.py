@@ -31,7 +31,7 @@ from easycode.permissions.sandbox import child_env
 from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.middleware import _origin_is_local
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
 
 # ----------------------------------------------------------------

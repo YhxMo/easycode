@@ -29,7 +29,7 @@ def build(tmp_path):
     """An app with a default project, a second project and a secondary root."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     default = tmp_path / "default"

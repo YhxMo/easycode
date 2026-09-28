@@ -119,7 +119,7 @@ def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
 
         return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path)
 
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
 
     store = SessionStore(cfg, tmp_path, factory)
     return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
@@ -487,7 +487,7 @@ def test_model_mutations_409_while_session_busy(tmp_path):
 
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.helpers_web import GateProvider, wait_until
 
     cfg_file = tmp_path / "easycode.config.json"
@@ -553,7 +553,7 @@ def test_update_model_rebinds_only_given_sessions(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
     from easycode.web import model_admin as services
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     cfg_file = tmp_path / "easycode.config.json"
@@ -605,7 +605,7 @@ def test_model_edit_does_not_rebind_concurrent_running_session(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.models.base import DeferredProvider
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.helpers_web import GateProvider, wait_until
 
     cfg_file = tmp_path / "easycode.config.json"
@@ -692,7 +692,7 @@ def test_secondary_change_409_while_session_busy(tmp_path):
 
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.helpers_web import GateProvider, wait_until
 
     cfg_file = tmp_path / "easycode.config.json"
@@ -752,7 +752,7 @@ def test_rename_clear_key_keeps_session_viewable_and_recovers(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.models.base import DeferredProvider
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     client = make_app(tmp_path, {"models": {"fake-a": "fake/a"}})
@@ -993,7 +993,7 @@ def test_web_session_with_secondary_roots(tmp_path):
     """Chat creating a session with secondary_roots wires them into the agent."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -1225,7 +1225,7 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
     from easycode.web.main import create_app
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     def factory(alias: str, **_):
@@ -1263,7 +1263,7 @@ async def test_web_approval_endpoint_unknown_id(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
     from easycode.web.main import create_app
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     cfg_file = tmp_path / "easycode.config.json"

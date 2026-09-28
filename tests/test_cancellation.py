@@ -11,7 +11,7 @@ from easycode.config import Config
 from easycode.models.base import Provider, StreamEvent
 from easycode.tools import build_registry
 from easycode.web.main import create_app
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def test_web_cancel_endpoint(repo: Path) -> None:
     """Cancel endpoint stops an in-flight chat; same event loop (ASGI transport)."""
     import httpx
 
-    from easycode.web.session import SessionStore as SS
+    from easycode.web.store import SessionStore as SS
 
     cfg = Config.load()
     created: list[Agent] = []
@@ -88,7 +88,7 @@ def test_deleted_session_not_resurrected_by_stream(repo: Path) -> None:
     the stream ends the .json is gone and ``load_all`` finds nothing."""
     import httpx
 
-    from easycode.web.session import SessionStore as SS
+    from easycode.web.store import SessionStore as SS
 
     cfg = Config.load()
     created: list[Agent] = []
@@ -129,7 +129,7 @@ def test_delete_stops_followup_tools(repo: Path) -> None:
     import httpx
 
     from easycode.models.base import Provider, StreamEvent, ToolCall
-    from easycode.web.session import SessionStore as SS
+    from easycode.web.store import SessionStore as SS
     from tests.helpers_web import wait_until
 
     cfg = Config.load()
@@ -207,7 +207,7 @@ def test_project_delete_stops_followup_tools(repo: Path) -> None:
     import httpx
 
     from easycode.models.base import Provider, StreamEvent, ToolCall
-    from easycode.web.session import SessionStore as SS
+    from easycode.web.store import SessionStore as SS
     from tests.helpers_web import wait_until
 
     cfg = Config.load()
@@ -291,7 +291,7 @@ def test_delete_session_leaves_other_session_running(repo: Path) -> None:
     import httpx
 
     from easycode.models.base import Provider, StreamEvent
-    from easycode.web.session import SessionStore as SS
+    from easycode.web.store import SessionStore as SS
     from tests.helpers_web import wait_until
 
     cfg = Config.load()

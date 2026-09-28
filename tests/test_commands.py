@@ -13,7 +13,7 @@ from easycode.extensions.commands import Command, CommandRegistry
 from easycode.extensions.skills import Skill, SkillRegistry
 from easycode.tools import build_registry
 from easycode.web.main import create_app
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
 
 
@@ -375,7 +375,7 @@ def test_secondary_change_refreshes_agent_skills_and_commands(tmp_path, monkeypa
 
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"
@@ -433,7 +433,7 @@ def test_secondary_roots_explicit_empty_vs_inherited(tmp_path, monkeypatch):
 
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"

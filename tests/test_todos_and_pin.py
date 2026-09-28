@@ -13,7 +13,7 @@ from easycode.config import Config
 from easycode.permissions.approval import needs_approval
 from easycode.tools import build_registry
 from easycode.web.main import create_app
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
 
 

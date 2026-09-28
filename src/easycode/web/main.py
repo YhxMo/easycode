@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from easycode.config import Config
 from easycode.web.bridge import ApprovalBroker
+from easycode.web.locks import SessionBusyError
 from easycode.web.middleware import _LocalOriginMiddleware
 from easycode.web.routes.chat import register_chat
 from easycode.web.routes.files import register_files
@@ -20,7 +21,7 @@ from easycode.web.routes.models import register_models
 from easycode.web.routes.sessions import register_sessions
 from easycode.web.routes.skills import register_skills
 from easycode.web.routes.workspaces import register_workspaces
-from easycode.web.session import SessionBusyError, SessionStore
+from easycode.web.store import SessionStore
 
 FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 

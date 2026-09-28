@@ -19,7 +19,7 @@ from fastapi import HTTPException
 
 from easycode.config import Config
 from easycode.extensions.skills import MCP_COMMAND_PREFIX, SkillRegistry
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 
 if TYPE_CHECKING:
     from easycode.extensions.commands import Command, CommandRegistry
@@ -98,7 +98,7 @@ def draft_roots(
     from easycode.web.projects import normalise_root
 
     root = normalise_root(root_raw)
-    secondary = [str(p) for p in store._resolve_secondary(root, secondary_raw)]
+    secondary = [str(p) for p in store.resolve_secondary(root, secondary_raw)]
     base = Path(root) if root else Path(cfg.root)
     return [base, *(Path(p) for p in secondary)]
 

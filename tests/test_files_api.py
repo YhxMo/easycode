@@ -12,7 +12,7 @@ from easycode.config import Config
 from easycode.tools import build_registry
 from easycode.tools.reading import CHUNK_BYTES, MAX_READ_BYTES, _LineWindow, read_window
 from easycode.web.main import create_app
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
 
 

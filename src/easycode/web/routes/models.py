@@ -7,7 +7,8 @@ from pydantic import BaseModel
 
 from easycode.config import API_FORMATS, DEFAULT_API_FORMAT, Config
 from easycode.web import model_admin
-from easycode.web.session import SessionStore, idle_sessions, run_mutation
+from easycode.web.locks import idle_sessions, run_mutation
+from easycode.web.store import SessionStore
 
 
 class ModelRequest(BaseModel):

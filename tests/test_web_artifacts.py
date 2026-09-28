@@ -20,7 +20,7 @@ from easycode.web.artifacts import (
     records_from_messages,
 )
 from easycode.web.main import create_app
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
 
 READ_OK = json.dumps(

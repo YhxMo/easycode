@@ -15,7 +15,7 @@ from easycode.web.main import create_app
 def test_session_permission_persistence(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -71,7 +71,7 @@ def test_legacy_allow_all_session_restores_as_asking(tmp_path):
     written back so the user is asked exactly once."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -142,7 +142,7 @@ def test_legacy_allow_all_session_restores_as_asking(tmp_path):
 def test_session_permission_endpoint(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
@@ -192,7 +192,7 @@ def test_session_permission_endpoint(tmp_path):
 def test_chat_with_permission_mode_on_existing_session(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"

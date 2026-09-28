@@ -13,7 +13,7 @@ from easycode.config import Config
 from easycode.models.base import Provider
 from easycode.tools import build_registry
 from easycode.web.main import create_app
-from easycode.web.session import SessionStore
+from easycode.web.store import SessionStore
 from tests.helpers_web import GateProvider, wait_until
 
 
@@ -213,7 +213,7 @@ def test_cancel_during_inflight_not_gated(tmp_path) -> None:
 
 
 def test_flush_concurrent_unique_tmp_and_atomic(tmp_path) -> None:
-    """_flush must never share a .tmp path (concurrent flushes write to
+    """A flush must never share a .tmp path (concurrent flushes write to
     distinct temp files), and concurrent flushes leave a complete, valid session
     file on disk."""
     cfg = _make_cfg(tmp_path)
@@ -228,8 +228,10 @@ def test_flush_concurrent_unique_tmp_and_atomic(tmp_path) -> None:
     sid = s.id
 
     # Two tmp paths for the same session are always distinct (unique suffix).
-    p1 = store._tmp_path(sid)
-    p2 = store._tmp_path(sid)
+    from easycode.web.persistence import tmp_path
+
+    p1 = tmp_path(store._path(sid), sid)
+    p2 = tmp_path(store._path(sid), sid)
     assert p1 != p2
 
     async def flush_many() -> None:

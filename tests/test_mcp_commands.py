@@ -28,7 +28,7 @@ def build(tmp_path, app_servers=None, project_servers=None):
     """An app with a default project A, a second project B, both registered."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     proj_a = tmp_path / "a"
@@ -506,7 +506,7 @@ def test_a_selected_service_really_runs_its_tool(tmp_path):
     from easycode.agent.loop import Agent
     from easycode.extensions.mcp.manager import mcp_tool_name
     from easycode.tools import build_registry
-    from easycode.web.session import SessionStore
+    from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"

@@ -32,8 +32,10 @@ from easycode.extensions.mcp.config import (
 )
 from easycode.extensions.mcp.credentials import KINDS, MCPCredential
 from easycode.extensions.mcp.credentials import store as credential_store
+from easycode.web.locks import idle_sessions, project_key, run_mutation
 from easycode.web.projects import known_projects
-from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
+from easycode.web.session import Session
+from easycode.web.store import SessionStore
 
 
 class SaveServerRequest(BaseModel):
