@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
-  CommandInfo,
-  FileEntry,
   ModelsInfo,
   SessionDetail,
   SessionSummary,
@@ -16,9 +13,7 @@ import {
   createWorktree,
   deleteSession,
   fetchArchivedSessions,
-  fetchCommands,
   fetchModels,
-  fetchFiles,
   fetchSession,
   fetchSessions,
   pinSession,
@@ -32,21 +27,17 @@ import {
   submitApproval,
 } from "../api";
 import { DRAFT_KEY, useChatStream } from "../features/chat/useChatStream";
+import { useComposer } from "../features/composer/useComposer";
 import { MENTION_LIST_ID, MENTION_OPTION_PREFIX, MentionMenu } from "../features/composer/MentionMenu";
-import type { MentionAnswer, MentionState } from "../features/composer/MentionMenu";
 import { ExtensionsSettings, type ExtensionTarget } from "../features/extensions/ExtensionsSettings";
 import { ModelPicker } from "../features/models/ModelPicker";
 import { currentTurn } from "../features/chat/chatStream";
 import { artifactsToItems, historyToItems } from "../features/chat/history";
 import type { ApprovalState, Item, ToolItem } from "../types";
 import { COMMAND_LIST_ID, CommandMenu } from "../features/composer/CommandMenu";
-import type { CommandMenuState } from "../features/composer/CommandMenu";
 import {
   activeCommandId,
   commandNameIn,
-  filterCommands,
-  clampCommandIndex,
-  moveCommandCursor,
 } from "../features/composer/commands";
 import { Modal } from "../components/Modal";
 import { ChatMessages } from "../features/chat/ChatMessages";
@@ -60,10 +51,8 @@ import { LoadingState } from "../components/primitives/LoadingState";
 import { TabBar, type OpenTab } from "../features/sidebar/TabBar";
 import { SelectionActions } from "../features/chat/SelectionActions";
 import { groupSessions } from "../features/sidebar/sessionGroups";
-import { applyMention, mentionToken } from "../features/composer/mention";
-import { useVoiceInput } from "../features/composer/useVoiceInput";
 import { usePersistedFlags } from "../lib/usePersistedFlags";
-import { isEditing, useDrafts, type Draft } from "../features/composer/useDrafts";
+import { useDrafts, type Draft } from "../features/composer/useDrafts";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import type { StickToBottom } from "../lib/useStickToBottom";
 import type { ProjectAction } from "../features/sidebar/ProjectMenu";
@@ -127,30 +116,10 @@ export default function App() {
   // Full host access is a security boundary, so selecting it from the menu
   // opens an explicit risk confirmation before the server-side mode changes.
   const [allowAllConfirm, setAllowAllConfirm] = useState(false);
-  const [commandAnswer, setCommandAnswer] = useState<CommandMenuState>({ status: "loading" });
-  // Bumped by the menu's retry, and by a change in the registered projects.
-  const [commandRetry, setCommandRetry] = useState(0);
   /** Bumped whenever the extensions dialog installs or saves something: the `/`
    *  menu reads its sources again, so a new skill is selectable without a reload. */
   const [extensionsRevision, setExtensionsRevision] = useState(0);
 
-  const [cmdOpen, setCmdOpen] = useState(false);
-  const [cmdIndex, setCmdIndex] = useState(0);
-  // `@` file references: the token under the caret and whether the user
-  // dismissed the menu for this token.
-  const [mentionOff, setMentionOff] = useState(false);
-  const [mentionIndex, setMentionIndex] = useState(0);
-  // The last answer for a file query, tagged with what it answered. A token
-  // without a matching answer is still being looked up, so "searching" never
-  // has to be written into state and a completed-but-empty result stays
-  // distinguishable from a failure.
-  const [mentionAnswer, setMentionAnswer] = useState<{
-    scope: string;
-    query: string;
-    answer: MentionAnswer;
-  } | null>(null);
-  // Bumped by the menu's retry: the effect below is what owns the request.
-  const [mentionRetry, setMentionRetry] = useState(0);
   // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -174,10 +143,6 @@ export default function App() {
   // Newest session-list request: an out-of-order reply must not prune tabs the
   // list it lost to still has.
   const sessionsSeqRef = useRef(0);
-  // Draft key whose dictation is running, so a late transcript lands in the
-  // conversation it was spoken into.
-  const voiceKeyRef = useRef(DRAFT_KEY);
-
   // Escape closes the mobile drawer. Scoped to when the drawer is open so
   // the desktop layout and the composer's own Escape (command menu) are
   // unaffected.
@@ -251,63 +216,15 @@ export default function App() {
   // The composer edits exactly one conversation's draft: the one on screen.
   const draftKey = currentId ?? DRAFT_KEY;
   const draft = drafts.get(draftKey);
+  // The stream reports this text back on an edit; the composer reads the same
+  // field for the input element itself.
   const input = draft.text;
-  const caret = draft.caret;
-  const setInput = useCallback(
-    (v: string) => drafts.update(draftKey, (d) => ({ ...d, text: v })),
-    [drafts, draftKey],
-  );
-  const setCaret = useCallback(
-    (c: number) => drafts.update(draftKey, (d) => ({ ...d, caret: c })),
-    [drafts, draftKey],
-  );
 
-  /** The edit this composer is holding, if any (the banner names its target). */
-  const editingDraft = isEditing(draft) ? draft : null;
   /** Leave edit mode and put the draft the user started with back. */
   const cancelEdit = useCallback(() => {
     drafts.cancelEdit(draftKey);
     fieldRef.current?.focus();
   }, [drafts, draftKey]);
-
-  // IME composition (Chinese/Japanese input) owns the field while it runs. The
-  // ref guards the caret restore below — writing a selection into the field
-  // mid-composition is what turns a pinyin buffer into stray latin text — and
-  // the state gates everything derived from the token under the caret.
-  const composingRef = useRef(false);
-  const [composing, setComposing] = useState(false);
-  /** The field's new text and caret, once the user (not the IME) is done editing. */
-  const syncComposer = useCallback(
-    (value: string, nextCaret: number) => {
-      setInput(value);
-      setCaret(nextCaret);
-      setCmdOpen(value.startsWith("/"));
-      setCmdIndex(0);
-      setMentionIndex(0);
-      setMentionOff(false);
-    },
-    [setCaret, setInput],
-  );
-
-  /**
-   * Picking a menu entry drops its command into the composer, selection and
-   * all, in one write: the text and what it means are stored together so no
-   * other conversation can inherit one without the other.
-   */
-  const pickCommand = useCallback(
-    (c: CommandInfo) => {
-      const text = `/${c.name} `;
-      drafts.update(draftKey, (d) => ({
-        ...d,
-        text,
-        caret: text.length,
-        command: { id: c.id, name: c.name },
-      }));
-      setCmdOpen(false);
-      setCmdIndex(0);
-    },
-    [drafts, draftKey],
-  );
 
   const {
     send,
@@ -406,140 +323,30 @@ export default function App() {
     fetchModels().then(setModels).catch(() => {});
   }, [refreshSessions]);
 
-  // Skills and templates come from every registered project, but MCP services
-  // belong to one: the request names the conversation (or the directory a draft
-  // would run in), so the menu offers the services of the project on screen.
-  const commandScope = currentId ? `s:${currentId}` : `d:${chosenRoot ?? ""}`;
+  // Changes whenever the registered projects do, so the menu re-reads them.
   const projectSig = (workspaces.projects ?? []).map((p) => p.root ?? "").join("\u0000");
-  // An older reply must not replace a newer request's answer — including one
-  // that arrives after the view moved to another project.
-  const commandsSeqRef = useRef(0);
-  useEffect(() => {
-    const seq = ++commandsSeqRef.current;
-    fetchCommands(currentId, currentId ? currentRoot : chosenRoot)
-      .then((r) => {
-        if (seq !== commandsSeqRef.current) return;
-        setCommandAnswer({
-          status: "ready",
-          scope: commandScope,
-          commands: r.commands,
-          errors: r.errors,
-        });
-      })
-      .catch((e: unknown) => {
-        if (seq !== commandsSeqRef.current) return;
-        setCommandAnswer({
-          status: "error",
-          message: e instanceof Error ? e.message : String(e),
-        });
-      });
-  }, [commandScope, commandRetry, projectSig, extensionsRevision, currentId, currentRoot, chosenRoot]);
-  // An answer describes the scope it was fetched for. Until this render's
-  // scope has one, the menu is loading: it must never offer the previous
-  // project's services in the moment before the effect runs.
-  const commandState: CommandMenuState = useMemo(
-    () =>
-      commandAnswer.status === "ready" && commandAnswer.scope !== commandScope
-        ? { status: "loading" }
-        : commandAnswer,
-    [commandAnswer, commandScope],
-  );
-  // A stable list per state: the keyboard handler below depends on it.
-  const commands = useMemo(
-    () => (commandState.status === "ready" ? commandState.commands : []),
-    [commandState],
-  );
 
-  // `@` references: fetch the listing for the token under the caret, debounced
-  // so typing does not fire a request per keystroke. A reply is used only while
-  // it still matches the scope and the query it was fetched for.
-  const mentionInfo = useMemo(
-    () => (composing ? null : mentionToken(input, caret)),
-    [input, caret, composing],
-  );
-  const mentionScope = JSON.stringify([currentId, chosenRoot, secondary]);
-  const mentionQuery = mentionInfo?.query ?? null;
-  // A bare `@` asks for a file name instead of listing the tree, so the menu
-  // never opens with noise the reader did not ask for (hidden files stay
-  // findable by typing).
-  const mentionSearching = mentionQuery !== null && mentionQuery.trim() !== "";
-  useEffect(() => {
-    if (!mentionSearching) return;
-    const draft = currentId === null ? { root: chosenRoot, secondary } : undefined;
-    const scope = mentionScope;
-    const query = mentionQuery;
-    let live = true;
-    // Debounced so typing does not fire a request per keystroke.
-    const timer = window.setTimeout(() => {
-      fetchFiles(currentId, draft, query)
-        .then((r) => {
-          if (live) {
-            setMentionAnswer({ scope, query, answer: { status: "ready", files: r.files, total: r.total } });
-          }
-        })
-        .catch((e: unknown) => {
-          if (live) {
-            setMentionAnswer({
-              scope,
-              query,
-              answer: { status: "error", message: e instanceof Error ? e.message : String(e) },
-            });
-          }
-        });
-    }, 140);
-    return () => {
-      live = false;
-      window.clearTimeout(timer);
-    };
-  }, [mentionSearching, mentionQuery, mentionScope, currentId, chosenRoot, secondary, mentionRetry]);
-
-  const mentionOpen = Boolean(mentionInfo) && !mentionOff && !cmdOpen;
-  // A reply only counts while it still answers the token under the caret; a
-  // token without one is either asking for a query or still being looked up.
-  const mentionCurrent: MentionState | null = useMemo(() => {
-    if (!mentionInfo) return null;
-    if (!mentionSearching) {
-      return { status: "prompt", scope: mentionScope, query: mentionInfo.query };
-    }
-    const answered = mentionAnswer;
-    if (answered && answered.scope === mentionScope && answered.query === mentionInfo.query) {
-      return { ...answered.answer, scope: answered.scope, query: answered.query };
-    }
-    return { status: "loading", scope: mentionScope, query: mentionInfo.query };
-  }, [mentionInfo, mentionSearching, mentionAnswer, mentionScope]);
-  const mentionMatches = useMemo(
-    () => (mentionCurrent?.status === "ready" ? mentionCurrent.files : []),
-    [mentionCurrent],
-  );
-
-  const pickMention = useCallback(
-    (file: FileEntry) => {
-      const token = mentionInfo;
-      if (!token) return;
-      const next = applyMention(input, token, file.absolute_path);
-      setInput(next.value);
-      setCaret(next.caret);
-      setMentionOff(true);
-      window.requestAnimationFrame(() => {
-        fieldRef.current?.setSelectionRange(next.caret, next.caret);
-      });
-    },
-    [input, mentionInfo, setCaret, setInput],
-  );
-
-  /** Dictated text appends to the draft the dictation was started in. */
-  const appendToDraft = useCallback(
-    (key: string, text: string) =>
-      drafts.update(key, (d) => ({ ...d, text: d.text ? `${d.text} ${text}` : text })),
-    [drafts],
-  );
-  const voice = useVoiceInput((text) => appendToDraft(voiceKeyRef.current, text));
-  const toggleVoice = useCallback(() => {
-    // Remember where this dictation belongs: a transcript that arrives after
-    // the user switched away must not append to the new conversation.
-    if (!voice.listening) voiceKeyRef.current = draftKey;
-    voice.toggle();
-  }, [voice, draftKey]);
+  // Bound by name: the two callbacks below depend on these, and a member
+  // expression would make the rule ask for the whole (per-render) object.
+  const composer = useComposer({
+    key: draftKey,
+    drafts,
+    sessionId: currentId,
+    sessionRoot: currentRoot,
+    draftRoot: chosenRoot,
+    secondary,
+    projectsSignature: projectSig,
+    extensionsRevision,
+    send,
+    sendEdit,
+    cancelEdit,
+    sticky,
+    fieldRef,
+  });
+  // Bound by name: two callbacks below depend on these, and through a member
+  // expression the dependency rule asks for the whole (per-render) object.
+  const { closeCmdMenu, dismissMention } = composer;
+  const insertDraftText = composer.setInput;
 
   useEffect(() => {
     refreshArchived();
@@ -586,8 +393,8 @@ export default function App() {
       setPermissionPending(false);
       // Menus belong to the composer's text, which is about to change: a
       // dismissed state keeps them closed until the user types again.
-      setCmdOpen(false);
-      setMentionOff(true);
+      closeCmdMenu();
+      dismissMention();
       if (id) registerTab(id);
       if (id) {
         setSessionLoad({ status: "loading" });
@@ -654,6 +461,8 @@ export default function App() {
       isStreaming,
       registerTab,
       drafts,
+      closeCmdMenu,
+      dismissMention,
     ],
   );
 
@@ -679,14 +488,6 @@ export default function App() {
   // has: this only puts the insertion point where the user stopped typing.
   // Never while an IME is composing — the selection belongs to it until the
   // candidate lands.
-  useEffect(() => {
-    const field = fieldRef.current;
-    if (!field || composingRef.current) return;
-    const pos = Math.min(drafts.get(draftKey).caret, field.value.length);
-    if (field.selectionStart !== pos || field.selectionEnd !== pos) {
-      field.setSelectionRange(pos, pos);
-    }
-  }, [draftKey, drafts]);
 
   // The composer is laid out over the stream: publish its height so the stream
   // can keep exactly that much room clear at the bottom.
@@ -1174,102 +975,6 @@ export default function App() {
    * own would append a new turn beside the very message the user was editing —
    * which is exactly what the retract arrow promised to replace.
    */
-  const submit = useCallback(() => {
-    // Sending is an explicit return to the live edge: the reply to your own
-    // message is never something you have to scroll back down for.
-    sticky.stick();
-    // The composer's text has been consumed, so the menu that helped write it
-    // goes with it. A hand-typed `/mcp:demo 任务` whose query matches nothing
-    // still sends on Enter — leaving its scrim over the conversation would
-    // block every click until the user found Escape.
-    setCmdOpen(false);
-    // The same value the stream was handed: one source for every send, whether
-    // it starts a turn or replaces one.
-    if (editingDraft) void sendEdit(editingDraft, commandIdFor(draft));
-    else void send();
-  }, [draft, editingDraft, send, sendEdit, sticky]);
-
-  // Composer keys: command-menu navigation first, then Enter to send.
-  const onComposerKeyDown = useCallback(
-    (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-      // IME composition (Chinese/Japanese input): Enter confirms the candidate
-      // text and must never send or pick commands.
-      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-      if (e.key === "Escape") {
-        // Menus are the innermost context: one is dismissed before the edit is.
-        if (mentionOpen) setMentionOff(true);
-        else if (cmdOpen) setCmdOpen(false);
-        else cancelEdit();
-        return;
-      }
-      // While the file menu is up, Enter belongs to it: picking a reference is
-      // the only way forward, so a query still loading, a failure or a blank
-      // result can never turn into an accidental send. Escape closes the menu
-      // and gives Enter back to the composer.
-      if (mentionOpen) {
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setMentionIndex((i) => Math.min(i + 1, Math.max(0, mentionMatches.length - 1)));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setMentionIndex((i) => Math.max(0, i - 1));
-          return;
-        }
-        if (e.key === "Enter") {
-          e.preventDefault();
-          const file = mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)];
-          if (file) pickMention(file);
-          return;
-        }
-        if (e.key === "Tab" && mentionMatches.length > 0) {
-          e.preventDefault();
-          const file = mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)];
-          if (file) pickMention(file);
-          return;
-        }
-      }
-      if (cmdOpen) {
-        const filtered = filterCommands(commands, input);
-        if (e.key === "ArrowDown") {
-          e.preventDefault();
-          setCmdIndex((i) => moveCommandCursor(filtered, i, +1));
-          return;
-        }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setCmdIndex((i) => moveCommandCursor(filtered, i, -1));
-          return;
-        }
-        if (e.key === "Enter" && filtered.length > 0) {
-          // Same rule as the file menu while it is actually showing something.
-          e.preventDefault();
-          const pick = filtered[clampCommandIndex(filtered, cmdIndex)];
-          if (pick) pickCommand(pick);
-          return;
-        }
-      }
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        submit();
-      }
-    },
-    [
-      cmdOpen,
-      commands,
-      input,
-      cmdIndex,
-      submit,
-      cancelEdit,
-      mentionOpen,
-      mentionMatches,
-      mentionIndex,
-      pickMention,
-      pickCommand,
-    ],
-  );
-
   /**
    * A continuation the user has to agree to: the prompt goes into the composer
    * and nothing is sent. What the interrupted turn already did is still on
@@ -1277,10 +982,10 @@ export default function App() {
    */
   const continueUnfinished = useCallback(() => {
     // Never overwrite what the user is writing: the draft is theirs.
-    if (!drafts.get(draftKey).text.trim()) setInput(CONTINUE_PROMPT);
+    if (!drafts.get(draftKey).text.trim()) insertDraftText(CONTINUE_PROMPT);
     fieldRef.current?.focus();
     sticky.stick();
-  }, [drafts, draftKey, setInput, sticky]);
+  }, [drafts, draftKey, insertDraftText, sticky]);
 
   /**
    * Send one earlier message back to the composer.
@@ -1321,10 +1026,10 @@ export default function App() {
 
   // One composer, two placements: the centred first-run card, or docked over
   // the message stream. Only one of them is mounted at a time.
-  const composer = (variant: "tall" | "docked") => (
+  const renderComposer = (variant: "tall" | "docked") => (
     <ComposerBar
       variant={variant}
-      value={input}
+      value={composer.input}
       placeholder="向 Easy code 提问，使用 / 运行命令…"
       ariaLabel="给 Easy code 发送消息"
       busy={busy}
@@ -1332,35 +1037,27 @@ export default function App() {
       permission={permission}
       permissionDisabled={busy || sendBlocked}
       onPermission={requestPermissionChange}
-      onChange={(v, nextCaret) => {
-        if (composingRef.current) {
-          // The controlled value still has to follow the field — React would
-          // otherwise write the stale text back over the IME's buffer — but
-          // nothing else moves until the candidate lands.
-          setInput(v);
-          return;
-        }
-        syncComposer(v, nextCaret);
-      }}
-      onKeyDown={onComposerKeyDown}
-      onSelectionChange={setCaret}
-      onComposingChange={(next) => {
-        composingRef.current = next;
-        setComposing(next);
-      }}
-      onCompositionEnd={(v, nextCaret) => syncComposer(v, nextCaret)}
+      onChange={composer.handleChange}
+      onKeyDown={composer.onKeyDown}
+      onSelectionChange={composer.setCaret}
+      onComposingChange={composer.handleComposingChange}
+      onCompositionEnd={(v, nextCaret) => composer.syncComposer(v, nextCaret)}
       fieldRef={fieldRef}
-      menuOpen={mentionOpen || cmdOpen}
-      menuId={mentionOpen ? MENTION_LIST_ID : COMMAND_LIST_ID}
+      menuOpen={composer.mentionOpen || composer.cmdOpen}
+      menuId={composer.mentionOpen ? MENTION_LIST_ID : COMMAND_LIST_ID}
       activeOptionId={
-        mentionOpen
-          ? mentionMatches.length
-            ? `${MENTION_OPTION_PREFIX}${Math.min(mentionIndex, mentionMatches.length - 1)}`
+        composer.mentionOpen
+          ? composer.mentionMatches.length
+            ? `${MENTION_OPTION_PREFIX}${Math.min(composer.mentionIndex, composer.mentionMatches.length - 1)}`
             : undefined
           : undefined
       }
-      onSend={submit}
-      editing={editingDraft ? { text: editingDraft.text, onCancel: cancelEdit } : undefined}
+      onSend={composer.submit}
+      editing={
+        composer.editingDraft
+          ? { text: composer.editingDraft.text, onCancel: cancelEdit }
+          : undefined
+      }
       onStop={stop}
       hint="Enter 发送 · Shift + Enter 换行"
       model={
@@ -1378,26 +1075,26 @@ export default function App() {
           onError={(msg) => showToast("err", msg)}
         />
       }
-      voice={{ supported: voice.supported, listening: voice.listening, toggle: toggleVoice }}
+      voice={composer.voice}
       menu={
-        mentionOpen ? (
+        composer.mentionOpen ? (
           <MentionMenu
-            state={mentionCurrent}
-            query={mentionInfo?.query ?? ""}
-            index={mentionIndex}
-            onPick={pickMention}
-            onClose={() => setMentionOff(true)}
-            onRetry={() => setMentionRetry((n) => n + 1)}
+            state={composer.mentionCurrent}
+            query={composer.mentionInfo?.query ?? ""}
+            index={composer.mentionIndex}
+            onPick={composer.pickMention}
+            onClose={composer.dismissMention}
+            onRetry={composer.retryMention}
           />
         ) : (
           <CommandMenu
-            state={commandState}
-            open={cmdOpen}
-            query={input}
-            index={cmdIndex}
-            onPick={pickCommand}
-            onRetry={() => setCommandRetry((n) => n + 1)}
-            onClose={() => setCmdOpen(false)}
+            state={composer.commandState}
+            open={composer.cmdOpen}
+            query={composer.input}
+            index={composer.cmdIndex}
+            onPick={composer.pickCommand}
+            onRetry={composer.retryCommands}
+            onClose={composer.closeCmdMenu}
           />
         )
       }
@@ -1523,11 +1220,11 @@ export default function App() {
               <EmptyState
                 context={draftContext}
                 onPick={(text) => {
-                  setInput(text);
+                  insertDraftText(text);
                   fieldRef.current?.focus();
                 }}
               >
-                {composer("tall")}
+                {renderComposer("tall")}
               </EmptyState>
             )}
             {!isEmptyStage && (
@@ -1559,13 +1256,13 @@ export default function App() {
                   <span aria-hidden="true">↓</span> 有新内容 · 回到最新
                 </button>
               )}
-              {composer("docked")}
+              {renderComposer("docked")}
             </div>
           )}
           <SelectionActions
             containerRef={mainRef}
             onPick={(quoted, instruction) => {
-              setInput(`${instruction}\n\n> ${quoted.replace(/\n/g, "\n> ")}\n`);
+              insertDraftText(`${instruction}\n\n> ${quoted.replace(/\n/g, "\n> ")}\n`);
               fieldRef.current?.focus();
             }}
           />
