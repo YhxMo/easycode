@@ -21,9 +21,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.config import Config
-from easycode.mcp_config import known_projects
-from easycode.skill_import import SkillConflictError, SkillImportError, import_skill
-from easycode.skills import (
+from easycode.extensions.mcp.config import known_projects
+from easycode.extensions.skill_import import SkillConflictError, SkillImportError, import_skill
+from easycode.extensions.skills import (
     Skill,
     SkillRegistry,
     load_skill,

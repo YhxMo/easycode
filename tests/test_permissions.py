@@ -217,7 +217,7 @@ async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
     parent's (allow-all) context and returns it. The loop must ignore the
     returned grant and regenerate the precise grant for the capped subagent.
     """
-    from easycode.agents import AgentRegistry, AgentSpec
+    from easycode.extensions.subagents import AgentRegistry, AgentSpec
     from easycode.permissions.approval import grant_for_toolcall
 
     root = tmp_path / "proj"

@@ -151,8 +151,8 @@ def make_agent(
     registry = build_registry(cfg.max_tool_result_chars)
     disabled = {name for name, on in cfg.tools.items() if not on}
     discovery_roots = [root, *(Path(p) for p in (secondary_roots or []))]
-    from easycode.agents import AgentRegistry
-    from easycode.skills import SkillRegistry
+    from easycode.extensions.skills import SkillRegistry
+    from easycode.extensions.subagents import AgentRegistry
 
     agents = AgentRegistry.discover(discovery_roots)
     skills = SkillRegistry.discover(discovery_roots) if cfg.skills_enabled else None

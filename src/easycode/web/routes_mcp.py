@@ -2,7 +2,7 @@
 
 Reads never carry a secret. The stored configuration names where a secret comes
 from (``secret_env``, ``secret_headers``, ``bearer_credential``) and the
-credential file holds the value; :func:`easycode.mcp_config.effective_servers`
+credential file holds the value; :func:`easycode.extensions.mcp.config.effective_servers`
 joins the two at connect time, so nothing here has to handle a token at all.
 
 Every request is scoped to one project, because that is what decides the
@@ -21,9 +21,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.config import Config
-from easycode.mcp_auth import KINDS, MCPCredential
-from easycode.mcp_auth import store as credential_store
-from easycode.mcp_config import (
+from easycode.extensions.mcp.auth import KINDS, MCPCredential
+from easycode.extensions.mcp.auth import store as credential_store
+from easycode.extensions.mcp.config import (
     SCOPES,
     MCPConfigError,
     MCPServerConfig,

@@ -210,8 +210,8 @@ def test_the_menu_carries_no_credential_value(tmp_path):
             }
         },
     )
-    from easycode.mcp_auth import MCPCredential
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import MCPCredential
+    from easycode.extensions.mcp.auth import store as credential_store
 
     credential_store().save(
         MCPCredential(id="c1", kind="env", scope="app", server="demo", values={"token": "s3cret"})
@@ -504,7 +504,7 @@ def test_a_selected_service_with_no_tools_is_unavailable(tmp_path):
 def test_a_selected_service_really_runs_its_tool(tmp_path):
     """End to end: the menu entry, the turn, the child process, its result."""
     from easycode.agent.loop import Agent
-    from easycode.mcp import mcp_tool_name
+    from easycode.extensions.mcp.client import mcp_tool_name
     from easycode.tools import build_registry
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider

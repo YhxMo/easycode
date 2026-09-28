@@ -8,8 +8,8 @@ import sys
 
 import pytest
 
-import easycode.skill_import as skill_import
-from easycode.skill_import import (
+import easycode.extensions.skill_import as skill_import
+from easycode.extensions.skill_import import (
     MAX_BYTES,
     MAX_DEPTH,
     MAX_ENTRIES,
@@ -17,7 +17,7 @@ from easycode.skill_import import (
     SkillImportError,
     import_skill,
 )
-from easycode.skills import load_skill
+from easycode.extensions.skills import load_skill
 
 
 def make_skill(root, name: str = "pack", body: str = "Follow the steps") -> None:
@@ -140,7 +140,7 @@ def test_entry_limit_is_enforced(tmp_path, monkeypatch):
     make_skill(src)
     for i in range(5):
         (src / "pack" / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr("easycode.skill_import.MAX_ENTRIES", 3)
+    monkeypatch.setattr("easycode.extensions.skill_import.MAX_ENTRIES", 3)
 
     with pytest.raises(SkillImportError, match=str(3)):
         import_skill(src / "pack", tmp_path / "skills", "project")
@@ -153,7 +153,7 @@ def test_byte_limit_is_enforced(tmp_path, monkeypatch):
     src = tmp_path / "src"
     make_skill(src)
     (src / "pack" / "big.bin").write_text("x" * 64, encoding="utf-8")
-    monkeypatch.setattr("easycode.skill_import.MAX_BYTES", 32)
+    monkeypatch.setattr("easycode.extensions.skill_import.MAX_BYTES", 32)
 
     with pytest.raises(SkillImportError, match="MiB"):
         import_skill(src / "pack", tmp_path / "skills", "project")

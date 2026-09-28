@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from easycode.frontmatter import parse_spec
+from easycode.extensions.frontmatter import parse_spec
 
 log = logging.getLogger(__name__)
 

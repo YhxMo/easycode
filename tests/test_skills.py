@@ -7,7 +7,7 @@ import json
 import pytest
 
 from easycode.agent.loop import Agent
-from easycode.skills import SkillRegistry
+from easycode.extensions.skills import SkillRegistry
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 from tests.helpers_history import assert_valid_tool_protocol
@@ -207,8 +207,8 @@ Known body
 
 def test_skill_context_names_the_resource_directory(tmp_path):
     """Both loading paths must describe the same package the same way."""
-    from easycode.commands import build_registry
-    from easycode.skills import skill_context
+    from easycode.extensions.commands import build_registry
+    from easycode.extensions.skills import skill_context
 
     skills_dir = tmp_path / "skills"
     (skills_dir / "pack").mkdir(parents=True)
@@ -240,7 +240,7 @@ Read references/guide.md first
 
 def test_skill_without_placeholders_keeps_the_task(tmp_path):
     """A skill body is instructions: the task typed after /name must survive."""
-    from easycode.commands import Command
+    from easycode.extensions.commands import Command
 
     skill = Command(name="review", description="Review", kind="skill", body="Follow the checklist")
     expanded = skill.expand("检查这个 PR")

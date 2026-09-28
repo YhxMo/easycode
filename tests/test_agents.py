@@ -7,8 +7,8 @@ import json
 import pytest
 
 from easycode.agent.loop import Agent
-from easycode.agents import AgentRegistry
-from easycode.frontmatter import FrontmatterError, parse_frontmatter, parse_spec
+from easycode.extensions.frontmatter import FrontmatterError, parse_frontmatter, parse_spec
+from easycode.extensions.subagents import AgentRegistry
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider
 from tests.helpers_history import assert_valid_tool_protocol
@@ -157,7 +157,7 @@ You write code.
 
 @pytest.mark.asyncio
 async def test_task_tool_unknown_agent_error(tmp_path):
-    from easycode.agents import AgentSpec
+    from easycode.extensions.subagents import AgentSpec
 
     reg = AgentRegistry({"known": AgentSpec(name="known", description="exists")})
     script = [
@@ -241,7 +241,7 @@ You only read files.
 @pytest.mark.asyncio
 async def test_subagent_cannot_exceed_parent_tool_cap(tmp_path):
     """A capped parent's delegate must not gain tools the parent lacks."""
-    from easycode.agents import AgentSpec
+    from easycode.extensions.subagents import AgentSpec
 
     reg = AgentRegistry({"writer": AgentSpec(name="writer", description="writes")})
     target = tmp_path / "blocked.txt"
@@ -297,7 +297,7 @@ async def test_subagent_cannot_exceed_parent_tool_cap(tmp_path):
 @pytest.mark.asyncio
 async def test_subagent_cannot_delegate_further(tmp_path):
     """Sub-agents get neither task nor parallel_tasks (no recursive delegation)."""
-    from easycode.agents import AgentSpec
+    from easycode.extensions.subagents import AgentSpec
 
     reg = AgentRegistry({"writer": AgentSpec(name="writer", description="writes")})
     sub_script = [
@@ -368,8 +368,8 @@ async def test_subagent_cannot_delegate_further(tmp_path):
 async def test_builtin_tool_argument_errors_are_results(tmp_path, name, args, needle):
     """Runtime validation mirrors the advertised schema: bad arguments become a
     tool result (no subagent starts) and the conversation continues paired."""
-    from easycode.agents import AgentSpec
-    from easycode.skills import Skill, SkillRegistry
+    from easycode.extensions.skills import Skill, SkillRegistry
+    from easycode.extensions.subagents import AgentSpec
     from tests.helpers_history import assert_valid_tool_protocol
 
     made: list[str] = []
@@ -487,7 +487,7 @@ You inherit.
 @pytest.mark.asyncio
 async def test_task_tool_rejects_primary_agent(tmp_path):
     """DEC-C7: `mode: primary` agents cannot be delegated to."""
-    from easycode.agents import AgentSpec
+    from easycode.extensions.subagents import AgentSpec
 
     reg = AgentRegistry({"main": AgentSpec(name="main", description="primary", mode="primary")})
     script = [
@@ -513,9 +513,9 @@ def test_make_agent_carries_the_configured_iteration_limit_to_subagents(tmp_path
     a ceiling configured once governs every one of them."""
     from easycode.agent.builtin_tools import make_subagent
     from easycode.agentfactory import make_agent
-    from easycode.agents import AgentRegistry, AgentSpec
     from easycode.config import Config
     from easycode.credentials import Credential, save_credential
+    from easycode.extensions.subagents import AgentRegistry, AgentSpec
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     proj = tmp_path / "proj"

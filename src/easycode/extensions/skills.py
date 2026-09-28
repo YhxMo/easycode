@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from easycode.credentials import data_home
-from easycode.frontmatter import FrontmatterError, parse_spec
+from easycode.extensions.frontmatter import FrontmatterError, parse_spec
 
 log = logging.getLogger(__name__)
 

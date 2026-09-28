@@ -203,7 +203,7 @@ async def test_mcp_child_env_is_sanitized(monkeypatch, tmp_path):
     while explicit ``mcp_servers`` env values are layered on top."""
     import contextlib
 
-    from easycode import mcp as mcp_module
+    from easycode.extensions.mcp import client as mcp_module
 
     captured: dict[str, object] = {}
 
@@ -972,7 +972,7 @@ async def test_mcp_command_follows_the_session_sandbox_mode(monkeypatch, tmp_pat
     完全访问按原命令启动（环境清洗两边都在）。"""
     import contextlib
 
-    from easycode import mcp as mcp_module
+    from easycode.extensions.mcp import client as mcp_module
     from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS
 
     captured: list = []

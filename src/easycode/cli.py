@@ -28,14 +28,14 @@ from easycode.ui.render import (
 )
 
 if TYPE_CHECKING:
-    from easycode.commands import CommandRegistry
+    from easycode.extensions.commands import CommandRegistry
 
 app = typer.Typer(help="easycode — a CLI coding agent", no_args_is_help=False)
 
 
 def build_commands(agent: Agent, roots: list[Path]) -> CommandRegistry:
     """CommandRegistry with built-ins + user templates + skill commands."""
-    from easycode.commands import build_registry
+    from easycode.extensions.commands import build_registry
 
     return build_registry(
         roots,

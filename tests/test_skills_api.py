@@ -425,7 +425,7 @@ def test_effective_flags_match_what_discovery_resolves(tmp_path):
     Three scopes define the same name: the last project root wins, exactly as
     ``SkillRegistry.discover`` resolves it for an agent running in that project.
     """
-    from easycode.skills import SkillRegistry
+    from easycode.extensions.skills import SkillRegistry
 
     app, _cfg, _store, roots = build(tmp_path)
     make_skill(Path.home() / ".easycode" / "skills", "same", "personal copy")
@@ -474,7 +474,7 @@ def test_picked_command_does_not_discover_skills_twice(tmp_path, monkeypatch):
     session lock. The locked half must expand it against the registry
     ``rediscover_extensions`` just built, not read every SKILL.md again.
     """
-    from easycode.skills import SkillRegistry
+    from easycode.extensions.skills import SkillRegistry
 
     app, _cfg, store, roots = build(tmp_path)
     session_id = client_session(app, store, roots)

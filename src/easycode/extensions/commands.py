@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from easycode.frontmatter import parse_spec
-from easycode.skills import SkillRegistry, skill_context
+from easycode.extensions.frontmatter import parse_spec
+from easycode.extensions.skills import SkillRegistry, skill_context
 
 log = logging.getLogger(__name__)
 

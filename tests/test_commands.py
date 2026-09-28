@@ -8,9 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from easycode.agent.loop import Agent
-from easycode.commands import Command, CommandRegistry
 from easycode.config import Config
-from easycode.skills import Skill, SkillRegistry
+from easycode.extensions.commands import Command, CommandRegistry
+from easycode.extensions.skills import Skill, SkillRegistry
 from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.session import SessionStore

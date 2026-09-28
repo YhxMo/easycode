@@ -16,8 +16,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from easycode.config import Config
+from easycode.extensions.skills import MCP_COMMAND_PREFIX, SkillRegistry
 from easycode.permissions.boundary import resolve_workspace_path, root_error
-from easycode.skills import MCP_COMMAND_PREFIX, SkillRegistry
 from easycode.web.bridge import (
     ApprovalBroker,
     approval_required_sse,
@@ -85,7 +85,7 @@ def _parse_mcp_command_id(command_id: str) -> tuple[str, str] | None:
 
 
 if TYPE_CHECKING:
-    from easycode.commands import Command, CommandRegistry
+    from easycode.extensions.commands import Command, CommandRegistry
 
 
 class ChatRequest(BaseModel):
@@ -121,7 +121,7 @@ def _session_roots(sess: Session, cfg: Config) -> list[Path]:
 
 def _build_web_commands(roots: list[Path], skills) -> CommandRegistry:
     """Discover executable prompt templates and skill commands for the Web UI."""
-    from easycode.commands import build_registry
+    from easycode.extensions.commands import build_registry
 
     return build_registry(roots, skills)
 
@@ -190,8 +190,8 @@ def _command_entries(cfg: Config, store: SessionStore) -> tuple[list[tuple[dict,
     caller's path, which is what keeps an unregistered project's command from
     being executed.
     """
-    from easycode.commands import personal_commands, project_commands, skill_command
-    from easycode.skills import personal_skills, project_skills
+    from easycode.extensions.commands import personal_commands, project_commands, skill_command
+    from easycode.extensions.skills import personal_skills, project_skills
     from easycode.web.routes_workspaces import build_projects
 
     out: list[tuple[dict, Command]] = []
@@ -262,7 +262,7 @@ def _mcp_command_entries(cfg: Config, project_root: str) -> tuple[list[dict], li
 
     Nothing here fills in a credential; see ``mcp_config.configured_servers``.
     """
-    from easycode.mcp_config import MCPConfigError, configured_servers
+    from easycode.extensions.mcp.config import MCPConfigError, configured_servers
 
     try:
         servers = configured_servers(cfg.mcp_servers, project_root)
@@ -371,7 +371,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         start page has no conversation yet, so it names a registered project —
         or nothing, which means the default one.
         """
-        from easycode.mcp_config import known_projects
+        from easycode.extensions.mcp.config import known_projects
 
         if session_id:
             sess = store.get(session_id)

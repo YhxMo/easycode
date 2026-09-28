@@ -43,9 +43,9 @@ from easycode.permissions.reviewer import ReviewDecision
 from easycode.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from easycode.agents import AgentRegistry
-    from easycode.mcp import MCPSessionManager
-    from easycode.skills import SkillRegistry
+    from easycode.extensions.mcp.client import MCPSessionManager
+    from easycode.extensions.skills import SkillRegistry
+    from easycode.extensions.subagents import AgentRegistry
 
 @dataclass
 class AgentEvent:
@@ -161,8 +161,8 @@ class Agent:
         """Connect this agent's effective MCP servers; safe to call repeatedly."""
         if self.mcp_manager is not None:
             return
-        from easycode.mcp import MCPSessionManager
-        from easycode.mcp_config import effective_servers, fingerprint
+        from easycode.extensions.mcp.client import MCPSessionManager
+        from easycode.extensions.mcp.config import effective_servers, fingerprint
 
         servers = effective_servers(self.mcp_servers, str(self.root))
         if not servers:
@@ -184,7 +184,7 @@ class Agent:
         not: the turn reports it and stops, rather than answering with something
         else and letting the answer read as if the service had done it.
         """
-        from easycode.mcp import STATE_CONNECTED, STATE_DISABLED, STATE_FAILED
+        from easycode.extensions.mcp.client import STATE_CONNECTED, STATE_DISABLED, STATE_FAILED
 
         try:
             await self.init_mcp()
@@ -215,7 +215,7 @@ class Agent:
         running manager, so its processes are dropped and the next turn reports
         the problem rather than serving tools nobody configured any more.
         """
-        from easycode.mcp_config import MCPConfigError, effective_servers, fingerprint
+        from easycode.extensions.mcp.config import MCPConfigError, effective_servers, fingerprint
 
         try:
             servers = effective_servers(self.mcp_servers, str(self.root))
@@ -270,8 +270,8 @@ class Agent:
         Called after a session's secondary roots change so the command menu,
         the agent's skills and its system prompt describe one scope.
         """
-        from easycode.agents import AgentRegistry
-        from easycode.skills import SkillRegistry
+        from easycode.extensions.skills import SkillRegistry
+        from easycode.extensions.subagents import AgentRegistry
 
         roots = [self.root, *(Path(p) for p in self.secondary_roots)]
         self.agents = AgentRegistry.discover(roots)

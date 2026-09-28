@@ -1,7 +1,7 @@
 """MCP client: connect external MCP servers and expose their tools to agents.
 
-Which servers exist is decided by :mod:`easycode.mcp_config` (three scopes
-merged for one project) and what their secrets are by :mod:`easycode.mcp_auth`;
+Which servers exist is decided by :mod:`easycode.extensions.mcp.config` (three scopes
+merged for one project) and what their secrets are by :mod:`easycode.extensions.mcp.auth`;
 this module only connects and calls them.
 
 Registered tools are named ``mcp__<server>__<tool>``; the agent dispatches them
@@ -29,7 +29,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import Implementation
 
-from easycode.mcp_config import (
+from easycode.extensions.mcp.config import (
     PACKAGE_LAUNCHERS,
     MCPServerConfig,
     ResolvedServer,
@@ -39,7 +39,7 @@ from easycode.mcp_config import (
 from easycode.permissions.boundary import PathContext, ToolGrant
 from easycode.permissions.sandbox import child_env, sandbox_command
 
-log = logging.getLogger("easycode.mcp")
+log = logging.getLogger("easycode.extensions.mcp.client")
 
 MCP_PREFIX = "mcp__"
 

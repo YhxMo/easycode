@@ -12,7 +12,7 @@ from easycode.permissions.policy import cap_permission
 
 if TYPE_CHECKING:
     from easycode.agent.loop import Agent, ToolCall
-    from easycode.agents import AgentSpec
+    from easycode.extensions.subagents import AgentSpec
 
 DEFAULT_MAX_PARALLEL = 4
 MAX_PARALLEL_TASKS = 6
@@ -205,7 +205,7 @@ async def run_use_skill(agent: Agent, name: str) -> str:
     # loop flushes it after this batch's tool results to keep the tool protocol.
     # The text is the same ``skill_context`` the ``/name`` command expands to,
     # so both paths name the same resource directory.
-    from easycode.skills import skill_context
+    from easycode.extensions.skills import skill_context
 
     agent._pending_system.append(skill_context(skill))
     return json.dumps(

@@ -24,7 +24,7 @@ from typing import Any
 
 from easycode.credentials import data_home
 
-log = logging.getLogger("easycode.mcp.auth")
+log = logging.getLogger("easycode.extensions.mcp.client.auth")
 
 CREDENTIALS_FILENAME = "mcp-credentials.json"
 

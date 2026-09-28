@@ -434,7 +434,7 @@ def effective_servers(
     Secrets belong to the scope that won the name — a personal credential must
     not authenticate a project's replacement entry for that server.
     """
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     project_root = str(root or "")
     # One read for the whole list: every server is looked up in the same view of
@@ -486,7 +486,7 @@ def related_credential_versions(
     server whose credential was replaced by one for another URL is covered too
     — otherwise that change would leave the old token in a live session.
     """
-    from easycode.mcp_auth import credential_versions
+    from easycode.extensions.mcp.auth import credential_versions
 
     credentials = store.snapshot()
     all_versions = credential_versions(store)
@@ -521,7 +521,7 @@ def apply_credentials(
     a different host must not send it the old host's token, because nobody
     agreed to that host.
     """
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     cred = matching_credential(config, scope=scope, root=root, store=store or credential_store())
     if cred is None:
@@ -620,7 +620,7 @@ def fingerprint(
     """
     import hashlib
 
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     payload = json.dumps(
         [{"name": s.name, "scope": s.scope, "config": s.config.to_dict()} for s in servers],

@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from easycode.mcp_auth import CredentialStore, MCPCredential
-from easycode.mcp_config import (
+from easycode.extensions.mcp.auth import CredentialStore, MCPCredential
+from easycode.extensions.mcp.config import (
     MCPConfigError,
     MCPServerConfig,
     apply_credentials,
@@ -266,7 +266,7 @@ def test_a_token_is_not_sent_to_a_host_it_was_not_issued_for(tmp_path):
 
 def test_a_credential_belongs_to_the_scope_that_won_the_name(tmp_path):
     """A personal token must not authenticate a project's replacement entry."""
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     write_scope(
         project_config_path(tmp_path),
@@ -283,7 +283,7 @@ def test_a_credential_belongs_to_the_scope_that_won_the_name(tmp_path):
 
 
 def test_effective_servers_uses_the_project_scopes_own_credential_root(tmp_path):
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     write_scope(project_config_path(tmp_path), {"srv": {"command": "c"}})
     credential_store().save(
@@ -318,7 +318,7 @@ def test_fingerprint_tracks_configuration_and_context(tmp_path):
 
 
 def test_fingerprint_tracks_credential_rotation(tmp_path):
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     ctx = PathContext(primary=tmp_path)
     # The server has to reference the secret, otherwise no credential of its
@@ -338,7 +338,7 @@ def test_fingerprint_tracks_credential_rotation(tmp_path):
 
 def test_fingerprint_ignores_credentials_this_session_cannot_use(tmp_path):
     """A token for another project's server is not this session's business."""
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     ctx = PathContext(primary=tmp_path)
     here = tmp_path / "here"
@@ -382,7 +382,7 @@ def test_fingerprint_ignores_credentials_this_session_cannot_use(tmp_path):
 
 def test_configured_servers_parse_each_entry_once(tmp_path):
     """One read, one validation per entry: the scope dicts are not re-parsed."""
-    from easycode.mcp_config import MCPServerConfig, configured_servers
+    from easycode.extensions.mcp.config import MCPServerConfig, configured_servers
 
     path = personal_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -417,7 +417,7 @@ def test_configured_servers_parse_each_entry_once(tmp_path):
 
 def test_fingerprint_follows_a_changed_server_url(tmp_path):
     """Pointing the server elsewhere retires its token, so the setup changed."""
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     ctx = PathContext(primary=tmp_path)
     servers = resolve(
@@ -463,7 +463,7 @@ def test_fingerprint_follows_a_changed_server_url(tmp_path):
 
 def test_fingerprint_separates_projects_that_share_a_server_name(tmp_path):
     """Two projects, one server name: each root fingerprints its own token."""
-    from easycode.mcp_auth import store as credential_store
+    from easycode.extensions.mcp.auth import store as credential_store
 
     here = tmp_path / "here"
     elsewhere = tmp_path / "elsewhere"

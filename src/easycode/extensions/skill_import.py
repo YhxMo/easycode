@@ -24,7 +24,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from easycode.skills import MCP_COMMAND_PREFIX, Skill, SkillLoadError, load_skill
+from easycode.extensions.skills import MCP_COMMAND_PREFIX, Skill, SkillLoadError, load_skill
 
 #: Fixed ceilings on one import. They are not configuration: a package past any
 #: of them is refused with the reason, never partially copied.
