@@ -160,12 +160,16 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
                 await sess.agent.invalidate_mcp_if_context_changed()
 
     @app.get("/api/sessions/{session_id}/changes")
-    async def session_changes(session_id: str) -> dict:
+    async def session_changes(session_id: str, diffs: int = 1) -> dict:
         """Live uncommitted changes in the repositories this session runs in.
 
         Read from disk on every request: it describes the working tree as it is
         now, including whatever was already uncommitted before this conversation
         started, so it is never presented as the session's own work.
+
+        ``diffs=0`` returns the same files and counts without generating a diff
+        for each one: the section shows its summary when collapsed, and the diff
+        of a file is what the reader opens next, one request at a time.
         """
         import asyncio
 
@@ -174,7 +178,28 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
-        return await asyncio.to_thread(collect, sess)
+        return await asyncio.to_thread(collect, sess, diffs=bool(diffs))
+
+    @app.get("/api/sessions/{session_id}/changes/diff")
+    async def session_file_diff(session_id: str, repo: str, path: str) -> dict:
+        """The diff of one changed file, for a row the reader opened.
+
+        The repository and the path are both checked against this session's own
+        roots and the repository's current status; anything else is a 404, so
+        this cannot be used to read a file the pane was not already describing.
+        """
+        import asyncio
+
+        from easycode.web.git import GitError
+        from easycode.web.git import file_diff as describe
+
+        sess = store.get(session_id)
+        if sess is None:
+            raise HTTPException(404, "session not found")
+        try:
+            return await asyncio.to_thread(describe, sess, repo, path)
+        except GitError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, blank_only: int = 0) -> dict:

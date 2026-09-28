@@ -15,6 +15,7 @@ export const apiMock = {
   fetchCommands: vi.fn(),
   fetchFileContent: vi.fn(),
   fetchGitChanges: vi.fn(),
+  fetchGitFileDiff: vi.fn(),
   setSessionPermission: vi.fn(),
   streamChat: vi.fn(),
   submitApproval: vi.fn(),

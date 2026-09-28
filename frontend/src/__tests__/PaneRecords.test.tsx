@@ -142,7 +142,8 @@ describe("App · 面板记录", () => {
     // ...next to the working tree's state, which this session did not cause.
     expect(screen.getByText("当前工作区未提交改动")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("未跟踪")).toBeTruthy());
-    expect(m.fetchGitChanges).toHaveBeenCalledWith("A");
+    // Counts only: the pane asks for a file's diff when a row is opened.
+    expect(m.fetchGitChanges).toHaveBeenCalledWith("A", false);
   });
 
   it("目录不在 Git 仓库里时只展示会话操作记录", async () => {

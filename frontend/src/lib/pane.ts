@@ -377,6 +377,12 @@ export interface ChangeRow {
   diff?: string;
   /** Why there is no diff text, shown instead of one. */
   note?: string;
+  /**
+   * A working-tree row that can ask for its diff: the repository it lives in,
+   * plus the file itself. Session-record rows carry their diff already, and a
+   * file git no longer has (deleted) has nothing to open.
+   */
+  gitSource?: { repo: string; path: string; absolutePath: string };
 }
 
 /** Line totals over a set of rows, for the section's collapsed summary. */
@@ -400,7 +406,10 @@ export function sessionChangeRows(cards: ChangeCard[]): ChangeRow[] {
 }
 
 /** The working tree's uncommitted files, with the diff each one carries. */
-export function workingTreeRows(files: GitFileState[]): ChangeRow[] {
+export function workingTreeRows(
+  files: GitFileState[],
+  diffs: Record<string, string> = {},
+): ChangeRow[] {
   return files.map((file) => ({
     key: `git:${file.absolute_path}`,
     label: file.path,
@@ -408,9 +417,16 @@ export function workingTreeRows(files: GitFileState[]): ChangeRow[] {
     added: file.added ?? 0,
     removed: file.removed ?? 0,
     meta: gitStateLabel(file),
-    // An empty diff says nothing; the row keeps just its counts and state.
-    diff: file.diff || undefined,
+    // The stats request carries no diff text; one arrives when the reader opens
+    // the row. An empty diff says nothing, so the row keeps just its counts.
+    diff: file.diff || diffs[file.absolute_path],
     note: file.diff_note ?? undefined,
+    // Nothing to open for a file git no longer has, or one whose contents are
+    // not lines: the row says what it knows instead.
+    gitSource:
+      file.exists && !file.binary
+        ? { repo: file.repo, path: file.path, absolutePath: file.absolute_path }
+        : undefined,
   }));
 }
 

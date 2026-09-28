@@ -19,6 +19,7 @@ import {
   fetchArchivedSessions,
   fetchCommands,
   fetchGitChanges,
+  fetchGitFileDiff,
   fetchModels,
   fetchFiles,
   fetchSession,
@@ -71,6 +72,7 @@ import {
   sessionFiles,
   sessionToolItems,
   workingTreeRows,
+  type ChangeRow,
 } from "./lib/pane";
 import { TaskRows } from "./components/primitives/TaskRows";
 import { groupSessions } from "./lib/sessionGroups";
@@ -243,6 +245,13 @@ export default function App() {
   // The working tree as it is right now, for the pane's change and file
   // sections. Tagged with the conversation it was read for.
   const [gitChanges, setGitChanges] = useState<{ session: string; data: GitChanges } | null>(null);
+  // Diffs the reader has opened, keyed by absolute path. They describe the same
+  // working tree as the stats they were fetched beside, so a new stats snapshot
+  // clears them rather than letting the two tell different stories.
+  const [gitDiffs, setGitDiffs] = useState<Record<string, string>>({});
+  // Bumped with every stats snapshot, so the open rows re-fetch their diffs
+  // against the same reading their counts came from.
+  const [gitStatsVersion, setGitStatsVersion] = useState(0);
   const mainRef = useRef<HTMLDivElement>(null);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   // Height of the floating composer: the message stream reserves exactly that
@@ -1314,8 +1323,16 @@ export default function App() {
   useEffect(() => {
     if (!currentId || !paneWantsGit) return;
     let live = true;
-    fetchGitChanges(currentId)
-      .then((data) => live && setGitChanges({ session: currentId, data }))
+    // The stats request never carries per-file diffs: the section shows counts,
+    // and the diff of a file is fetched when the reader opens that row.
+    fetchGitChanges(currentId, false)
+      .then((data) => {
+        if (!live) return;
+        setGitChanges({ session: currentId, data });
+        // Those diffs described the same snapshot as the one being replaced.
+        setGitDiffs((prev) => (Object.keys(prev).length ? {} : prev));
+        setGitStatsVersion((prev) => prev + 1);
+      })
       .catch((e: unknown) => {
         if (!live) return;
         setGitChanges({
@@ -1333,12 +1350,26 @@ export default function App() {
     };
   }, [currentId, paneWantsGit, busy, currentRoot]);
 
+  /** One working-tree row's diff, fetched when the reader opens it. */
+  const loadGitDiff = useCallback(
+    async (row: ChangeRow) => {
+      const source = row.gitSource;
+      if (!currentId || !source) return { diff: null, diff_note: null };
+      const res = await fetchGitFileDiff(currentId, source.repo, source.path);
+      // Remembered so collapsing and reopening does not ask again, and so the
+      // row can render the diff the pane's rows are built from.
+      if (res.diff) setGitDiffs((prev) => ({ ...prev, [source.absolutePath]: res.diff as string }));
+      return res;
+    },
+    [currentId],
+  );
+
   const fileEntries = useMemo(() => sessionFiles(pane.context, pane.changes), [pane]);
   const paneFiles = useMemo(() => fileRows(fileEntries, git?.files ?? []), [fileEntries, git]);
   // The change section lists the two sources as rows of counts: the files this
   // conversation changed, and the repository's uncommitted state right now.
   const changeRows = useMemo(() => sessionChangeRows(changeCards), [changeCards]);
-  const treeRows = useMemo(() => workingTreeRows(git?.files ?? []), [git]);
+  const treeRows = useMemo(() => workingTreeRows(git?.files ?? [], gitDiffs), [git, gitDiffs]);
   // What the collapsed line reports is the working tree — "changes on this
   // branch" is its answer, not the session's. A directory outside Git has no
   // tree to report, and this conversation's own record must not vanish with it.
@@ -1869,7 +1900,12 @@ export default function App() {
                   {git && !git.error && git.repos.length > 0 && !git.files.length && (
                     <p className="pane-empty">工作区没有未提交的改动。</p>
                   )}
-                  <ChangeList key={`tree:${draftKey}`} rows={treeRows} />
+                  <ChangeList
+                    key={`tree:${draftKey}`}
+                    rows={treeRows}
+                    loadDiff={loadGitDiff}
+                    statsVersion={gitStatsVersion}
+                  />
                   {git?.truncated && treeRows.length > 0 && (
                     <p className="pane-empty">
                       改动较多，只列出前 {treeRows.length} 个文件。

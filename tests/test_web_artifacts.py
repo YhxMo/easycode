@@ -390,3 +390,175 @@ def test_changes_lists_nothing_for_a_directory_outside_git(tmp_path):
         assert data["added"] == 0
         assert data["removed"] == 0
         assert data["error"] is None
+
+
+def _repo_with_changes(tmp_path) -> Path:
+    """A repository holding every kind of file the report distinguishes."""
+    workspace = tmp_path / "ws"
+    root = workspace / "repo"
+    root.mkdir(parents=True)
+    git(root, "init", "-q")
+    (root / "tracked.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    (root / "old.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    (root / "binary.dat").write_bytes(b"\x00\x01\x02")
+    (root / "gone.txt").write_text("bye\n", encoding="utf-8")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "add", ".")
+    git(root, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    (root / "tracked.txt").write_text("one\nTWO\nthree\nfour\n", encoding="utf-8")
+    (root / "loose.txt").write_text("u1\nu2\n", encoding="utf-8")
+    (root / "binary.dat").write_bytes(b"\x00\xff\x03")
+    (root / "gone.txt").unlink()
+    git(root, "mv", "old.txt", "new.txt")
+    (root / "new.txt").write_text("a\nB\nc\n", encoding="utf-8")
+    return workspace
+
+
+@requires_git
+def test_changes_without_diffs_skips_every_git_diff(tmp_path, monkeypatch):
+    """`diffs=0` answers with the same report and no per-file git call."""
+    import easycode.web.git as gitmod
+
+    workspace = _repo_with_changes(tmp_path)
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(workspace / "repo"))
+        with_diffs = client.get(f"/api/sessions/{sess.id}/changes").json()
+
+        calls: list[tuple] = []
+        real = gitmod._git
+
+        def counting(repo, *args, **kwargs):
+            calls.append(args)
+            return real(repo, *args, **kwargs)
+
+        monkeypatch.setattr(gitmod, "_git", counting)
+        stats_only = client.get(f"/api/sessions/{sess.id}/changes?diffs=0").json()
+
+    def flat(data):
+        return [{k: v for k, v in f.items() if k != "diff"} for f in data["files"]]
+
+    assert flat(stats_only) == flat(with_diffs)
+    assert (stats_only["added"], stats_only["removed"]) == (
+        with_diffs["added"],
+        with_diffs["removed"],
+    )
+    assert all(f["diff"] is None for f in stats_only["files"])
+    # Only repository-wide reads remain: nothing names a file's path.
+    assert not [a for a in calls if "--" in a], calls
+
+
+@requires_git
+def test_changes_wrong_value_for_diffs_is_rejected(tmp_path):
+    """The query flag is a number: anything else is a bad request, not a 500."""
+    workspace = _repo_with_changes(tmp_path)
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(workspace / "repo"))
+        assert client.get(f"/api/sessions/{sess.id}/changes?diffs=abc").status_code == 422
+
+
+@requires_git
+def test_one_file_diff_is_fetched_by_repo_and_path(tmp_path):
+    """The row a reader opens gets its own file's diff, and nothing else."""
+    workspace = _repo_with_changes(tmp_path)
+    repo = workspace / "repo"
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(repo))
+        tracked = client.get(
+            f"/api/sessions/{sess.id}/changes/diff",
+            params={"repo": str(repo), "path": "tracked.txt"},
+        ).json()
+        loose = client.get(
+            f"/api/sessions/{sess.id}/changes/diff",
+            params={"repo": str(repo), "path": "loose.txt"},
+        ).json()
+        renamed = client.get(
+            f"/api/sessions/{sess.id}/changes/diff",
+            params={"repo": str(repo), "path": "new.txt"},
+        ).json()
+
+    assert "-two" in tracked["diff"] and "+TWO" in tracked["diff"]
+    # An untracked file has no HEAD to compare against: its whole body is new.
+    assert loose["diff"] == "+u1\n+u2\n"
+    # A rename is diffed against both paths, so it reads as a rename.
+    assert "-b" in renamed["diff"] and "+B" in renamed["diff"]
+    assert "new file mode" not in renamed["diff"]
+
+
+@requires_git
+def test_one_file_diff_explains_what_it_cannot_show(tmp_path):
+    """Binary and deleted files keep the reason instead of an empty preview."""
+    workspace = _repo_with_changes(tmp_path)
+    repo = workspace / "repo"
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(repo))
+        binary = client.get(
+            f"/api/sessions/{sess.id}/changes/diff",
+            params={"repo": str(repo), "path": "binary.dat"},
+        ).json()
+        deleted = client.get(
+            f"/api/sessions/{sess.id}/changes/diff",
+            params={"repo": str(repo), "path": "gone.txt"},
+        ).json()
+
+    assert binary == {"diff": None, "diff_note": "二进制文件"}
+    assert deleted == {"diff": None, "diff_note": "文件已删除"}
+
+
+@requires_git
+def test_one_file_diff_refuses_anything_outside_the_session(tmp_path):
+    """The repository and the path are both checked against this session."""
+    workspace = _repo_with_changes(tmp_path)
+    repo = workspace / "repo"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(repo))
+        other = client.app.state.store.create(root=str(elsewhere))
+        base = f"/api/sessions/{sess.id}/changes/diff"
+
+        assert client.get(
+            base, params={"repo": str(elsewhere), "path": "tracked.txt"}
+        ).status_code == 404
+        # A file of this repository that has no uncommitted change is not
+        # something the pane was describing.
+        assert client.get(
+            base, params={"repo": str(repo), "path": "never-changed.txt"}
+        ).status_code == 404
+        # A path that tries to leave the repository is just another name that
+        # is not in the status list.
+        assert client.get(
+            base, params={"repo": str(repo), "path": "../outside.txt"}
+        ).status_code == 404
+        # Another session's repository is not this session's either.
+        assert client.get(
+            f"/api/sessions/{other.id}/changes/diff",
+            params={"repo": str(repo), "path": "tracked.txt"},
+        ).status_code == 404
+        assert client.get(
+            f"/api/sessions/{sess.id}/changes/diff", params={"repo": "", "path": "x"}
+        ).status_code == 404
+
+
+@requires_git
+def test_one_file_diff_in_a_repository_without_a_commit(tmp_path):
+    """No HEAD is not an error: the empty tree is what everything is new to."""
+    workspace = tmp_path / "ws"
+    root = workspace / "repo"
+    root.mkdir(parents=True)
+    git(root, "init", "-q")
+    (root / "first.txt").write_text("hello\n", encoding="utf-8")
+    git(root, "add", "first.txt")
+
+    client = make_app(workspace)
+    with client:
+        sess = client.app.state.store.create(root=str(root))
+        body = client.get(
+            f"/api/sessions/{sess.id}/changes/diff",
+            params={"repo": str(root), "path": "first.txt"},
+        ).json()
+
+    assert "hello" in body["diff"]

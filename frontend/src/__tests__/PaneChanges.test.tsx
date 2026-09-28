@@ -27,6 +27,8 @@ const editRecord = {
 
 const gitChanges: api.GitChanges = {
   repos: [{ root: "/ws", name: "ws" }],
+  // The stats request carries no per-file diff: the panel asks for one when a
+  // row is opened (see the mocked fetchGitFileDiff below).
   files: [
     {
       path: "notes.md",
@@ -39,7 +41,7 @@ const gitChanges: api.GitChanges = {
       added: 4,
       removed: 0,
       binary: false,
-      diff: "+第一行\n+第二行\n",
+      diff: null,
       diff_note: null,
     },
     {
@@ -88,6 +90,7 @@ beforeEach(() => {
   primeApiMock(m);
   m.fetchModels.mockResolvedValue({ default: "m", models: {}, providers: {}, limits: {} });
   m.fetchGitChanges.mockResolvedValue(gitChanges);
+  m.fetchGitFileDiff.mockResolvedValue({ diff: "+第一行\n+第二行\n", diff_note: null });
 });
 
 describe("App · 变更面板", () => {
@@ -118,9 +121,13 @@ describe("App · 变更面板", () => {
     expect(screen.getByRole("button", { name: /src\/app\.ts/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /notes\.md/ })).toBeTruthy();
 
-    // A file's diff is one more click, and only that file's.
+    // A file's diff is one more click, and only that file's — fetched then,
+    // not with the stats.
+    expect(m.fetchGitChanges).toHaveBeenCalledWith("A", false);
+    expect(m.fetchGitFileDiff).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /notes\.md/ }));
-    expect(screen.getByText("+第一行")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("+第一行")).toBeTruthy());
+    expect(m.fetchGitFileDiff).toHaveBeenCalledWith("A", "/ws", "notes.md");
     expect(screen.queryByText("+新增行")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /src\/app\.ts/ }));

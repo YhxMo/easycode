@@ -310,9 +310,26 @@ export function fetchSession(id: string): Promise<SessionDetail> {
   return request(`/api/sessions/${id}`);
 }
 
-/** Live uncommitted changes of the repositories this session works in. */
-export function fetchGitChanges(sessionId: string): Promise<GitChanges> {
-  return request(`/api/sessions/${encodeURIComponent(sessionId)}/changes`);
+/**
+ * Live uncommitted changes of the repositories this session works in.
+ *
+ * ``diffs: false`` asks for the files and their counts only: the section's
+ * summary needs nothing else, and generating a diff per changed file is the
+ * expensive half of this request.
+ */
+export function fetchGitChanges(sessionId: string, diffs = false): Promise<GitChanges> {
+  const query = diffs ? "?diffs=1" : "?diffs=0";
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/changes${query}`);
+}
+
+/** One file's diff, for a row the reader opened. */
+export function fetchGitFileDiff(
+  sessionId: string,
+  repo: string,
+  path: string,
+): Promise<{ diff: string | null; diff_note: string | null }> {
+  const query = `repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(path)}`;
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/changes/diff?${query}`);
 }
 
 /**
