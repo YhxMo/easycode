@@ -10,14 +10,12 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from easycode.agent.turns import full_messages, now_iso, repair_interrupted, split_legacy
 from easycode.permissions.policy import PERM_ALLOW_ALL, PERM_ASK
+from easycode.web.artifacts import records_from_messages
 from easycode.web.session import AgentFactory, Session
-
-if TYPE_CHECKING:
-    pass
 
 
 def restore(data: dict, *, cfg: Any, agent_factory: AgentFactory) -> tuple[Session, bool]:
@@ -69,11 +67,7 @@ def restore(data: dict, *, cfg: Any, agent_factory: AgentFactory) -> tuple[Sessi
     agent.history.messages = full_messages(base, turns)
     artifacts = list(data.get("artifacts") or [])
     if not artifacts:
-        from easycode.web.artifacts import records_from_messages
-
-        artifacts = records_from_messages(
-            agent.history.messages, agent.path_context().resolve
-        )
+        artifacts = records_from_messages(agent.history.messages, agent.path_context().resolve)
     sess = Session(
         id=data["id"],
         title=data.get("title", "新会话"),

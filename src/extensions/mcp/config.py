@@ -456,8 +456,6 @@ def effective_servers(
     return out
 
 
-
-
 def scope_config_path(scope: str, root: str | None, cfg) -> Path:
     """The file a scope writes to, with the project scope's root decided here.
 

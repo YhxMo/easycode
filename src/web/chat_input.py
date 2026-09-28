@@ -12,17 +12,27 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from fastapi import HTTPException
 
 from easycode.config import Config
-from easycode.extensions.skills import MCP_COMMAND_PREFIX, SkillRegistry
+from easycode.extensions.commands import (
+    Command,
+    build_registry,
+    personal_commands,
+    project_commands,
+    skill_command,
+)
+from easycode.extensions.mcp.config import MCPConfigError, configured_servers
+from easycode.extensions.skills import (
+    MCP_COMMAND_PREFIX,
+    SkillRegistry,
+    personal_skills,
+    project_skills,
+)
+from easycode.web.projects import build_projects, normalise_root
 from easycode.web.store import SessionStore
-
-if TYPE_CHECKING:
-    from easycode.extensions.commands import Command, CommandRegistry
 
 
 @dataclass(frozen=True)
@@ -78,13 +88,6 @@ def _parse_mcp_command_id(command_id: str) -> tuple[str, str] | None:
     return unquote(parts[1]), unquote(parts[2])
 
 
-def _build_web_commands(roots: list[Path], skills) -> CommandRegistry:
-    """Discover executable prompt templates and skill commands for the Web UI."""
-    from easycode.extensions.commands import build_registry
-
-    return build_registry(roots, skills)
-
-
 def draft_roots(
     root_raw: str | None,
     secondary_raw: list[str] | None,
@@ -95,8 +98,6 @@ def draft_roots(
 
     ``secondary_raw=None`` inherits the project binding; ``[]`` is explicit.
     """
-    from easycode.web.projects import normalise_root
-
     root = normalise_root(root_raw)
     secondary = [str(p) for p in store.resolve_secondary(root, secondary_raw)]
     base = Path(root) if root else Path(cfg.root)
@@ -105,8 +106,7 @@ def draft_roots(
 
 def _expand_command(message: str, roots: list[Path], skills) -> str:
     """Resolve a leading '/' message: expand the selected prompt template or skill."""
-
-    reg = _build_web_commands(roots, skills)
+    reg = build_registry(roots, skills)
     resolved = reg.resolve(message)
     if resolved is None:
         raise HTTPException(400, f"unknown command: {message.split()[0]}")
@@ -124,10 +124,6 @@ def command_entries(cfg: Config, store: SessionStore) -> tuple[list[tuple[dict, 
     caller's path, which is what keeps an unregistered project's command from
     being executed.
     """
-    from easycode.extensions.commands import personal_commands, project_commands, skill_command
-    from easycode.extensions.skills import personal_skills, project_skills
-    from easycode.web.projects import build_projects
-
     out: list[tuple[dict, Command]] = []
     errors: list[str] = []
 
@@ -194,10 +190,8 @@ def mcp_command_entries(cfg: Config, project_root: str) -> tuple[list[dict], lis
     that happens to be down is still a service the user may ask for — the turn
     is where that becomes an error.
 
-    Nothing here fills in a credential; see ``mcp_config.configured_servers``.
+    Nothing here fills in a credential; see ``extensions.mcp.config.configured_servers``.
     """
-    from easycode.extensions.mcp.config import MCPConfigError, configured_servers
-
     try:
         servers = configured_servers(cfg.mcp_servers, project_root)
     except MCPConfigError as exc:

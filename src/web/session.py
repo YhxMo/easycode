@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from easycode.agent.context import History
 from easycode.agent.loop import Agent
 from easycode.agent.turns import (
     RUNNING,
@@ -22,11 +23,11 @@ from easycode.agent.turns import (
     turn_statuses,
 )
 from easycode.permissions.policy import PERM_ALLOW_ALL
+from easycode.web.artifacts import build_record
 
 #: Creates an agent for an alias; implementations may accept extra kwargs
 #: (root/secondary_roots) from ``SessionStore.create``.
 AgentFactory = Callable[..., Agent]
-
 
 
 @dataclass
@@ -140,7 +141,6 @@ class Session:
         this turn has to restore the list as it stood *before* the turn ran, and
         the live list is the model's to change as it works.
         """
-
         record = TurnRecord.start(
             raw_input=raw_input,
             model_input=model_input,
@@ -171,7 +171,6 @@ class Session:
         A later turn is never restored afterwards: once the new branch fails, the
         old one is already gone.
         """
-
         if index < 0 or index >= len(self.turns):
             raise IndexError(f"turn index out of range: {index}")
         # Replay the turns ahead of the edited one — not the edited turn itself,
@@ -202,8 +201,6 @@ class Session:
 
     def record_artifact(self, tool_call, result: str | None, turn_id: str | None = None) -> None:
         """Keep one file-tool result for the pane (trimmed, never the whole output)."""
-        from easycode.web.artifacts import build_record
-
         if not result:
             return
         record = build_record(
@@ -241,14 +238,13 @@ class Session:
         if index < 0:
             return
         turn = self.turns[index]
-
         if turn.get("status") != RUNNING:
             return
         turn["status"] = status
         if error:
             self.record_turn_failure(error, None, turn_id)
 
-    def _baseline(self) -> list[dict]:
+    def baseline(self) -> list[dict]:
         """The model context's own head, which is not part of the conversation.
 
         That is a compaction summary and nothing else. Everything the turns
@@ -258,8 +254,6 @@ class Session:
         carries a summary written during a live turn through the next flush —
         without it a restart would quietly undo the last compaction.
         """
-        from easycode.agent.context import History
-
         head = self.agent.history.messages
         if head and History.is_summary(head[0]):
             return [dict(head[0])]
@@ -287,7 +281,6 @@ class Session:
 
     def projection(self) -> dict:
         """The conversation as the transcript reads it, plus the current revision."""
-
         out = project_detail(self.turns, self.history_base)
         out["revision"] = self.revision
         out["turn_status"] = turn_statuses(self.turns)

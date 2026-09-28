@@ -60,8 +60,6 @@ class RemoveProjectRequest(BaseModel):
     delete_sessions: bool = True
 
 
-
-
 def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
     @app.get("/api/workspaces")
     def list_workspaces() -> dict:

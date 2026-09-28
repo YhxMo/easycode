@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from easycode.permissions.boundary import PathContext, root_error
 from easycode.tools.reading import MAX_READ_BYTES, read_window
 from easycode.tools.search import iter_files
+from easycode.web.chat_input import draft_roots
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 1000
@@ -43,8 +44,6 @@ def _scope(req: FilesRequest, cfg, store) -> PathContext:
         if sess is None:
             raise HTTPException(404, "session not found")
         return sess.agent.path_context()
-
-    from easycode.web.chat_input import draft_roots
 
     # A draft root that cannot be resolved or validated is a bad request, the
     # same as it is for /api/commands and /api/chat: 422, never a 500 from a

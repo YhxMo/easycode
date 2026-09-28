@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from easycode.permissions.boundary import root_error
+from easycode.permissions.policy import permission_parse, require_full_access_consent
 from easycode.web.bridge import ApprovalBroker
+from easycode.web.git import GitError
+from easycode.web.git import file_diff as describe
+from easycode.web.git import session_changes as collect
 from easycode.web.locks import idle_sessions, run_mutation
+from easycode.web.projects import build_projects, normalise_root
 from easycode.web.store import SessionStore
 
 
@@ -60,9 +67,6 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         is a 422, and a failed agent build (e.g. no usable default model) leaves
         no session behind.
         """
-        from easycode.permissions.policy import permission_parse, require_full_access_consent
-        from easycode.web.projects import normalise_root
-
         kwargs: dict = {}
         if req.root:
             kwargs["root"] = normalise_root(req.root)
@@ -119,9 +123,6 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         is written, and the move is applied under the session's own lock, so a
         refused request leaves the session exactly as it was.
         """
-        from easycode.permissions.boundary import root_error
-        from easycode.web.projects import build_projects, normalise_root
-
         cfg = store.cfg
         sess = store.get(session_id)
         if sess is None:
@@ -172,10 +173,6 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         for each one: the section shows its summary when collapsed, and the diff
         of a file is what the reader opens next, one request at a time.
         """
-        import asyncio
-
-        from easycode.web.git import session_changes as collect
-
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
@@ -189,11 +186,6 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         roots and the repository's current status; anything else is a 404, so
         this cannot be used to read a file the pane was not already describing.
         """
-        import asyncio
-
-        from easycode.web.git import GitError
-        from easycode.web.git import file_diff as describe
-
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
@@ -248,8 +240,6 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
 
     @app.post("/api/sessions/{session_id}/permission")
     async def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
-        from easycode.permissions.policy import permission_parse, require_full_access_consent
-
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")

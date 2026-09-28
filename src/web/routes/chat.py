@@ -11,8 +11,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from easycode.agent.turns import CANCELLED, COMPLETED, FAILED
 from easycode.config import Config
 from easycode.permissions.boundary import resolve_workspace_path, root_error
+from easycode.permissions.policy import permission_parse, require_full_access_consent
 from easycode.web.bridge import (
     ApprovalBroker,
     approval_required_sse,
@@ -28,6 +30,8 @@ from easycode.web.chat_input import (
     mcp_command_entries,
     resolve_input,
 )
+from easycode.web.locks import project_key
+from easycode.web.projects import known_projects, normalise_root, session_primary
 from easycode.web.session import Session
 from easycode.web.store import SessionStore
 
@@ -67,9 +71,6 @@ def _session_roots(sess: Session, cfg: Config) -> list[Path]:
 
 def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: ApprovalBroker) -> None:
     """Connect chat and command endpoints to this app's session store."""
-    from easycode.web.locks import project_key
-    from easycode.web.projects import normalise_root, session_primary
-
     def _get_session(session_id: str | None, **agent_kwargs: object) -> Session:
         if session_id:
             sess = store.get(session_id)
@@ -110,8 +111,6 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         start page has no conversation yet, so it names a registered project —
         or nothing, which means the default one.
         """
-        from easycode.web.projects import known_projects
-
         if session_id:
             sess = store.get(session_id)
             if sess is None:
@@ -158,8 +157,6 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             raise HTTPException(422, "edit_turn_id needs an existing session")
         if req.edit_turn_id and req.expected_revision is None:
             raise HTTPException(422, "编辑需要携带 expected_revision")
-        from easycode.permissions.policy import permission_parse, require_full_access_consent
-
         perm_mode: str | None = None
         if req.permission_mode:
             try:
@@ -400,8 +397,6 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                             # reader that simply went away mid-turn is. Either way
                             # the turn is over, and saying so keeps a reload from
                             # showing it as still working.
-                            from easycode.agent.turns import CANCELLED, COMPLETED, FAILED
-
                             # Four ways a turn can end without having closed
                             # itself out: the model reported an error, the user
                             # stopped it, it finished normally, or the reader

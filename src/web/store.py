@@ -245,7 +245,7 @@ class SessionStore:
         if session.id not in self._sessions:
             return
         session.messages = list(session.agent.history.messages)
-        session.history_base = session._baseline()
+        session.history_base = session.baseline()
         self._flush(session)
 
     def _flush(self, session: Session) -> None:
