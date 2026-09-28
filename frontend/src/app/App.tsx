@@ -179,7 +179,6 @@ export default function App() {
     onSessionNamed: registerTab,
   });
 
-
   // The message pane follows the live edge only while the reader is at it, and
   // remembers each conversation's place. Declared after the stream because it
   // tracks the foreground conversation's items.
@@ -247,13 +246,6 @@ export default function App() {
   // ---- sidebar collapse state (sections + project groups, in localStorage) ----
   const [collapsedProjects, toggleProjectCollapsed] = usePersistedFlags("easycode:collapsed_projects");
   const [collapsedSections, toggleSection] = usePersistedFlags("easycode:collapsed_sections");
-
-
-
-  // Restore the caret a conversation was left at. The field keeps the focus it
-  // has: this only puts the insertion point where the user stopped typing.
-  // Never while an IME is composing — the selection belongs to it until the
-  // candidate lands.
 
   // The composer is laid out over the stream: publish its height so the stream
   // can keep exactly that much room clear at the bottom.
