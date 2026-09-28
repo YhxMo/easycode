@@ -4,7 +4,6 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   CommandInfo,
   FileEntry,
-  GitChanges,
   ModelsInfo,
   SessionDetail,
   SessionSummary,
@@ -18,8 +17,6 @@ import {
   deleteSession,
   fetchArchivedSessions,
   fetchCommands,
-  fetchGitChanges,
-  fetchGitFileDiff,
   fetchModels,
   fetchFiles,
   fetchSession,
@@ -56,25 +53,12 @@ import { ChatMessages } from "../features/chat/ChatMessages";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { ComposerBar } from "../features/composer/ComposerBar";
 import { RightPane } from "../features/pane/RightPane";
+import { PaneBody } from "../features/pane/PaneBody";
+import { usePane } from "../features/pane/usePane";
 import { EmptyState } from "../features/chat/EmptyState";
 import { LoadingState } from "../components/primitives/LoadingState";
 import { TabBar, type OpenTab } from "../features/sidebar/TabBar";
 import { SelectionActions } from "../features/chat/SelectionActions";
-import { ContextCards } from "../features/pane/ContextCards";
-import { ChangeList } from "../features/pane/ChangeList";
-import { FileList } from "../features/pane/FileList";
-import { FilePreview } from "../features/pane/FilePreview";
-import {
-  fileRows,
-  paneData,
-  rowStats,
-  sessionChangeRows,
-  sessionFiles,
-  sessionToolItems,
-  workingTreeRows,
-  type ChangeRow,
-} from "../features/pane/pane";
-import { TaskRows } from "../features/pane/TaskRows";
 import { groupSessions } from "../features/sidebar/sessionGroups";
 import { applyMention, mentionToken } from "../features/composer/mention";
 import { useVoiceInput } from "../features/composer/useVoiceInput";
@@ -98,24 +82,6 @@ import { useToast } from "./useToast";
 
 /** Foreground session load phase; null means ready. */
 type SessionLoad = { status: "loading" } | { status: "error"; message: string };
-
-/**
- * One conversation's pane choices. `turn` is the turn they were made in, so
- * they expire with that turn and the next one can pick its own section again.
- * The pane switch itself is window-level (see `paneOpen`): only the section and
- * the open preview describe a single conversation.
- */
-interface PaneState {
-  turn: number;
-  section: string | null;
-  preview: string | null;
-  /**
-   * Whether the change section shows its files and diffs. Per conversation and
-   * not per turn: it describes how the reader is looking at this conversation's
-   * work, which outlives the turn that produced it. Collapsed until opened.
-   */
-  changesOpen?: boolean;
-}
 
 /** One user message, as the transcript holds it. */
 type UserItem = Extract<Item, { kind: "user" }>;
@@ -193,25 +159,10 @@ export default function App() {
   // conversation stays in the sidebar and a running turn keeps streaming into
   // its own slot.
   const [openTabs, setOpenTabs] = useState<string[]>(() => readStoredTabs());
-  // The pane switch is window-level: what the user chose in one conversation
-  // holds when they switch to another, and a background turn never changes it.
-  const [paneOpen, setPaneOpen] = useState(false);
-  // Turn whose auto-open the user refused by closing the pane: new artifacts of
-  // that same turn must not reopen it, while the next turn may.
-  const paneMutedRef = useRef<string | null>(null);
-  // Section and preview are per conversation: they describe that conversation's
-  // work, so one session's choices never govern another's.
-  const [paneState, setPaneState] = useState<Record<string, PaneState>>({});
   // File-tool records per conversation, as fetched with the session. They are
   // what the pane reads once a refresh (or a compaction) has taken the tool
   // results out of the message history.
   const [artifactRecords, setArtifactRecords] = useState<Record<string, ToolItem[]>>({});
-  // The working tree as it is right now, for the pane's change and file
-  // sections. Tagged with the conversation it was read for.
-  const [gitChanges, setGitChanges] = useState<{ session: string; data: GitChanges } | null>(null);
-  // Bumped with every stats snapshot, so the open rows re-fetch their diffs
-  // against the same reading their counts came from.
-  const [gitStatsVersion, setGitStatsVersion] = useState(0);
   const mainRef = useRef<HTMLDivElement>(null);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   // Height of the floating composer: the message stream reserves exactly that
@@ -244,6 +195,9 @@ export default function App() {
   // Read at approval time, so the callback handed to the stream stays stable
   // while the pane hook below is (re)created with the foreground conversation.
   const stickyRef = useRef<StickToBottom | null>(null);
+  // The pane hook is declared after the stream (it reads the live items), so a
+  // removal that happens earlier reaches its forget() through this.
+  const paneRef = useRef<ReturnType<typeof usePane> | null>(null);
   const revealApproval = useCallback(
     () => stickyRef.current?.reveal(".approval-card.pending"),
     [],
@@ -401,12 +355,7 @@ export default function App() {
         delete next[id];
         return next;
       });
-      setPaneState((prev) => {
-        if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
-        return next;
-      });
+      paneRef.current?.forget(id);
       stickyRef.current?.forget(id);
     },
     [forgetEntry],
@@ -1132,41 +1081,6 @@ export default function App() {
   // Turns are counted by user messages: a choice made in one turn must not
   // carry over to the next.
   const turnNo = useMemo(() => items.filter((it) => it.kind === "user").length, [items]);
-  // The pane reads the whole conversation, not just the turn on screen: its
-  // records outlive the message history, and the calls this view holds but the
-  // server has not recorded yet are appended to them.
-  const sessionRecords = useMemo(
-    () => (currentId ? (artifactRecords[currentId] ?? []) : []),
-    [artifactRecords, currentId],
-  );
-  const pane = useMemo(
-    () =>
-      paneData(sessionToolItems(sessionRecords, items), { fullAccess: permission === "allow-all" }),
-    [sessionRecords, items, permission],
-  );
-  // Newest first: this list is the conversation, and the card a turn just
-  // produced is the one worth seeing without scrolling.
-  const contextCards = useMemo(() => [...pane.context].reverse(), [pane]);
-  const changeCards = useMemo(() => [...pane.changes].reverse(), [pane]);
-  // The task list is session state: the newest one stays on screen even after
-  // its turn ends. Only a list produced by *this* turn may open the pane by
-  // itself — an older one must not pop it open the instant a turn starts.
-  const todos = useMemo(() => {
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      const item = items[i];
-      if (item.kind === "todo") return item.todos;
-    }
-    return [];
-  }, [items]);
-  const turnTodos = useMemo(() => turn.some((it) => it.kind === "todo"), [turn]);
-  // Only turns produced in this view drive the pane: a restored session's
-  // history must not pop it open on load.
-  const liveTurn =
-    busy || turn.some((it) => it.kind === "assistant" && typeof it.durationMs === "number");
-  // The pane keeps the newest list on screen after its turn ends, so a list
-  // written earlier reads as the current progress unless it is labelled. Only a
-  // turn that actually ran here counts — a restored list never describes now.
-  const listIsStale = todos.length > 0 && !(turnTodos && liveTurn);
   // The pane covers the stream once the chat area gets narrow. Measured from
   // the element the CSS container query measures, so the two agree; a narrow
   // pane must not open on its own, since it would hide the reply it describes.
@@ -1183,151 +1097,26 @@ export default function App() {
     return () => observer.disconnect();
   }, []);
 
-  // A turn producing its first artifact opens the pane by itself. The trigger is
-  // the artifact count *growing* while one turn is on screen, which is what
-  // keeps switching conversations from opening it: a switch changes the turn,
-  // and a restored conversation's history is not something this view produced.
-  const artifactCount = pane.context.length + pane.changes.length + (turnTodos ? 1 : 0);
-  const paneTurnKey = `${draftKey}#${turnNo}`;
-  const seenArtifactsRef = useRef({ key: paneTurnKey, count: artifactCount });
+  // The pane reads the whole conversation, not just the turn on screen: its
+  // records outlive the message history, and the calls this view holds but the
+  // server has not recorded yet are appended to them.
+  const pane = usePane({
+    key: draftKey,
+    sessionId: currentId,
+    root: currentRoot,
+    busy,
+    records: currentId ? (artifactRecords[currentId] ?? []) : [],
+    items,
+    turnItems: turn,
+    turnNo,
+    fullAccess: permission === "allow-all",
+    narrow: chatNarrow,
+    toggleRef: paneToggleRef,
+  });
+
   useEffect(() => {
-    const seen = seenArtifactsRef.current;
-    seenArtifactsRef.current = { key: paneTurnKey, count: artifactCount };
-    if (seen.key !== paneTurnKey || artifactCount <= seen.count) return;
-    // Only work that ran in this view counts: a session's restored history
-    // carries artifacts of its own, and they must not pop the pane open.
-    if (!liveTurn) return;
-    // A drawer would cover the reply it describes, and a pane the user closed
-    // in this turn stays closed until the next one.
-    if (chatNarrow || paneMutedRef.current === paneTurnKey) return;
-    setPaneOpen(true);
-  }, [paneTurnKey, artifactCount, chatNarrow, liveTurn]);
-
-  const paneSelf = paneState[draftKey];
-  const paneSection =
-    paneSelf?.turn === turnNo && paneSelf.section
-      ? paneSelf.section
-      : pane.changes.length
-        ? "changes"
-        : todos.length
-          ? "tasks"
-          : "context";
-  const preview = paneSelf?.preview ?? null;
-  // The change section opens as a summary line and stays as the reader left it
-  // for this conversation.
-  const changesOpen = paneSelf?.changesOpen ?? false;
-  const patchPaneState = useCallback(
-    (key: string, patch: Partial<PaneState>) =>
-      setPaneState((prev) => {
-        const self = prev[key] ?? { turn: 0, section: null, preview: null };
-        return { ...prev, [key]: { ...self, ...patch } };
-      }),
-    [],
-  );
-  const chooseSection = useCallback(
-    (section: string) => patchPaneState(draftKey, { turn: turnNo, section }),
-    [patchPaneState, draftKey, turnNo],
-  );
-  const setPreview = useCallback(
-    (path: string | null) => patchPaneState(draftKey, { preview: path }),
-    [patchPaneState, draftKey],
-  );
-  /** Open one file's preview, from whichever section offered it. */
-  const openFile = useCallback(
-    (target: string) => {
-      setPreview(target);
-      chooseSection("file");
-    },
-    [setPreview, chooseSection],
-  );
-
-  const toggleChanges = useCallback(
-    () => patchPaneState(draftKey, { changesOpen: !changesOpen }),
-    [patchPaneState, draftKey, changesOpen],
-  );
-
-  const closePane = useCallback(() => {
-    setPaneOpen(false);
-    // Closing during a turn is a decision about that turn: it must survive the
-    // artifacts still arriving, and expire with the turn.
-    paneMutedRef.current = paneTurnKey;
-    // A drawer that vanishes hands the keyboard back to what opened it.
-    if (chatNarrow) paneToggleRef.current?.focus();
-  }, [chatNarrow, paneTurnKey]);
-
-  // Escape closes the drawer, the way it closes a modal. The composer keeps its
-  // own Escape (its menus use it), so events coming from there are left alone.
-  useEffect(() => {
-    if (!chatNarrow || !paneOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if ((e.target as HTMLElement | null)?.closest(".composer")) return;
-      closePane();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [chatNarrow, paneOpen, closePane]);
-
-  // The working tree as it is now, for the sections that report it. Read when
-  // those sections come into view and once more when a turn ends, which is when
-  // the files it touched have finished changing.
-  const git = gitChanges && gitChanges.session === currentId ? gitChanges.data : null;
-  const paneWantsGit = paneOpen && (paneSection === "changes" || paneSection === "file");
-  useEffect(() => {
-    if (!currentId || !paneWantsGit) return;
-    let live = true;
-    // The stats request never carries per-file diffs: the section shows counts,
-    // and the diff of a file is fetched when the reader opens that row.
-    fetchGitChanges(currentId, false)
-      .then((data) => {
-        if (!live) return;
-        setGitChanges({ session: currentId, data });
-        setGitStatsVersion((prev) => prev + 1);
-      })
-      .catch((e: unknown) => {
-        if (!live) return;
-        setGitChanges({
-          session: currentId,
-          data: {
-            repos: [],
-            files: [],
-            truncated: false,
-            error: e instanceof Error ? e.message : String(e),
-          },
-        });
-      });
-    return () => {
-      live = false;
-    };
-  }, [currentId, paneWantsGit, busy, currentRoot]);
-
-  /**
-   * One working-tree row's diff, fetched when the reader opens it. The list
-   * keeps the answers itself: it is what knows which reply is still current.
-   */
-  const loadGitDiff = useCallback(
-    async (row: ChangeRow) => {
-      const source = row.gitSource;
-      if (!currentId || !source) return { diff: null, diff_note: null };
-      return fetchGitFileDiff(currentId, source.repo, source.path);
-    },
-    [currentId],
-  );
-
-  const fileEntries = useMemo(() => sessionFiles(pane.context, pane.changes), [pane]);
-  const paneFiles = useMemo(() => fileRows(fileEntries, git?.files ?? []), [fileEntries, git]);
-  // The change section lists the two sources as rows of counts: the files this
-  // conversation changed, and the repository's uncommitted state right now.
-  const changeRows = useMemo(() => sessionChangeRows(changeCards), [changeCards]);
-  const treeRows = useMemo(() => workingTreeRows(git?.files ?? []), [git]);
-  // What the collapsed line reports is the working tree — "changes on this
-  // branch" is its answer, not the session's. A directory outside Git has no
-  // tree to report, and this conversation's own record must not vanish with it.
-  const treeKnown = Boolean(git?.repos.length);
-  const changeStats = treeKnown
-    ? { added: git?.added ?? 0, removed: git?.removed ?? 0 }
-    : rowStats(changeRows);
-  const changeFiles = treeKnown ? (git?.files.length ?? 0) : changeRows.length;
+    paneRef.current = pane;
+  });
 
   // The centred first-run stage replaces the stream until a conversation has
   // something to show; a load in progress is never masked by it.
@@ -1694,12 +1483,12 @@ export default function App() {
               </span>
               <button
                 type="button"
-                className={`icon-btn${paneOpen ? " on" : ""}`}
-                aria-label={paneOpen ? "收起面板" : "展开面板"}
-                aria-pressed={paneOpen}
-                title={paneOpen ? "收起面板" : "展开面板"}
+                className={`icon-btn${pane.open ? " on" : ""}`}
+                aria-label={pane.open ? "收起面板" : "展开面板"}
+                aria-pressed={pane.open}
+                title={pane.open ? "收起面板" : "展开面板"}
                 ref={paneToggleRef}
-                onClick={() => (paneOpen ? closePane() : setPaneOpen(true))}
+                onClick={() => (pane.open ? pane.close() : pane.setOpen(true))}
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -1751,8 +1540,8 @@ export default function App() {
                   onContinue={continueUnfinished}
                   onEdit={busy || sendBlocked ? undefined : startEdit}
                   onOpenTasks={() => {
-                    chooseSection("tasks");
-                    setPaneOpen(true);
+                    pane.chooseSection("tasks");
+                    pane.setOpen(true);
                   }}
                 />
                 {busy && !activeTool && !pendingApproval && (
@@ -1782,110 +1571,14 @@ export default function App() {
           />
         </div>
         <RightPane
-          open={paneOpen}
+          open={pane.open}
           overlay={chatNarrow}
           sections={PANE_SECTIONS}
-          active={paneSection}
-          onSelect={chooseSection}
-          onClose={closePane}
+          active={pane.section}
+          onSelect={pane.chooseSection}
+          onClose={pane.close}
         >
-          {paneSection === "tasks" && <TaskRows todos={todos} stale={listIsStale} />}
-          {paneSection === "context" && (
-            <ContextCards cards={contextCards} onOpen={openFile} />
-          )}
-          {paneSection === "changes" && (
-            <>
-              {/* The section opens as one line: what moved, and by how much. The
-                  files and their diffs are what the reader opens next. */}
-              <button
-                type="button"
-                className={`change-summary${changesOpen ? " open" : ""}`}
-                aria-expanded={changesOpen}
-                title={
-                  treeKnown
-                    ? "当前工作区相对各仓库 HEAD 的未提交改动"
-                    : "这场会话自己修改的文件"
-                }
-                onClick={toggleChanges}
-              >
-                <span className="change-caret" aria-hidden="true">
-                  ▸
-                </span>
-                <span className="change-summary-label">
-                  {treeKnown ? "当前工作区改动" : "会话改动"}
-                </span>
-                <span className="change-summary-files">{changeFiles} 个文件</span>
-                <span className="change-stats tabular">
-                  <span className="add">+{changeStats.added}</span>
-                  <span className="del">−{changeStats.removed}</span>
-                </span>
-              </button>
-              {changesOpen && (
-                <>
-                  <div className="pane-group-title">
-                    会话操作记录
-                    <span className="pane-count">{changeRows.length}</span>
-                  </div>
-                  {/* Keyed by conversation: which file a reader opened is about
-                      that conversation, and the same path in another one is not
-                      the same file. */}
-                  {changeRows.length ? (
-                    <ChangeList key={`session:${draftKey}`} rows={changeRows} />
-                  ) : (
-                    <p className="pane-empty">这场会话还没有修改文件。</p>
-                  )}
-                  <div className="pane-group-title pane-group-next">
-                    当前工作区未提交改动
-                    <span className="pane-count">{git?.files.length ?? 0}</span>
-                  </div>
-                  {!git && (
-                    <p className="pane-empty">
-                      {currentId ? "正在读取工作区状态…" : "开始会话后可查看工作区状态。"}
-                    </p>
-                  )}
-                  {git?.error && <p className="pane-empty">无法读取 Git 状态：{git.error}</p>}
-                  {git && !git.error && !git.repos.length && (
-                    <p className="pane-empty">会话所在目录不在 Git 仓库中。</p>
-                  )}
-                  {git && !git.error && git.repos.length > 0 && !git.files.length && (
-                    <p className="pane-empty">工作区没有未提交的改动。</p>
-                  )}
-                  <ChangeList
-                    key={`tree:${draftKey}`}
-                    rows={treeRows}
-                    loadDiff={loadGitDiff}
-                    statsVersion={gitStatsVersion}
-                  />
-                  {git?.truncated && treeRows.length > 0 && (
-                    <p className="pane-empty">
-                      改动较多，只列出前 {treeRows.length} 个文件。
-                    </p>
-                  )}
-                </>
-              )}
-            </>
-          )}
-          {paneSection === "file" &&
-            (preview && currentId ? (
-              // The key carries the conversation as well as the path: the same
-              // relative name in another session must never show the old text.
-              <FilePreview
-                key={`${currentId}:${preview}`}
-                sessionId={currentId}
-                path={preview}
-                onBack={() => setPreview(null)}
-              />
-            ) : paneFiles.length ? (
-              <>
-                <div className="pane-group-title">
-                  会话涉及的文件
-                  <span className="pane-count">{paneFiles.length}</span>
-                </div>
-                <FileList rows={paneFiles} onOpen={openFile} />
-              </>
-            ) : (
-              <p className="pane-empty">这场会话还没有涉及文件。</p>
-            ))}
+          <PaneBody pane={pane} draftKey={draftKey} sessionId={currentId} />
         </RightPane>
         {toast && (
           <div className={`app-toast ${toast.kind}`} role="status">
