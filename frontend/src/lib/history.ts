@@ -1,5 +1,5 @@
 // Convert persisted history into chat items.
-import type { ApprovalRecord, ArtifactRecord, TurnFailure } from "../api";
+import type { ApprovalRecord, ArtifactRecord, TurnFailure, TurnSummary } from "../api";
 import type { Item, ToolItem } from "../types";
 
 export function normalizeToolArgs(value: unknown): Record<string, unknown> {
@@ -67,8 +67,14 @@ export function historyToItems(
   messages: HistoryMessage[],
   approvals: ApprovalRecord[] = [],
   failures: TurnFailure[] = [],
+  turns: TurnSummary[] = [],
 ): Item[] {
   const items: Item[] = [];
+  // What each prompt was sent as: a message restored from disk must still know
+  // it was a `/review` (or an MCP service), so editing it resends the same
+  // command instead of turning it into plain text with a slash in it.
+  const commandByTurn = new Map<string, string | null>();
+  for (const t of turns) commandByTurn.set(t.id, t.command_id ?? null);
   const toolResults = new Map<string, string>();
   for (const m of messages) {
     if (m.role === "tool" && m.tool_call_id) toolResults.set(String(m.tool_call_id), String(m.content ?? ""));
@@ -89,7 +95,12 @@ export function historyToItems(
       flushFailure();
       const turnId = m.turn_id ? String(m.turn_id) : undefined;
       pending = (turnId && failureByTurn.get(turnId)) || null;
-      items.push({ kind: "user", text: String(m.content ?? ""), turnId, commandId: null });
+      items.push({
+        kind: "user",
+        text: String(m.content ?? ""),
+        turnId,
+        commandId: (turnId ? commandByTurn.get(turnId) : null) ?? null,
+      });
     } else if (m.role === "assistant") {
       const turnId = m.turn_id ? String(m.turn_id) : undefined;
       if (m.content) items.push({ kind: "assistant", text: String(m.content), turnId });

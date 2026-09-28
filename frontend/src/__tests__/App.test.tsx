@@ -3,7 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { activeTitle, composerField, deferred, detail, primeApiMock, session, sidebarRow } from "./helpers";
+import {
+  activeTitle,
+  commandsInfo,
+  composerField,
+  deferred,
+  detail,
+  primeApiMock,
+  session,
+  sidebarRow,
+} from "./helpers";
 
 // The App is exercised purely against a mocked ./api. No real backend, no
 // network, no ~/.easycode data (easycode-audit rule 3). SSE is driven by
@@ -420,13 +429,13 @@ describe("App", () => {
 
   it("命令菜单高亮与回车选中一致（按 kind 稳定排序）", async () => {
     const user = userEvent.setup();
-    m.fetchCommands.mockResolvedValue({
-      commands: [
+    m.fetchCommands.mockResolvedValue(
+      commandsInfo([
         { id: "user::a", name: "a", description: "", kind: "skill" },
         { id: "user::b", name: "b", description: "", kind: "template" },
         { id: "user::c", name: "c", description: "", kind: "skill" },
-      ],
-    });
+      ]),
+    );
 
     render(<App />);
     const box = await composerField();
@@ -561,8 +570,8 @@ describe("App", () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
-    m.fetchCommands.mockResolvedValue({
-      commands: [
+    m.fetchCommands.mockResolvedValue(
+      commandsInfo([
         {
           id: "project:/a:shared",
           name: "shared",
@@ -579,8 +588,8 @@ describe("App", () => {
           source: "project",
           source_label: "B 项目",
         },
-      ],
-    });
+      ]),
+    );
 
     render(<App />);
     await screen.findByText("会话A");
@@ -593,8 +602,11 @@ describe("App", () => {
     expect(await screen.findAllByText("/shared")).toHaveLength(2);
     expect(screen.getByText("A 项目")).toBeTruthy();
     expect(screen.getByText("B 项目")).toBeTruthy();
-    // ...and the menu does not depend on which conversation is on screen.
-    expect(m.fetchCommands.mock.calls.length).toBe(before);
+    // Skills and templates come from every registered project, so the content
+    // does not depend on the conversation; the request still names it, because
+    // the MCP services in the same list belong to one project.
+    expect(before).toBeGreaterThan(0);
+    expect(m.fetchCommands).toHaveBeenLastCalledWith("s1", null);
   });
 
   it("新会话发送显式携带次目录列表（空列表表示明确不使用）", async () => {

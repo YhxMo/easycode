@@ -3,7 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import { composerField, detail, primeApiMock, session, sidebarRow } from "./helpers";
+import {
+  commandsInfo,
+  composerField,
+  detail,
+  primeApiMock,
+  session,
+  sidebarRow,
+} from "./helpers";
 
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
@@ -142,11 +149,11 @@ describe("App · 编辑历史消息", () => {
   });
 
   it("Escape 先关菜单再取消编辑", async () => {
-    m.fetchCommands.mockResolvedValue({
-      commands: [
+    m.fetchCommands.mockResolvedValue(
+      commandsInfo([
         { id: "personal::review", name: "review", description: "审查改动", kind: "template" },
-      ],
-    });
+      ]),
+    );
     const user = await open();
     await user.click(editButtons()[0]);
     await user.clear(composerField());

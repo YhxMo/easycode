@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useRef, useState } from "react";
 import App from "../App";
 import * as api from "../api";
-import { activeTitle, composerField, session, sidebarRow } from "./helpers";
+import { activeTitle, commandsInfo, composerField, session, sidebarRow } from "./helpers";
 import { Modal } from "../components/Modal";
 import { useDismiss } from "../lib/useDismiss";
 
@@ -121,7 +121,7 @@ describe("App · 删除会话模态框", () => {
     m.fetchArchivedSessions.mockResolvedValue([]);
     m.fetchWorkspaces.mockResolvedValue({ projects: [] });
     m.fetchModels.mockResolvedValue({ default: "deepseek-v4flash", models: {}, providers: {}, limits: {} });
-    m.fetchCommands.mockResolvedValue({ commands: [] });
+    m.fetchCommands.mockResolvedValue(commandsInfo());
     m.fetchSession.mockResolvedValue({
       ...session("s1", "会话A"),
       messages: [{ role: "user", content: "hi" }],

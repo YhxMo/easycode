@@ -287,9 +287,13 @@ export function useChatStream(params: UseChatStreamParams) {
    * refusal leaves the transcript the user is reading untouched. Files, shells
    * and MCP calls those turns already ran are not undone: this rewrites the
    * conversation, not the workspace.
+   *
+   * ``commandId`` is the caller's decision, taken from the same single source
+   * the ordinary send uses: the hook must not read a second copy from the edit
+   * draft and disagree with it.
    */
   const sendEdit = useCallback(
-    async (edit: EditDraft) => {
+    async (edit: EditDraft, commandId: string | null) => {
       const c = latest.current;
       const text = c.input.trim();
       const sessionId = c.currentId;
@@ -303,7 +307,7 @@ export function useChatStream(params: UseChatStreamParams) {
         edit_turn_id: edit.editTurnId,
         expected_revision: edit.expectedRevision,
       };
-      if (edit.commandId) opts.command_id = edit.commandId;
+      if (commandId) opts.command_id = commandId;
       await run(sessionId, sessionId, text, opts, true);
     },
     [entries, run],

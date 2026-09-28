@@ -188,20 +188,42 @@ export interface CommandInfo {
   id: string;
   name: string;
   description: string;
-  kind: "builtin" | "template" | "skill";
+  /** `mcp` entries ask for one MCP service, and are per project. */
+  kind: "builtin" | "template" | "skill" | "mcp";
   argument_hint?: string;
-  source?: "builtin" | "project" | "user";
+  source?: "builtin" | "project" | "user" | "app";
   /** Where this entry came from, for display: the personal directory, or a project. */
   source_label?: string;
+  /** MCP entries only: the service this asks for. */
+  mcp_server?: string;
+  /** MCP entries only: the project whose service list it came from. */
+  project_root?: string;
+}
+
+export interface CommandsInfo {
+  commands: CommandInfo[];
+  /** Names the menu cannot offer: reserved-prefix clashes, unreadable MCP config. */
+  errors: string[];
 }
 
 /**
- * Every command the `/` menu offers: all registered projects plus the personal
- * directory, each entry naming its own source. The same name can appear more
+ * Everything the `/` menu offers.
+ *
+ * Skills and templates come from all registered projects plus the personal
+ * directory, each entry naming its own source; the same name can appear more
  * than once, so a request that picks from the menu sends the entry's id.
+ * MCP services are per project, so the conversation (or the draft's chosen
+ * directory) decides which of them are listed.
  */
-export function fetchCommands(): Promise<{ commands: CommandInfo[] }> {
-  return request("/api/commands");
+export function fetchCommands(
+  sessionId: string | null,
+  root: string | null,
+): Promise<CommandsInfo> {
+  const query = new URLSearchParams();
+  if (sessionId) query.set("session_id", sessionId);
+  else if (root) query.set("root", root);
+  const suffix = query.toString();
+  return request(`/api/commands${suffix ? `?${suffix}` : ""}`);
 }
 
 export interface AddModelBody {

@@ -112,7 +112,7 @@ export function applyChatEvent(prev: Item[], ev: ChatEvent): Item[] {
       // view that only appended would keep showing turns the conversation no
       // longer contains.
       return ev.messages
-        ? historyToItems(ev.messages, ev.approvals ?? [], ev.failures ?? [])
+        ? historyToItems(ev.messages, ev.approvals ?? [], ev.failures ?? [], ev.turns ?? [])
         : prev;
     case "tool_start":
       return [

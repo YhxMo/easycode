@@ -399,13 +399,30 @@ def resolve(
     return sorted(out.values(), key=lambda entry: entry.name)
 
 
-def effective_servers(app: dict[str, dict[str, Any]] | None, root: str | None) -> list[ResolvedServer]:
-    """The servers one project actually runs, with their secrets filled in.
+def configured_servers(
+    app: dict[str, dict[str, Any]] | None, root: str | None
+) -> list[ResolvedServer]:
+    """The servers one project would run, exactly as configured.
 
     Only the project's own primary directory is a project scope: a secondary
     directory is somewhere the session reads, not the project it belongs to, and
     letting it contribute servers would make the same conversation behave
     differently depending on which directory happened to be listed first.
+
+    No secret is filled in. Read paths that must not carry a credential — the
+    ``/`` menu, the settings panel — use this; connecting uses
+    :func:`effective_servers`, which is this list plus the stored values.
+    """
+    project_root = str(root or "")
+    personal = read_scope(personal_config_path())
+    project = read_scope(project_config_path(Path(project_root))) if project_root else {}
+    return resolve(personal=personal, app=app or {}, project=project)
+
+
+def effective_servers(
+    app: dict[str, dict[str, Any]] | None, root: str | None
+) -> list[ResolvedServer]:
+    """The servers one project actually runs, with their secrets filled in.
 
     Secrets belong to the scope that won the name — a personal credential must
     not authenticate a project's replacement entry for that server.
@@ -413,13 +430,13 @@ def effective_servers(app: dict[str, dict[str, Any]] | None, root: str | None) -
     from easycode.mcp_auth import store as credential_store
 
     project_root = str(root or "")
-    personal = read_scope(personal_config_path())
-    project = read_scope(project_config_path(Path(project_root))) if project_root else {}
     credentials = credential_store()
     out: list[ResolvedServer] = []
-    for server in resolve(personal=personal, app=app or {}, project=project):
+    for server in configured_servers(app, root):
         cred_root = project_root if server.scope == "project" else ""
-        config = apply_credentials(server.config, scope=server.scope, root=cred_root, store=credentials)
+        config = apply_credentials(
+            server.config, scope=server.scope, root=cred_root, store=credentials
+        )
         out.append(replace(server, config=config))
     return out
 

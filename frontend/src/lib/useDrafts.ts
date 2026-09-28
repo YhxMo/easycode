@@ -1,11 +1,19 @@
 // Unsent composer text, one record per conversation.
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { commandNameIn, type CommandSelection } from "./commands";
 
 /** A plain draft: text the user has typed but not sent. */
 export interface PlainDraft {
   text: string;
   /** Caret offset restored when the conversation comes back to the foreground. */
   caret: number;
+  /**
+   * The `/` menu entry this draft picked, while the text is still that command.
+   * It travels with the text so switching conversations cannot leave one
+   * conversation's selection attached to another's words. ``null`` — never
+   * absent — when the draft holds no selection.
+   */
+  command: CommandSelection | null;
 }
 
 /**
@@ -19,8 +27,6 @@ export interface EditDraft extends PlainDraft {
   /** The turn being replaced. */
   editTurnId: string;
   expectedRevision: number;
-  /** The command that turn was sent with, so re-sending it stays that command. */
-  commandId: string | null;
   /** What the composer held before editing began, to restore on cancel. */
   previousDraft: PlainDraft;
 }
@@ -31,15 +37,26 @@ export function isEditing(draft: Draft): draft is EditDraft {
   return typeof (draft as EditDraft).editTurnId === "string";
 }
 
-const EMPTY: PlainDraft = { text: "", caret: 0 };
+const EMPTY: PlainDraft = { text: "", caret: 0, command: null };
 
 /** Browser-local store of unsent text, keyed like the stream entries. */
 export const DRAFTS_KEY = "easycode:drafts";
 
+/** A stored selection, kept only when it is a complete id/name pair. */
+function commandFrom(value: unknown): CommandSelection | null {
+  const raw = value as { id?: unknown; name?: unknown } | null;
+  if (!raw || typeof raw.id !== "string" || typeof raw.name !== "string") return null;
+  return { id: raw.id, name: raw.name };
+}
+
 function plainFrom(value: unknown): PlainDraft | null {
-  const draft = value as { text?: unknown; caret?: unknown } | null;
+  const draft = value as { text?: unknown; caret?: unknown; command?: unknown } | null;
   if (typeof draft?.text !== "string") return null;
-  return { text: draft.text, caret: typeof draft.caret === "number" ? draft.caret : 0 };
+  return {
+    text: draft.text,
+    caret: typeof draft.caret === "number" ? draft.caret : 0,
+    command: commandFrom(draft.command),
+  };
 }
 
 /** Restore the saved drafts: strings only, never fatal. */
@@ -61,11 +78,16 @@ function readStoredDrafts(): Map<string, Draft> {
         previousDraft?: unknown;
       };
       if (typeof edit.editTurnId === "string" && typeof edit.expectedRevision === "number") {
+        // Drafts written before the selection moved into ``command`` kept a bare
+        // id: the name it belonged to is the message's own first token, which is
+        // exactly what the menu offers.
+        const legacyId = typeof edit.commandId === "string" ? edit.commandId : null;
+        const legacyName = legacyId ? commandNameIn(plain.text) : "";
         out.set(key, {
           ...plain,
+          command: plain.command ?? (legacyId && legacyName ? { id: legacyId, name: legacyName } : null),
           editTurnId: edit.editTurnId,
           expectedRevision: edit.expectedRevision,
-          commandId: typeof edit.commandId === "string" ? edit.commandId : null,
           previousDraft: plainFrom(edit.previousDraft) ?? EMPTY,
         });
         continue;
@@ -87,8 +109,11 @@ function storeDrafts(map: Map<string, Draft>): void {
   }
 }
 
+const sameCommand = (a: CommandSelection | null | undefined, b: CommandSelection | null | undefined) =>
+  (a?.id ?? null) === (b?.id ?? null) && (a?.name ?? null) === (b?.name ?? null);
+
 function isSame(a: Draft, b: Draft): boolean {
-  if (a.text !== b.text || a.caret !== b.caret) return false;
+  if (a.text !== b.text || a.caret !== b.caret || !sameCommand(a.command, b.command)) return false;
   const ae = isEditing(a);
   const be = isEditing(b);
   if (ae !== be) return false;
@@ -96,9 +121,9 @@ function isSame(a: Draft, b: Draft): boolean {
   return (
     a.editTurnId === b.editTurnId &&
     a.expectedRevision === b.expectedRevision &&
-    a.commandId === b.commandId &&
     a.previousDraft.text === b.previousDraft.text &&
-    a.previousDraft.caret === b.previousDraft.caret
+    a.previousDraft.caret === b.previousDraft.caret &&
+    sameCommand(a.previousDraft.command, b.previousDraft.command)
   );
 }
 
@@ -122,7 +147,13 @@ export interface DraftStore {
    */
   startEdit: (
     key: string,
-    edit: { turnId: string; revision: number; commandId: string | null; text: string },
+    edit: {
+      turnId: string;
+      revision: number;
+      /** The command the message was sent with; the text decides whether it still applies. */
+      command: CommandSelection | null;
+      text: string;
+    },
   ) => void;
   /** Leave edit mode and put the remembered draft back. */
   cancelEdit: (key: string) => void;
@@ -213,7 +244,7 @@ export function useDrafts(): DraftStore {
         caret: edit.text.length,
         editTurnId: edit.turnId,
         expectedRevision: edit.revision,
-        commandId: edit.commandId,
+        command: edit.command,
         previousDraft,
       };
       const out = new Map(prev);

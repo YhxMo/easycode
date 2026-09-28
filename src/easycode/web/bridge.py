@@ -133,6 +133,7 @@ async def stream_chat_with_approval(
     cancel_event: asyncio.Event | None = None,
     session: Session | None = None,
     turn: dict | None = None,
+    required_mcp_server: str | None = None,
 ) -> AsyncIterator[tuple[str, object]]:
     """Agent turn with human approval interleaved.
 
@@ -156,6 +157,9 @@ async def stream_chat_with_approval(
     user typed, and every message the model produces in reply. The record is a
     copy the caller owns, so a turn that this stream never gets to finish still
     has the input it was given.
+
+    ``required_mcp_server`` is passed through to the agent: the turn ends with
+    an error when that service is not usable, instead of running without it.
     """
     q: asyncio.Queue = asyncio.Queue()
     buf: list[str] = []
@@ -218,7 +222,7 @@ async def stream_chat_with_approval(
 
         agent.approval_handler = approval_handler
         try:
-            async for ev in agent.respond(message):
+            async for ev in agent.respond(message, required_mcp_server=required_mcp_server):
                 await q.put(("agent", ev))
         finally:
             # Only restore the previous handler if this turn's

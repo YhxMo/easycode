@@ -174,6 +174,38 @@ class Agent:
         if self.mcp_manager.tool_schemas():
             self.history.set_system(self._build_system())
 
+    async def _prepare_mcp(self, required: str | None) -> str | None:
+        """Connect this agent's MCP servers; return why ``required`` is unusable.
+
+        A server that cannot start is normally a degradation — the model simply
+        does not see its tools — but a service the user explicitly asked for is
+        not: the turn reports it and stops, rather than answering with something
+        else and letting the answer read as if the service had done it.
+        """
+        from easycode.mcp import STATE_CONNECTED, STATE_DISABLED, STATE_FAILED
+
+        try:
+            await self.init_mcp()
+        except Exception as exc:  # noqa: BLE001 - reported, never escaping mid-turn
+            return f"连接 MCP 服务失败: {type(exc).__name__}: {exc}"
+        if required is None:
+            return None
+        manager = self.mcp_manager
+        if manager is None:
+            return f"MCP 服务 {required!r} 不可用：当前项目没有配置它"
+        status = next((row for row in manager.status() if row.name == required), None)
+        if status is None:
+            return f"MCP 服务 {required!r} 不可用：当前项目的配置里没有它"
+        if status.state == STATE_DISABLED:
+            return f"MCP 服务 {required!r} 已停用，请先在扩展设置里启用它"
+        if status.state == STATE_FAILED:
+            return f"MCP 服务 {required!r} 连接失败: {status.error}"
+        if status.state != STATE_CONNECTED:
+            return f"MCP 服务 {required!r} 尚未连接"
+        if not status.tools:
+            return f"MCP 服务 {required!r} 没有提供任何工具"
+        return None
+
     def mcp_fingerprint(self) -> str:
         """Digest of this agent's MCP setup; "" when it can no longer be resolved.
 
@@ -310,8 +342,15 @@ class Agent:
             return 0
         return self.history.estimate_text_tokens(json.dumps(schemas, ensure_ascii=False))
 
-    async def respond(self, user_input: str) -> AsyncIterator[AgentEvent]:
+    async def respond(
+        self, user_input: str, *, required_mcp_server: str | None = None
+    ) -> AsyncIterator[AgentEvent]:
         """Run a user turn; keep completed operations in history if it is interrupted.
+
+        ``required_mcp_server`` states that the user asked for one particular
+        MCP service. It is checked before the model is called at all: a turn
+        that promised a service which is not there must fail visibly, not run
+        without it and look like it did what was asked.
 
         When a caller has attached a ``TurnRecord`` to :attr:`active_turn`, the
         messages this turn adds are also captured onto it: the record is the
@@ -325,8 +364,15 @@ class Agent:
             recorder = TurnRecorder(self.active_turn)
             self.history.on_message = recorder.on_add
         try:
-            await self.init_mcp()
+            # The user's message is recorded before anything can fail: a turn
+            # that never reaches the model still happened, and the transcript
+            # has to show what was asked.
             self.history.add_user(user_input)
+            unavailable = await self._prepare_mcp(required_mcp_server)
+            if unavailable is not None:
+                yield AgentEvent(kind="error", error=unavailable, code="mcp_unavailable")
+                yield AgentEvent(kind="done")
+                return
             self._review_items = []
             self._review_decisions = []
             self._consecutive_review_denials = 0

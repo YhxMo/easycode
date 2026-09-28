@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import aclosing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -26,6 +29,63 @@ from easycode.web.session import Session, SessionStore
 from easycode.workspace import resolve_workspace_path, root_error
 
 log = logging.getLogger("easycode.web.chat")
+
+#: Reserved for the Web's MCP command syntax (``/mcp:<service> <task>``).
+MCP_COMMAND_PREFIX = "mcp:"
+
+
+@dataclass(frozen=True)
+class ResolvedChatInput:
+    """What one request turns into: the model's input, and what it is recorded as."""
+
+    model_input: str
+    #: The command this message is, for the transcript and for an edit's re-send.
+    command_id: str | None
+    #: The MCP service this message asks to be handled with, if any.
+    mcp_server: str | None = None
+
+
+def mcp_command_id(project_root: str, server: str) -> str:
+    """Stable id of one project's MCP service entry.
+
+    Both parts are percent-encoded whole: a root is an absolute path, and an id
+    that could be split on its own separators would let a request name another
+    project's service.
+    """
+    return f"mcp:{quote(project_root, safe='')}:{quote(server, safe='')}"
+
+
+def _command_token(text: str) -> str:
+    """The command name a message writes, or "" when it names none."""
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return ""
+    return stripped.split(maxsplit=1)[0]
+
+
+def _mcp_model_input(name: str, task: str) -> str:
+    """What the model is given for ``/mcp:<name> <task>``.
+
+    The service name is JSON-encoded, so a name that happens to contain quotes
+    or newlines cannot turn into instructions of its own.
+    """
+    return (
+        f"The user asked for this task to be handled with the MCP service {json.dumps(name)}. "
+        "Prefer that service's tools for it. This is a preference, not a restriction: "
+        "if none of its tools fits the task, use whatever else does and say what you used.\n\n"
+        f"{task}"
+    )
+
+
+def _parse_mcp_command_id(command_id: str) -> tuple[str, str] | None:
+    """``mcp:<root>:<server>`` back into its parts, or None if it is not one."""
+    from urllib.parse import unquote
+
+    parts = command_id.split(":")
+    if len(parts) != 3 or parts[0] != "mcp":
+        return None
+    return unquote(parts[1]), unquote(parts[2])
+
 
 if TYPE_CHECKING:
     from easycode.commands import Command, CommandRegistry
@@ -123,7 +183,7 @@ def _expand_command(message: str, roots: list[Path], skills) -> str:
     return cmd.expand(rest)
 
 
-def _command_entries(cfg: Config, store: SessionStore) -> list[tuple[dict, Command]]:
+def _command_entries(cfg: Config, store: SessionStore) -> tuple[list[tuple[dict, Command]], list[str]]:
     """Every command the ``/`` menu can offer, with the id that selects it.
 
     The menu aggregates the personal directory and every registered project, so
@@ -138,8 +198,18 @@ def _command_entries(cfg: Config, store: SessionStore) -> list[tuple[dict, Comma
     from easycode.web.routes_workspaces import build_projects
 
     out: list[tuple[dict, Command]] = []
+    errors: list[str] = []
 
     def add(command: Command, label: str, root_key: str) -> None:
+        if command.name.startswith(MCP_COMMAND_PREFIX):
+            # The prefix is how the Web writes "use this MCP service", so a
+            # skill or template under it could never be selected — and saying
+            # nothing would leave the user with a file that does not work.
+            errors.append(
+                f"「{command.name}」（{label}）以 {MCP_COMMAND_PREFIX} 开头，"
+                f"该前缀保留给 MCP 服务命令，请改名"
+            )
+            return
         out.append(
             (
                 {
@@ -182,7 +252,62 @@ def _command_entries(cfg: Config, store: SessionStore) -> list[tuple[dict, Comma
                 add(skill_command(skill), label, resolved)
     # By name, so the same name's entries sit together, each with its source.
     out.sort(key=lambda item: (item[1].name, item[0]["source_label"]))
-    return out
+    return out, errors
+
+
+def _mcp_command_entries(cfg: Config, project_root: str) -> tuple[list[dict], list[str]]:
+    """The MCP services one project can be asked to use, and what is broken.
+
+    The list is configuration, not connection: opening the menu must not start
+    a subprocess for every server the project has ever configured, and a server
+    that happens to be down is still a service the user may ask for — the turn
+    is where that becomes an error.
+
+    Nothing here fills in a credential; see ``mcp_config.configured_servers``.
+    """
+    from easycode.mcp_config import MCPConfigError, configured_servers
+
+    try:
+        servers = configured_servers(cfg.mcp_servers, project_root)
+    except MCPConfigError as exc:
+        # A configuration nobody can read is reported instead of being shown as
+        # a project with no services at all.
+        return [], [str(exc)]
+    project_name = _project_label(cfg, project_root)
+    out: list[dict] = []
+    for server in servers:
+        if not server.config.enabled:
+            continue
+        source = {"personal": "user", "app": "app", "project": "project"}[server.scope]
+        if server.scope == "project":
+            label = f"{project_name} · 项目"
+        elif server.scope == "app":
+            label = "应用启动配置"
+        else:
+            label = "个人"
+        out.append(
+            {
+                "id": mcp_command_id(project_root, server.name),
+                "name": f"{MCP_COMMAND_PREFIX}{server.name}",
+                "description": f"使用 {server.name} 服务完成任务",
+                "kind": "mcp",
+                "argument_hint": "任务描述",
+                "source": source,
+                "source_label": label,
+                "mcp_server": server.name,
+                "project_root": project_root,
+            }
+        )
+    return out, []
+
+
+def _project_label(cfg: Config, project_root: str) -> str:
+    """What to call a project in the menu: its configured name, else the folder."""
+    for project in cfg.workspace_projects:
+        resolved = str(Path(project.get("root") or cfg.root).expanduser().resolve())
+        if resolved == project_root:
+            return str(project.get("name") or Path(project_root).name)
+    return Path(project_root).name
 
 
 def _expand_by_id(command_id: str, message: str, cfg: Config, store: SessionStore) -> str:
@@ -194,7 +319,7 @@ def _expand_by_id(command_id: str, message: str, cfg: Config, store: SessionStor
     expand something the user has typed over.
     """
     name = message.strip()[1:].partition(" ")[0].strip()
-    for entry, command in _command_entries(cfg, store):
+    for entry, command in _command_entries(cfg, store)[0]:
         if entry["id"] != command_id:
             continue
         if command.name != name.lower():
@@ -241,17 +366,51 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             if request_sec != actual_sec:
                 raise HTTPException(409, "secondary roots do not match session")
 
-    @app.get("/api/commands")
-    def list_commands() -> dict:
-        """Every command and skill the ``/`` menu offers, with its source.
+    def _commands_project_root(session_id: str | None, root: str | None) -> str:
+        """Which project's services a command-list request is about.
 
-        The menu is the same for every conversation: all registered projects
-        plus the personal directory. Choosing an entry sends its id back with
-        the message, and the server resolves that id against this same list —
-        so the menu can offer another project's command without the request
-        being able to name an arbitrary path.
+        A conversation answers with its own directory, and a caller that claims
+        a different one is refused rather than quietly served the other list. A
+        start page has no conversation yet, so it names a registered project —
+        or nothing, which means the default one.
         """
-        return {"commands": [entry for entry, _ in _command_entries(cfg, store)]}
+        from easycode.mcp_config import known_projects
+
+        if session_id:
+            sess = store.get(session_id)
+            if sess is None:
+                raise HTTPException(404, "session not found")
+            project_root = _session_primary(sess) or str(Path(cfg.root).expanduser().resolve())
+            if root and _normalise_root(root) != project_root:
+                raise HTTPException(409, "workspace root does not match session primary")
+            return project_root
+        claimed = _normalise_root(root)
+        if claimed is None:
+            return str(Path(cfg.root).expanduser().resolve())
+        if claimed not in {p["root"] for p in known_projects(cfg, store)}:
+            raise HTTPException(422, "需要一个已登记的项目目录")
+        return claimed
+
+    @app.get("/api/commands")
+    def list_commands(session_id: str | None = None, root: str | None = None) -> dict:
+        """Every command the ``/`` menu offers, with its source.
+
+        Skills and templates come from all registered projects plus the personal
+        directory: the menu is about what exists, and choosing an entry sends its
+        id back, which the server resolves against this same list — so the menu
+        can offer another project's command without the request being able to
+        name an arbitrary path.
+
+        MCP services are different. They are per project, and the effective list
+        depends on which project the conversation runs in, so they are listed
+        only for the one this request is about.
+        """
+        project_root = _commands_project_root(session_id, root)
+        entries, errors = _command_entries(cfg, store)
+        mcp_entries, mcp_errors = _mcp_command_entries(cfg, project_root)
+        commands = [entry for entry, _ in entries] + mcp_entries
+        commands.sort(key=lambda row: (row["name"], row["source_label"]))
+        return {"commands": commands, "errors": [*errors, *mcp_errors]}
 
     @app.post("/api/chat")
     async def chat(req: ChatRequest) -> StreamingResponse:
@@ -293,44 +452,92 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         if req.edit_turn_id and not command_id and existing_sess is not None:
             index = existing_sess.turn_index(req.edit_turn_id)
             if index >= 0:
-                command_id = existing_sess.turns[index].get("command_id")
+                previous = existing_sess.turns[index]
+                # Inherited only while the message still begins with the same
+                # command: rewritten into plain text there is nothing left to
+                # inherit, and rewritten into another command it has to be
+                # resolved on its own terms.
+                if _command_token(raw_message) == _command_token(
+                    str(previous.get("raw_input") or "")
+                ):
+                    command_id = previous.get("command_id")
         if command_id and not raw_message.strip().startswith("/"):
             raise HTTPException(400, "command id needs a /command message")
 
-        def _resolve_message(text: str) -> str:
-            """The text the model is given for ``text`` in this session's scope."""
-            if not text.strip().startswith("/"):
-                return text
+        def _resolve_mcp_input(
+            text: str, command_id: str | None, project_root: str
+        ) -> ResolvedChatInput:
+            """``/mcp:<service> <task>``: the service asked for, and the prompt."""
+            head, _, task = text[1:].partition(" ")
+            name = head[len(MCP_COMMAND_PREFIX) :].strip()
+            if not name:
+                raise HTTPException(400, "未知命令：MCP 命令要写出服务名，例如 /mcp:demo 任务")
+            entries, errors = _mcp_command_entries(cfg, project_root)
+            match = next((row for row in entries if row["mcp_server"] == name), None)
+            if match is None:
+                if errors:
+                    # A configuration nobody can read is not the same as a
+                    # project with no services: say which one it is.
+                    raise HTTPException(422, errors[0])
+                raise HTTPException(400, f"当前项目没有可用的 MCP 服务: {name}")
+            if command_id and command_id != match["id"]:
+                claimed = _parse_mcp_command_id(command_id)
+                if claimed is not None and claimed[0] != project_root:
+                    raise HTTPException(409, "所选 MCP 服务属于另一个项目")
+                raise HTTPException(400, f"MCP 服务与所选条目不一致: {name}")
+            task = task.strip()
+            if not task:
+                raise HTTPException(422, "请补充需要该 MCP 服务完成的任务")
+            return ResolvedChatInput(
+                model_input=_mcp_model_input(name, task),
+                command_id=match["id"],
+                mcp_server=name,
+            )
+
+        def _resolve_input(
+            text: str, command_id: str | None, roots: list[Path]
+        ) -> ResolvedChatInput:
+            """The model's text for ``text``, and what this message is recorded as."""
+            stripped = text.strip()
+            if stripped.startswith(f"/{MCP_COMMAND_PREFIX}"):
+                # The prefix is the Web's way of asking for one service, whether
+                # it was picked from the menu or typed by hand.
+                return _resolve_mcp_input(stripped, command_id, str(roots[0]))
+            if not stripped.startswith("/"):
+                return ResolvedChatInput(model_input=text, command_id=command_id)
             if command_id:
                 # A menu selection is resolved against the registered commands, so
                 # the body can come from another project — while it still runs in
                 # this session's own directory and permission scope.
-                return _expand_by_id(command_id, text, cfg, store)
-            if existing_sess is not None:
-                # Typed by hand rather than picked from the menu: the current
-                # project's and the personal commands are what resolve it. The
-                # registry is built from what is on disk right now rather than
-                # from the agent's copy — a skill imported since this session
-                # last looked must resolve here, not only inside the turn.
-                roots = _session_roots(existing_sess, cfg)
-                return _expand_command(
-                    text, roots, SkillRegistry.discover(roots) if cfg.skills_enabled else None
+                return ResolvedChatInput(
+                    model_input=_expand_by_id(command_id, text, cfg, store),
+                    command_id=command_id,
                 )
-            # A brand-new session: resolve before creating it, so an unknown
+            skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
+            return ResolvedChatInput(
+                model_input=_expand_command(stripped, roots, skills), command_id=command_id
+            )
+
+        def _input_roots() -> list[Path]:
+            """The roots this request's ``/`` text resolves against, right now."""
+            if existing_sess is not None:
+                return _session_roots(existing_sess, cfg)
+            # A brand-new session: resolved before creating it, so an unknown
             # command does not leave an empty session behind.
             try:
-                roots = _draft_roots(req.root, req.secondary_roots, cfg, store)
+                return _draft_roots(req.root, req.secondary_roots, cfg, store)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
-            skills = SkillRegistry.discover(roots) if cfg.skills_enabled else None
-            return _expand_command(text, roots, skills)
 
-        # Resolve once here so an unknown command is a plain 400 before any
-        # stream starts. The text the model is actually given is resolved again
-        # inside ``gen``, against the skills this session will run with by then:
-        # an import that landed a moment ago must not be expanded by the
-        # registry this request happened to read first.
-        _resolve_message(raw_message)
+        # Resolve once here so an unknown command — or an MCP service this
+        # project does not have — is a plain HTTP error before any stream
+        # starts. The text the model is actually given is resolved again inside
+        # ``gen``, against the skills this session will run with by then: an
+        # import that landed a moment ago must not be expanded by the registry
+        # this request happened to read first. Splitting the message in two is
+        # what keeps an edit honest in the transcript — the user sees the text
+        # they wrote, while the model is given the command expansion of it.
+        _resolve_input(raw_message, command_id, _input_roots())
         try:
             # Session creation and turn preparation read cfg/credentials; the
             # config guard keeps them from interleaving with a model/project
@@ -393,7 +600,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 # failure here changes nothing (no turn, no branch, no prompt).
                 try:
                     sess.agent.rediscover_extensions(with_skills=cfg.skills_enabled)
-                    turn_input = _resolve_message(raw_message)
+                    resolved = _resolve_input(raw_message, command_id, _session_roots(sess, cfg))
                 except HTTPException as exc:
                     yield event_to_sse(
                         {"type": "error", "error": str(exc.detail), "code": "command_error"}
@@ -433,10 +640,14 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                     # conversation it read exactly as it was, in memory as well as
                     # on disk, and report that nothing was accepted.
                     snapshot = _session_state(sess)
-                    turn = sess.replace_turns_from(index, raw_message, turn_input, command_id)
+                    turn = sess.replace_turns_from(
+                        index, raw_message, resolved.model_input, resolved.command_id
+                    )
                 else:
                     snapshot = None
-                    turn = sess.begin_turn(raw_message, turn_input, command_id)
+                    turn = sess.begin_turn(
+                        raw_message, resolved.model_input, resolved.command_id
+                    )
                 try:
                     store.record_exchange(sess)
                 except OSError as exc:
@@ -449,11 +660,12 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
                 async with aclosing(
                     stream_chat_with_approval(
                         sess.agent,
-                        turn_input,
+                        resolved.model_input,
                         broker,
                         cancel_event=cancel_event,
                         session=sess,
                         turn=turn,
+                        required_mcp_server=resolved.mcp_server,
                     )
                 ) as events:
                     async for kind, payload in events:

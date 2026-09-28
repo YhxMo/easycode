@@ -2,7 +2,7 @@
 // reused by the App-level test files.
 import { vi } from "vitest";
 import { screen } from "@testing-library/react";
-import type { SessionDetail, SessionSummary } from "../api";
+import type { CommandInfo, CommandsInfo, SessionDetail, SessionSummary } from "../api";
 import type { HistoryMessage } from "../lib/history";
 
 export const apiMock = {
@@ -53,7 +53,7 @@ export function primeApiMock(m: typeof apiMock) {
   vi.clearAllMocks();
   m.fetchArchivedSessions.mockResolvedValue([]);
   m.fetchWorkspaces.mockResolvedValue({ projects: [] });
-  m.fetchCommands.mockResolvedValue({ commands: [] });
+  m.fetchCommands.mockResolvedValue(commandsInfo());
   m.fetchFiles.mockResolvedValue({ files: [], total: 0 });
   m.fetchGitChanges.mockResolvedValue({ repos: [], files: [], truncated: false });
   m.fetchFileContent.mockResolvedValue({
@@ -75,6 +75,11 @@ export function primeApiMock(m: typeof apiMock) {
     permission_mode: mode,
   }));
   m.submitApproval.mockResolvedValue(undefined);
+}
+
+/** The `/` menu's answer: an entry list, and no warnings about it. */
+export function commandsInfo(commands: CommandInfo[] = []): CommandsInfo {
+  return { commands, errors: [] };
 }
 
 export function session(id: string, title: string): SessionSummary {

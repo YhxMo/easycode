@@ -1,7 +1,26 @@
 import type { CommandInfo } from "../api";
 
 /** Display order of the command-menu sections; also the cursor order. */
-const KIND_ORDER: Record<CommandInfo["kind"], number> = { skill: 0, template: 1, builtin: 2 };
+const KIND_ORDER: Record<CommandInfo["kind"], number> = {
+  skill: 0,
+  mcp: 1,
+  template: 2,
+  builtin: 3,
+};
+
+/** The `/` menu entry a draft is still holding. */
+export interface CommandSelection {
+  id: string;
+  /** Without the leading `/`, e.g. `mcp:demo`. */
+  name: string;
+}
+
+/** The command name a message writes, from its first token ("" when none). */
+export function commandNameIn(text: string): string {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith("/")) return "";
+  return trimmed.slice(1).split(/\s/, 1)[0] ?? "";
+}
 
 export function filterCommands(commands: CommandInfo[], query: string): CommandInfo[] {
   const q = (query.startsWith("/") ? query.slice(1) : query).toLowerCase();
@@ -31,7 +50,7 @@ export function clampCommandIndex(filtered: CommandInfo[], index: number): numbe
  * leftover id must never expand a prompt it no longer describes.
  */
 export function activeCommandId(
-  picked: { id: string; name: string } | null,
+  picked: CommandSelection | null,
   text: string,
 ): string | null {
   if (!picked) return null;

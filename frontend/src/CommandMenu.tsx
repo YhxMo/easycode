@@ -14,7 +14,14 @@ export const COMMAND_LIST_ID = "composer-command-list";
 export type CommandMenuState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; commands: CommandInfo[] };
+  | {
+      status: "ready";
+      /** The scope this answer describes; the view treats another one as loading. */
+      scope: string;
+      commands: CommandInfo[];
+      /** Sources the menu cannot offer, reported instead of silently missing. */
+      errors: string[];
+    };
 
 function SkillIcon() {
   return (
@@ -22,6 +29,14 @@ function SkillIcon() {
       <path d="M12 2L2 7l10 5 10-5-10-5z" />
       <path d="M2 17l10 5 10-5" />
       <path d="M2 12l10 5 10-5" />
+    </svg>
+  );
+}
+
+function McpIcon() {
+  return (
+    <svg className="command-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v6m0 0-3 3v9m3-12 3 3v9M4 6h4M16 6h4M9 18h6" />
     </svg>
   );
 }
@@ -63,10 +78,11 @@ export function CommandMenu({
 
   if (!open) return null;
 
-  // filterCommands returns the list grouped by kind (skill → template →
+  // filterCommands returns the list grouped by kind (skill → mcp → template →
   // builtin), which is exactly the section order below; the cursor index
   // therefore always names the same item that is highlighted.
   const skills = filtered.filter((c) => c.kind === "skill");
+  const services = filtered.filter((c) => c.kind === "mcp");
   const templates = filtered.filter((c) => c.kind === "template");
 
   let globalCounter = 0;
@@ -80,7 +96,15 @@ export function CommandMenu({
           {items.map((c) => {
             const itemIdx = globalCounter++;
             const isActive = itemIdx === idx;
-            const source = c.source_label ?? (c.source === "user" ? "个人" : c.source === "project" ? "项目" : "");
+            const source =
+              c.source_label ??
+              (c.source === "user"
+                ? "个人"
+                : c.source === "project"
+                  ? "项目"
+                  : c.source === "app"
+                    ? "应用配置"
+                    : "");
             return (
               <button
                 type="button"
@@ -94,7 +118,13 @@ export function CommandMenu({
                 }}
               >
                 <div className="command-item-left">
-                  {c.kind === "skill" ? <SkillIcon /> : <CommandIcon />}
+                  {c.kind === "skill" ? (
+                    <SkillIcon />
+                  ) : c.kind === "mcp" ? (
+                    <McpIcon />
+                  ) : (
+                    <CommandIcon />
+                  )}
                   <span className="command-name">/{c.name}</span>
                   {c.argument_hint && <span className="command-hint">{c.argument_hint}</span>}
                   <span className="command-desc" title={c.description}>
@@ -117,7 +147,17 @@ export function CommandMenu({
   return (
     <div className="command-menu">
       <div className="command-menu-scroll" ref={boxRef} id={COMMAND_LIST_ID} role="listbox" aria-label="可用命令">
+        {state.status === "ready" && state.errors.length > 0 && (
+          <div className="command-errors" role="status">
+            {state.errors.map((message) => (
+              <div className="command-error-line" key={message}>
+                {message}
+              </div>
+            ))}
+          </div>
+        )}
         {renderSection("技能", skills)}
+        {renderSection("MCP 服务", services)}
         {renderSection("命令", templates)}
         {state.status === "loading" && (
           <div className="command-empty" role="status">
@@ -139,7 +179,7 @@ export function CommandMenu({
         )}
         {state.status === "ready" && filtered.length === 0 && (
           <div className="command-empty">
-            {commands.length ? "没有匹配的命令" : "还没有可用的命令或 Skill"}
+            {commands.length ? "没有匹配的命令" : "还没有可用的 Skill、MCP 服务或命令"}
           </div>
         )}
       </div>

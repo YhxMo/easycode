@@ -88,7 +88,7 @@ describe("api 请求层", () => {
 
   it("fetchCommands 读取汇总列表（没有会话范围参数）", async () => {
     const fn = mockFetch({ ok: true, status: 200, json: async () => ({ commands: [] }) });
-    await fetchCommands();
+    await fetchCommands(null, null);
     expect(fn).toHaveBeenLastCalledWith("/api/commands", { method: "GET" });
   });
 });

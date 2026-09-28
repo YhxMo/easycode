@@ -3124,6 +3124,20 @@
   font-size: 12.5px;
 }
 
+/* Part of the list could not be offered — a reserved name, an unreadable MCP
+   configuration. The entries that do work stay listed below it. */
+.command-errors {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--orange);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.command-error-line {
+  overflow-wrap: anywhere;
+}
+
 /* A failed query is not an empty result: it says so and offers a retry. */
 .command-empty.error {
   display: flex;

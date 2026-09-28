@@ -43,7 +43,13 @@ import { artifactsToItems, historyToItems } from "./lib/history";
 import type { ApprovalState, Item, ToolItem } from "./types";
 import { COMMAND_LIST_ID, CommandMenu } from "./CommandMenu";
 import type { CommandMenuState } from "./CommandMenu";
-import { activeCommandId, filterCommands, clampCommandIndex, moveCommandCursor } from "./lib/commands";
+import {
+  activeCommandId,
+  commandNameIn,
+  filterCommands,
+  clampCommandIndex,
+  moveCommandCursor,
+} from "./lib/commands";
 import { Modal } from "./components/Modal";
 import { ChatMessages } from "./components/ChatMessages";
 import { Sidebar } from "./components/Sidebar";
@@ -71,7 +77,7 @@ import { groupSessions } from "./lib/sessionGroups";
 import { applyMention, mentionToken } from "./lib/mention";
 import { useVoiceInput } from "./lib/useVoiceInput";
 import { usePersistedFlags } from "./lib/usePersistedFlags";
-import { isEditing, useDrafts } from "./lib/useDrafts";
+import { isEditing, useDrafts, type Draft } from "./lib/useDrafts";
 import { useStickToBottom } from "./lib/useStickToBottom";
 import type { StickToBottom } from "./lib/useStickToBottom";
 import type { ProjectAction } from "./ProjectMenu";
@@ -148,6 +154,17 @@ function readStoredCurrentTab(): string | null {
 /** One user message, as the transcript holds it. */
 type UserItem = Extract<Item, { kind: "user" }>;
 
+/**
+ * The `/` command a send from this draft carries, if it still carries one.
+ *
+ * The selection lives in the draft, beside the text it belongs to, and only
+ * counts while that text is still the command: typing over it clears the id
+ * rather than leaving one that would expand a prompt the user replaced.
+ */
+function commandIdFor(draft: Draft): string | null {
+  return activeCommandId(draft.command, draft.text);
+}
+
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -176,15 +193,13 @@ export default function App() {
   // Full host access is a security boundary, so selecting it from the menu
   // opens an explicit risk confirmation before the server-side mode changes.
   const [allowAllConfirm, setAllowAllConfirm] = useState(false);
-  const [commandState, setCommandState] = useState<CommandMenuState>({ status: "loading" });
+  const [commandAnswer, setCommandAnswer] = useState<CommandMenuState>({ status: "loading" });
   // Bumped by the menu's retry, and by a change in the registered projects.
   const [commandRetry, setCommandRetry] = useState(0);
   /** Bumped whenever the extensions dialog installs or saves something: the `/`
    *  menu reads its sources again, so a new skill is selectable without a reload. */
   const [extensionsRevision, setExtensionsRevision] = useState(0);
-  // The menu entry the user picked. It stays only as long as the composer still
-  // holds that command; see `activeCommandId`.
-  const [pickedCommand, setPickedCommand] = useState<{ id: string; name: string } | null>(null);
+
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdIndex, setCmdIndex] = useState(0);
   // `@` file references: the token under the caret and whether the user
@@ -324,9 +339,6 @@ export default function App() {
 
   /** The edit this composer is holding, if any (the banner names its target). */
   const editingDraft = isEditing(draft) ? draft : null;
-  // A command the user picked now wins; otherwise an edit keeps the command the
-  // message was sent with, so re-sending a `/review` prompt stays one.
-  const draftCommandId = activeCommandId(pickedCommand, draft.text) ?? editingDraft?.commandId ?? null;
   /** Leave edit mode and put the draft the user started with back. */
   const cancelEdit = useCallback(() => {
     drafts.cancelEdit(draftKey);
@@ -352,15 +364,24 @@ export default function App() {
     [setCaret, setInput],
   );
 
-  /** Picking a menu entry drops its command into the composer, id and all. */
+  /**
+   * Picking a menu entry drops its command into the composer, selection and
+   * all, in one write: the text and what it means are stored together so no
+   * other conversation can inherit one without the other.
+   */
   const pickCommand = useCallback(
     (c: CommandInfo) => {
-      setInput(`/${c.name} `);
-      setPickedCommand({ id: c.id, name: c.name });
+      const text = `/${c.name} `;
+      drafts.update(draftKey, (d) => ({
+        ...d,
+        text,
+        caret: text.length,
+        command: { id: c.id, name: c.name },
+      }));
       setCmdOpen(false);
       setCmdIndex(0);
     },
-    [setInput],
+    [drafts, draftKey],
   );
 
   const {
@@ -380,7 +401,7 @@ export default function App() {
     chosenRoot,
     secondary,
     permission,
-    commandId: draftCommandId,
+    commandId: commandIdFor(draft),
     currentModelName,
     sendBlocked,
     getViewToken: () => openSeqRef.current,
@@ -437,25 +458,44 @@ export default function App() {
     fetchModels().then(setModels).catch(() => {});
   }, [refreshSessions]);
 
-  // The menu offers every registered project's commands and skills plus the
-  // personal ones, so it does not depend on the conversation on screen: only a
-  // change in the registered projects (or an explicit retry) re-reads the list.
+  // Skills and templates come from every registered project, but MCP services
+  // belong to one: the request names the conversation (or the directory a draft
+  // would run in), so the menu offers the services of the project on screen.
+  const commandScope = currentId ? `s:${currentId}` : `d:${chosenRoot ?? ""}`;
   const projectSig = (workspaces.projects ?? []).map((p) => p.root ?? "").join("\u0000");
+  // An older reply must not replace a newer request's answer — including one
+  // that arrives after the view moved to another project.
+  const commandsSeqRef = useRef(0);
   useEffect(() => {
-    let live = true;
-    fetchCommands()
-      .then((r) => live && setCommandState({ status: "ready", commands: r.commands }))
+    const seq = ++commandsSeqRef.current;
+    fetchCommands(currentId, currentId ? currentRoot : chosenRoot)
+      .then((r) => {
+        if (seq !== commandsSeqRef.current) return;
+        setCommandAnswer({
+          status: "ready",
+          scope: commandScope,
+          commands: r.commands,
+          errors: r.errors,
+        });
+      })
       .catch((e: unknown) => {
-        if (!live) return;
-        setCommandState({
+        if (seq !== commandsSeqRef.current) return;
+        setCommandAnswer({
           status: "error",
           message: e instanceof Error ? e.message : String(e),
         });
       });
-    return () => {
-      live = false;
-    };
-  }, [commandRetry, projectSig, extensionsRevision]);
+  }, [commandScope, commandRetry, projectSig, extensionsRevision, currentId, currentRoot, chosenRoot]);
+  // An answer describes the scope it was fetched for. Until this render's
+  // scope has one, the menu is loading: it must never offer the previous
+  // project's services in the moment before the effect runs.
+  const commandState: CommandMenuState = useMemo(
+    () =>
+      commandAnswer.status === "ready" && commandAnswer.scope !== commandScope
+        ? { status: "loading" }
+        : commandAnswer,
+    [commandAnswer, commandScope],
+  );
   // A stable list per state: the keyboard handler below depends on it.
   const commands = useMemo(
     () => (commandState.status === "ready" ? commandState.commands : []),
@@ -622,6 +662,7 @@ export default function App() {
               detail.messages,
               detail.approvals,
               detail.turn_failures,
+              detail.turns,
             );
             // The task list is session state, not a message: it rides at the end
             // of the stream so a reopened session still shows it.
@@ -1323,9 +1364,16 @@ export default function App() {
     // Sending is an explicit return to the live edge: the reply to your own
     // message is never something you have to scroll back down for.
     sticky.stick();
-    if (editingDraft) void sendEdit(editingDraft);
+    // The composer's text has been consumed, so the menu that helped write it
+    // goes with it. A hand-typed `/mcp:demo 任务` whose query matches nothing
+    // still sends on Enter — leaving its scrim over the conversation would
+    // block every click until the user found Escape.
+    setCmdOpen(false);
+    // The same value the stream was handed: one source for every send, whether
+    // it starts a turn or replaces one.
+    if (editingDraft) void sendEdit(editingDraft, commandIdFor(draft));
     else void send();
-  }, [editingDraft, send, sendEdit, sticky]);
+  }, [draft, editingDraft, send, sendEdit, sticky]);
 
   // Composer keys: command-menu navigation first, then Enter to send.
   const onComposerKeyDown = useCallback(
@@ -1433,16 +1481,18 @@ export default function App() {
     (item: UserItem) => {
       if (busy || sendBlocked || currentId === null) return;
       const key = draftKey;
-      // The command this message was sent with: one it was already showing, or
-      // the menu entry the composer is holding.
-      const commandId = item.commandId ?? pickedCommand?.id ?? null;
+      // The command this message was sent with, taken from the message itself:
+      // the id the server recorded, and the name its own first token writes.
+      // Whatever the composer happens to be holding is not this message's.
+      const name = commandNameIn(item.text);
+      const command = item.commandId && name ? { id: item.commandId, name } : null;
       fetchSession(currentId)
         .then((detail) => {
           if (detail.revision === undefined) return;
           drafts.startEdit(key, {
             turnId: item.turnId ?? "",
             revision: detail.revision,
-            commandId,
+            command,
             text: item.text,
           });
           fieldRef.current?.focus();
@@ -1452,7 +1502,7 @@ export default function App() {
           showToast("err", `无法开始编辑: ${e instanceof Error ? e.message : String(e)}`);
         });
     },
-    [busy, currentId, draftKey, drafts, pickedCommand, sendBlocked, showToast, sticky],
+    [busy, currentId, draftKey, drafts, sendBlocked, showToast, sticky],
   );
 
   // One composer, two placements: the centred first-run card, or docked over
