@@ -1,0 +1,117 @@
+/* ------------------------------------------------------------------ mobile */
+
+.sidebar-overlay {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .app {
+    gap: 6px;
+    padding: 6px;
+  }
+
+  /* The sidebar becomes a drawer; the pane covers the card. */
+  .sidebar {
+    display: none;
+  }
+
+  .sidebar-toggle {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--ink);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .sidebar-toggle:active {
+    background: var(--hover);
+  }
+
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    display: block;
+    background: oklch(0% 0 0 / 0.5);
+  }
+
+  .app.sidebar-open .sidebar {
+    display: flex;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 310;
+    width: min(320px, 86vw);
+    min-width: min(320px, 86vw);
+    max-width: calc(100vw - 24px);
+    padding: 12px;
+    background: var(--page);
+    border-right: 1px solid var(--line);
+    overflow: hidden;
+    animation: sidebar-drawer-in 160ms ease;
+  }
+
+  .right-pane {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    width: 100%;
+    border-radius: 0;
+  }
+
+  .chat-main {
+    padding: 18px 14px 16px;
+  }
+
+  .chat-main.docked {
+    padding-bottom: 118px;
+  }
+
+  .composer-area {
+    padding: 0 12px 12px;
+  }
+
+  .composer-hint {
+    display: none;
+  }
+
+  .empty-ask {
+    font-size: 24px;
+  }
+
+  .msg-row.user {
+    max-width: 92%;
+  }
+
+  .msg-meta .msg-action {
+    opacity: 1;
+  }
+
+  .msg-row.assistant .msg-meta {
+    opacity: 0.85;
+  }
+
+  .perm-menu {
+    width: min(310px, calc(100vw - 44px));
+    min-width: min(310px, calc(100vw - 44px));
+  }
+}
+
+@keyframes sidebar-drawer-in {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}

@@ -1,0 +1,329 @@
+/* ------------------------------------------------------------- model row */
+
+.model-picker-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.model-toast {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 80;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+  color: var(--ink);
+  font-size: 11px;
+  animation: toast-in 160ms ease;
+}
+
+.model-toast.success {
+  border-color: oklch(70.5% 0.154 153.8 / 0.35);
+  color: var(--green);
+}
+
+.model-toast.error {
+  border-color: oklch(66.6% 0.18 21.4 / 0.35);
+  color: var(--red);
+}
+
+.model-dropdown-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-trigger {
+  min-height: 42px;
+}
+
+/* ------------------------------------------------------------ custom dropdown */
+
+.custom-dropdown {
+  position: relative;
+  width: 100%;
+}
+
+.custom-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms, background 120ms;
+}
+
+.custom-dropdown-trigger:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
+.custom-dropdown-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.custom-dropdown-trigger .dropdown-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.custom-dropdown-trigger .dropdown-caret {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.custom-dropdown-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 100%;
+  width: max-content;
+  max-width: 280px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+}
+
+.dropdown-menu-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 6px;
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* The scope note under a menu title ("切换会影响…") is prose, not a label. */
+.dropdown-menu-header small {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 14px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.custom-dropdown-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.custom-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 100ms;
+}
+
+.custom-dropdown-item:hover,
+.custom-dropdown-item.active {
+  background: var(--hover);
+}
+
+.dropdown-item-check {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dropdown-item-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------- model menu */
+
+.model-menu {
+  /* Portalled to <body> and placed in viewport coordinates: the composer clips
+     its own overflow, so an absolutely positioned menu would be cropped by it.
+     `left`/`width`/the anchored edge and `max-height` all come from the
+     placement measured against the window. */
+  position: fixed;
+  right: auto;
+  /* Above the app's own layers (mobile drawer 310, toast 300) and below the
+     dialog scrim (400). */
+  z-index: 350;
+  display: flex;
+  flex-direction: column;
+  width: min(270px, calc(100vw - 24px));
+  min-width: 0;
+  max-width: none;
+  max-height: min(60vh, 460px);
+  padding: 6px;
+  /* The list scrolls on its own; anything that still overflows stays inside the
+     rounded panel instead of spilling over the page. */
+  overflow: hidden;
+}
+
+.model-menu-list {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* Header and footer stay out of the scroll area, so a capped menu never hides
+   what it is or how to add to it. */
+.model-menu > .dropdown-menu-header {
+  flex: none;
+  margin: -6px -6px 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.model-provider-group + .model-provider-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.model-provider-label {
+  padding: 4px 7px;
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.model-choice-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-sm);
+}
+
+.model-choice-row .model-choice {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-choice-row.active {
+  background: var(--hover);
+}
+
+.model-choice {
+  min-height: 30px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.model-row-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+.model-detail-icon {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.model-detail-icon svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.model-detail-icon:hover:not(:disabled) {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+
+.model-detail-icon.delete:hover:not(:disabled) {
+  background: var(--red-tint);
+  color: var(--red);
+}
+
+.model-detail-icon:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.model-menu-footer {
+  margin: 6px -6px -6px;
+  padding: 6px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.model-menu-footer button {
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  text-align: left;
+  transition: background 100ms;
+}
+
+.model-menu-footer button:hover:not(:disabled) {
+  background: var(--hover);
+}
+

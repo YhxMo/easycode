@@ -1,0 +1,454 @@
+/* -------------------------------------------------------------- right pane */
+
+.right-pane {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  flex: none;
+  border-radius: var(--r-xl);
+  background: var(--canvas);
+  box-shadow: var(--shadow-hairline);
+  overflow: hidden;
+}
+
+/* Below this the side-by-side pane would leave the conversation under 560px
+   (chat = viewport − sidebar − page padding − pane − gaps), which is too narrow
+   to read or type in. The pane covers the stream instead of squeezing it, and
+   App reads the same width to stop opening it by itself. */
+@container (max-width: 950px) {
+  .right-pane {
+    position: absolute;
+    inset: 0;
+    z-index: 200;
+    width: 100%;
+    box-shadow: var(--shadow-card);
+  }
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  flex: none;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.pane-tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pane-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.pane-tab {
+  padding: 5px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    background 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.pane-tab:hover {
+  color: var(--ink-2);
+}
+
+.pane-tab.active {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+}
+
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.pane-empty {
+  margin: 0;
+  padding: 16px 4px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.pane-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.pane-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.task-stale {
+  padding: 1px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.pane-back {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.pane-back:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------ pane content */
+
+.ctx-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ctx-card {
+  padding: 10px 12px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-hairline);
+}
+
+.ctx-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ctx-title {
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctx-meta {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+/* The root a file entry belongs to: the same relative name can live under
+   several roots, so the name alone cannot identify one. */
+.ctx-root {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.ctx-blocked {
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.ctx-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  margin: 0 0 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ctx-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.ctx-source:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.ctx-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+  color: var(--ink-3);
+}
+
+.ctx-source-path {
+  flex: 1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctx-arrow {
+  flex: none;
+  color: var(--ink-3);
+}
+
+/* The pane's file list: what the conversation used, and what git reports. */
+.file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A row that names no openable file stays a row: it reports, it does not link. */
+.ctx-source.static {
+  cursor: default;
+}
+
+.ctx-source.static:hover {
+  background: var(--inset);
+  color: var(--ink-2);
+}
+
+.file-uses {
+  margin-left: 6px;
+  color: var(--ink-3);
+  font-family: var(--font-sans);
+}
+
+/* Uncommitted state: a fact about the working tree, not about this session. */
+.file-git {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* The live working tree is a second, separate fact under the session's own. */
+.pane-group-next {
+  margin-top: 16px;
+}
+
+/* ------------------------------------------------------- change section */
+
+/* The section's headline: what moved, and by how much. The files and their
+   diffs are one click below it. */
+.change-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.change-summary:hover {
+  background: var(--hover);
+}
+
+.change-caret {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 10px;
+  transition: transform 140ms ease;
+}
+
+.change-caret.open {
+  transform: rotate(90deg);
+}
+
+.change-summary-label {
+  color: var(--ink);
+  font-weight: 550;
+}
+
+.change-summary-files {
+  font-size: 11px;
+}
+
+.change-stats {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.change-stats .add {
+  color: var(--green);
+}
+
+.change-stats .del {
+  color: var(--red);
+}
+
+.change-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.change-row:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* A file git cannot describe in lines reports its counts and stops there. */
+.change-row.static {
+  cursor: default;
+}
+
+.change-row.static:hover {
+  background: none;
+  color: var(--ink-2);
+}
+
+.change-path {
+  flex: 1;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-meta {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.change-note {
+  margin: 0;
+  padding: 1px 8px 5px 22px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.change-item > .diff-body {
+  margin: 2px 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--inset);
+  box-shadow: var(--shadow-hairline);
+}
+
+.ctx-more {
+  justify-content: center;
+  color: var(--ink-3);
+}
+
+.file-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.file-preview-name {
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-body {
+  padding: 0;
+  overflow-x: auto;
+}
+

@@ -1,0 +1,34 @@
+/* ------------------------------------------------------------------ layout */
+
+.app {
+  display: flex;
+  gap: 10px;
+  height: 100vh;
+  padding: 10px;
+  overflow: hidden;
+}
+
+/* The conversation card and the task pane are siblings on the page. */
+.chat {
+  position: relative;
+  display: flex;
+  flex: 1;
+  gap: 10px;
+  min-width: 0;
+  /* Measured by the rule below and by App's own ResizeObserver, which needs to
+     know when the pane is covering the stream instead of sitting beside it. */
+  container-type: inline-size;
+}
+
+.chat-card {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: var(--r-xl);
+  background: var(--canvas);
+  box-shadow: var(--shadow-hairline);
+  overflow: hidden;
+}
+

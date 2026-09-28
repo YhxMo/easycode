@@ -1,0 +1,368 @@
+/* ------------------------------------------------------------------- 扩展 */
+
+/* The dialog carries a form and a list, so it needs more room than the short
+   confirm dialogs it shares the modal shell with. */
+.extensions-modal {
+  width: min(560px, 100%);
+}
+
+.ext-target {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.ext-target-name {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ext-target-path {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.ext-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+}
+
+.ext-tab {
+  flex: 1;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.ext-tab:hover {
+  color: var(--ink);
+}
+
+.ext-tab.on {
+  background: var(--field);
+  color: var(--ink);
+  box-shadow: var(--shadow-hairline);
+}
+
+/* Both panels stay mounted so an unsaved form survives a glance at the other
+   tab; ``hidden`` is what keeps the inactive one out of sight — and, because
+   the dialog's focus trap skips hidden subtrees, out of the Tab order too. */
+.ext-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ext-panel[hidden] {
+  display: none;
+}
+
+/* --------------------------------------------------------------- MCP 设置 */
+
+.modal-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modal-check input {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  box-shadow: none;
+  accent-color: var(--accent);
+}
+
+.mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mcp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+}
+
+.mcp-row.off .mcp-name,
+.mcp-row.off .mcp-row-meta {
+  opacity: 0.55;
+}
+
+.mcp-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-name {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-scope,
+.mcp-transport,
+.mcp-cred {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.mcp-state {
+  flex: none;
+  font-size: 11px;
+}
+
+.mcp-state.connected {
+  color: var(--accent);
+}
+
+.mcp-state.failed {
+  color: var(--red);
+}
+
+.mcp-state.disabled,
+.mcp-state.pending {
+  color: var(--ink-3);
+}
+
+.mcp-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+/* The command is the only part allowed to shrink: labels keep their own width
+   and move to the next line instead of breaking mid-word. */
+.mcp-row-meta > span {
+  flex: none;
+  white-space: nowrap;
+}
+
+.mcp-row-meta > span:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The skills list: same shape as the MCP rows, with the package's own
+   description and command name to read. */
+.skill-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+}
+
+/* Shadowed by the same name in a higher scope: still listed, visibly inert. */
+.skill-row.shadowed .mcp-name,
+.skill-row.shadowed .skill-desc {
+  opacity: 0.6;
+}
+
+.skill-shadowed {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.skill-desc {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.skill-command {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  background: var(--field);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.skill-source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skill-source-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-source-row button {
+  flex: none;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.skill-source-row button:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--line-strong);
+}
+
+.skill-source-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.skill-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.skill-preview code {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* A notice, not a failure: nothing here needs retrying. */
+.modal-note,
+.modal-warn {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.modal-warn {
+  border-color: oklch(74.6% 0.156 55.6 / 0.35);
+  background: var(--orange-tint);
+  color: var(--orange);
+}
+
+.modal-warn p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.modal-note code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.modal-error button {
+  margin-top: 6px;
+  padding: 4px 10px;
+  border: 1px solid oklch(66.6% 0.18 21.4 / 0.35);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--red);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mcp-note,
+.mcp-error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mcp-note {
+  color: var(--ink-3);
+}
+
+.mcp-error {
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
+.mcp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mcp-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.mcp-actions button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.mcp-actions button.danger {
+  color: var(--red);
+}
+
+.mcp-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+

@@ -1,0 +1,319 @@
+/* ------------------------------------------------------------------- modal */
+
+/* A real scrim: fixed over the whole window, above the mobile drawer (310) and
+   the toast (300) so a dialog is never buried under another layer. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: oklch(0% 0 0 / 0.42);
+}
+
+.modal {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 12px;
+  width: min(420px, 100%);
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  /* Second declaration wins where dvh exists; the vh line is the fallback. */
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+}
+
+/* The only scrolling region, so the title above and the actions below stay put
+   while a short window scrolls through the fields. */
+.modal-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.modal h3,
+.modal-title {
+  flex: none;
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.modal label,
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+/* Fields are grouped: a short heading, then the fields with their hint line. */
+.modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* A flex row so a section can carry a trailing count (`.pane-count`), which
+   needs the free space `margin-left: auto` can only claim in one. */
+.modal-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Hint text sits beside the label, not inside it: a wrapping <label> would fold
+   the whole explanation into the input's accessible name. */
+.modal-field small {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.modal-field .modal-field-error {
+  color: var(--red);
+}
+
+.modal-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid oklch(66.6% 0.18 21.4 / 0.35);
+  border-radius: var(--r-md);
+  background: var(--red-tint);
+  color: var(--red);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Flat fields: raised by their border and fill, never recessed. Checkboxes and
+   radios are their own controls — a 36px text box would be a different widget,
+   not a styled one. */
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.modal select,
+.modal textarea {
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--field);
+  box-shadow: none;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+/* Multiline fields carry lists (args, KEY=VALUE, headers): they keep the
+   field width, stay resizable vertically, and never wrap a key mid-word. */
+.modal textarea {
+  height: auto;
+  min-height: 62px;
+  padding: 8px 11px;
+  resize: vertical;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+/* A native select keeps its own arrow, which the platform draws in its own
+   colours and which ignores the field's padding. The wrapper draws it instead:
+   the select is left with no appearance, and the marker is a plain CSS shape. */
+.modal-select-wrap {
+  position: relative;
+  display: block;
+}
+
+.modal-select-wrap select {
+  width: 100%;
+  padding-right: 30px;
+  appearance: none;
+}
+
+.modal-select-wrap::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--ink-3);
+  border-bottom: 1.5px solid var(--ink-3);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+/* The field carries focus itself: an accent border with a ring that hugs it.
+   A text field matches :focus-visible however it was focused — including the
+   programmatic focus a dialog gives its first field — so the base outline
+   would draw a second box around a field that is already showing focus, and
+   every dialog would open with one. Checkboxes keep the outline: they are
+   reached by keyboard only, and it is their only focus affordance. */
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+.modal select:focus,
+.modal textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus-visible,
+.modal select:focus-visible,
+.modal textarea:focus-visible {
+  outline: none;
+}
+
+/* A disabled field stays readable: its value is still what the form holds. */
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):disabled,
+.modal select:disabled,
+.modal textarea:disabled {
+  border-color: var(--line-soft);
+  background: var(--inset);
+  color: var(--ink-2);
+}
+
+.secret-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.secret-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.secret-toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.secret-toggle svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.secret-toggle:hover,
+.clear-key:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.modal-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.clear-key {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.clear-key:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.modal-desc {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.modal-actions {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.modal-actions button {
+  min-height: 36px;
+  padding: 7px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+
+.modal-actions button:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--line-strong);
+}
+
+.modal-actions button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: oklch(99% 0 0);
+  box-shadow: var(--shadow-btn);
+}
+
+.modal-actions button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  opacity: 0.92;
+}
+
+.modal-actions button.modal-cancel {
+  background: var(--inset);
+  color: var(--ink);
+}
+
+.modal-actions button.danger {
+  border-color: oklch(66.6% 0.18 21.4 / 0.35);
+  background: var(--red-tint);
+  color: var(--red);
+}
+
+.modal-actions button.danger:hover:not(:disabled) {
+  background: oklch(66.6% 0.18 21.4 / 0.22);
+}
+
+.modal-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+

@@ -1,0 +1,270 @@
+/* ---------------------------------------------------------------- composer */
+
+/* Docked: the composer floats over the stream, which scrolls behind it. */
+.composer-area {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding: 0 20px 16px;
+}
+
+.composer-area::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(100% + 32px);
+  background: linear-gradient(to bottom, transparent, var(--canvas) 62%);
+  pointer-events: none;
+}
+
+/* Appears only while the reader is above the live edge; anchored to the
+   composer area so a growing input box moves it instead of hiding it. */
+.scroll-latest {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color 120ms,
+    border-color 120ms;
+}
+
+.scroll-latest:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 720px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  transition: border-color 140ms ease-out;
+}
+
+.composer:focus-within {
+  border-color: var(--line-strong);
+  box-shadow:
+    var(--shadow-card),
+    0 0 0 3px oklch(100% 0 0 / 0.03);
+}
+
+/* The card border carries the focus state; the field itself stays quiet. */
+.composer-field:focus-visible {
+  outline: none;
+}
+
+/* Rewriting an earlier message: the target and its consequences sit above the
+ * field, so an edit is never something the user discovers after sending. */
+.composer-editing {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-lg);
+  background: var(--accent-tint);
+}
+
+.composer-editing-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.composer-editing-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+
+.composer-editing-quote {
+  font-size: 12px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-editing-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+.composer-editing-cancel {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer-editing-cancel:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.composer-tall {
+  gap: 16px;
+  padding: 16px;
+}
+
+.cmd-wrap {
+  position: relative;
+}
+
+.composer-field {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  max-height: 220px;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.55;
+  resize: none;
+  outline: none;
+}
+
+.composer-tall .composer-field {
+  min-height: 72px;
+  font-size: 15.5px;
+}
+
+.composer-field::placeholder {
+  color: var(--ink-3);
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.composer-options {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chat-input-perm .perm-trigger {
+  min-width: 112px;
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.composer-hint {
+  color: var(--ink-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.composer-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* the model picker sits beside the dictate and send controls */
+.composer-trailing .model-picker-row {
+  width: auto;
+  gap: 0;
+}
+
+.composer-trailing .model-dropdown-wrap {
+  flex: none;
+  width: auto;
+}
+
+.composer-trailing .model-trigger {
+  min-height: 30px;
+  padding: 4px 8px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.composer-trailing .model-trigger:hover {
+  background: var(--hover);
+  color: var(--ink-2);
+}
+
+.send-btn {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: oklch(99% 0 0);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow-btn);
+  transition:
+    opacity 120ms,
+    background 120ms;
+}
+
+.send-btn:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.send-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.send-btn.stop {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+
+.stop-square {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: currentColor;
+}
+

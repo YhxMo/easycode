@@ -1,0 +1,194 @@
+/* --------------------------------------------------------- permission picker */
+
+.perm-picker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.perm-picker.compact .perm-trigger {
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.perm-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 124px;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+.perm-trigger:hover:not(:disabled),
+.perm-trigger[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.perm-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.perm-trigger-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.perm-trigger-label {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.perm-caret {
+  flex: none;
+  color: var(--ink-3);
+  font-size: 12px;
+  transition: transform 140ms;
+}
+
+.perm-trigger[aria-expanded="true"] .perm-caret {
+  transform: rotate(180deg);
+}
+
+.perm-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 310px;
+  min-width: 310px;
+  padding: 6px;
+  /* Capped by the room above the composer, like the command menu: the chat card
+     would otherwise clip the top of the list. */
+  max-height: var(--popover-room, none);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+}
+
+.perm-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 2px;
+  padding: 6px 8px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.perm-menu-head strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.perm-menu-head span {
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.perm-item {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 54px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background 100ms, border-color 100ms;
+}
+
+.perm-item:hover {
+  background: var(--hover);
+}
+
+.perm-item.active {
+  background: var(--hover-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.perm-item-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.perm-item-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.perm-item-copy strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 570;
+}
+
+.perm-item-copy small {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.perm-radio {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+.perm-radio span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+

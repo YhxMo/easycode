@@ -1,0 +1,55 @@
+/* ------------------------------------------------------------------- toast */
+
+.app-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 300;
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+  color: var(--ink);
+  font-size: 13px;
+  transform: translateX(-50%);
+  animation: toast-in 160ms ease;
+}
+
+.app-toast.ok {
+  border-color: oklch(70.5% 0.154 153.8 / 0.35);
+  color: var(--green);
+}
+
+.app-toast.err {
+  border-color: oklch(66.6% 0.18 21.4 / 0.35);
+  color: var(--red);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.model-toast {
+  animation-name: model-toast-in;
+  transform: none;
+}
+
+@keyframes model-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+

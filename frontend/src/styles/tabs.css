@@ -1,0 +1,225 @@
+/* ----------------------------------------------------------- chat header */
+
+.chat-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  flex: none;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.tab-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab-strip::-webkit-scrollbar {
+  display: none;
+}
+
+/* Every tab takes the same share of the strip: a long title ellipsises
+   instead of stretching its tab, so the row reads as even columns. The cap
+   keeps a couple of tabs from growing into banners; past the strip's width the
+   shared minimum holds and the strip scrolls. */
+.tab {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  min-width: 104px;
+  max-width: 180px;
+  border-radius: var(--r-md);
+  color: var(--ink-3);
+  transition:
+    background 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.tab:hover {
+  background: var(--hover);
+  color: var(--ink-2);
+}
+
+.tab.active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-hairline);
+}
+
+.tab-label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 4px 6px 9px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 12.5px;
+  /* every tab starts its title at the same place, whatever its length */
+  text-align: left;
+  cursor: pointer;
+}
+
+.tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* a running turn lights its tab without stealing the foreground */
+.tab-run {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--ink-3);
+  opacity: 0.45;
+}
+
+.tab-run.on {
+  background: var(--green);
+  opacity: 1;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.tab-badge {
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--orange-tint);
+  color: var(--orange);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.tab-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 3px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms,
+    background 120ms,
+    color 120ms;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+
+.tab-close svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.tab-new {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition:
+    background 120ms,
+    color 120ms;
+}
+
+.tab-new:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.tab-new svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  margin-left: auto;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition:
+    background 120ms,
+    color 120ms;
+}
+
+.icon-btn:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.icon-btn.on {
+  background: var(--hover-2);
+  color: var(--ink);
+}
+
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+

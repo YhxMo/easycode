@@ -1,0 +1,177 @@
+/* --------------------------------------------------------------- command menu */
+
+/* shared by the / command menu and the @ file menu */
+
+.command-empty {
+  padding: 10px 12px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+/* Part of the list could not be offered — a reserved name, an unreadable MCP
+   configuration. The entries that do work stay listed below it. */
+.command-errors {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--orange);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.command-error-line {
+  overflow-wrap: anywhere;
+}
+
+/* A failed query is not an empty result: it says so and offers a retry. */
+.command-empty.error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--red);
+}
+
+.command-retry {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.command-retry:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.mention-more {
+  margin-left: 8px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+
+.command-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  /* `--popover-room` is the room left above the composer (see ComposerBar): the
+     chat card clips its overflow, so growing past it would cut the top off. */
+  max-height: min(380px, var(--popover-room, 380px));
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+}
+
+.command-menu-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 0;
+  overflow-y: auto;
+}
+
+.command-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.command-section-title {
+  padding: 5px 12px 3px;
+  color: var(--ink-3);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.command-section-items {
+  display: flex;
+  flex-direction: column;
+}
+
+.command-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 100ms;
+}
+
+.command-item:hover,
+.command-item.active {
+  background: var(--hover);
+}
+
+.command-item-left {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.command-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--ink-3);
+}
+
+.command-item.active .command-icon {
+  color: var(--accent-ink);
+}
+
+.command-name {
+  flex: none;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.command-hint {
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.command-desc {
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-source {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+  background: var(--inset);
+  color: var(--ink-3);
+  font-size: 10px;
+}
+
+.command-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+}
+
