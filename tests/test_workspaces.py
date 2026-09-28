@@ -776,7 +776,7 @@ def test_move_rejects_a_bad_root_or_secondary_without_partial_update(tmp_path):
 
 def test_merge_projects_union_metadata_and_pinning():
     """Config entries keep their naming; history only adds secondaries."""
-    from easycode.web.routes.workspaces import merge_projects
+    from easycode.web.projects import merge_projects
 
     base = [
         {"root": None, "secondary": ["/a"], "name": "默认"},

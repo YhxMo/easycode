@@ -25,7 +25,6 @@ from easycode.extensions.mcp.config import (
     SCOPES,
     MCPConfigError,
     MCPServerConfig,
-    known_projects,
     read_scope,
     resolve,
     scope_config_path,
@@ -33,6 +32,7 @@ from easycode.extensions.mcp.config import (
 )
 from easycode.extensions.mcp.credentials import KINDS, MCPCredential
 from easycode.extensions.mcp.credentials import store as credential_store
+from easycode.web.projects import known_projects
 from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
 
 

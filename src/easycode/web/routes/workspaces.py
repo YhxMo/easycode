@@ -19,7 +19,12 @@ from easycode.web.finder import (
 from easycode.web.finder import (
     reveal_in_finder as finder_reveal,
 )
-from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
+from easycode.web.projects import (
+    build_projects,
+    normalise_root,
+    session_primary,
+)
+from easycode.web.session import SessionStore, idle_sessions, project_key, run_mutation
 from easycode.web.worktree import WorktreeAddError
 from easycode.web.worktree import create_worktree as worktree_add
 
@@ -54,57 +59,6 @@ class RemoveProjectRequest(BaseModel):
     delete_sessions: bool = True
 
 
-def _normalise_root(root: str | None) -> str | None:
-    """Resolve a project root string; empty/'-' mean default project."""
-    if not root or root in ("-", "default"):
-        return None
-    return str(Path(root).expanduser().resolve())
-
-
-def _session_primary(sess: Session) -> str | None:
-    """Canonical primary root for a session ('default' → None key)."""
-    return _normalise_root(sess.root)
-
-
-def projects_from_sessions(store: SessionStore) -> list[dict]:
-    """Infer project → secondary bindings from conversation history."""
-    by_key: dict[str, set[str]] = {}
-    for s in store.list():
-        key = project_key(_normalise_root(s.root))
-        by_key.setdefault(key, set()).update(s.secondary_roots or [])
-    out = [{"root": _normalise_root(k), "secondary": sorted(v)} for k, v in by_key.items()]
-    out.sort(key=lambda p: (p["root"] is not None, p["root"] or ""))
-    return out
-
-
-def merge_projects(base: list[dict], extra: list[dict]) -> list[dict]:
-    """Union project bindings by root key; ``base`` (config) wins ordering.
-
-    Name/pinned metadata is preserved from the config entries (``base``);
-    pinned projects sort above the rest (stable within their groups).
-    """
-    meta: dict[str, dict] = {}
-    secondary: dict[str, set[str]] = {}
-    for source in (base, extra):
-        for p in source:
-            key = project_key(p.get("root"))
-            # setdefault keeps first-seen order, so the dict's own order is
-            # already "config entries first, then whatever only history knows".
-            secondary.setdefault(key, set()).update(p.get("secondary") or [])
-            if source is base:
-                meta[key] = {k: p[k] for k in ("name", "pinned") if p.get(k)}
-    out = []
-    for key in secondary:
-        root = key if key else None
-        entry = {"root": root, "secondary": sorted(secondary[key])}
-        entry.update(meta.get(key, {}))
-        out.append(entry)
-    out.sort(key=lambda p: (not p.get("pinned"), p["root"] is not None, p["root"] or ""))
-    return out
-
-
-def build_projects(cfg: Config, store: SessionStore) -> list[dict]:
-    return merge_projects(cfg.workspace_projects, projects_from_sessions(store))
 
 
 def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
@@ -138,7 +92,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
 
     @app.post("/api/workspaces/projects")
     async def save_project(req: SaveProjectRequest) -> dict:
-        root = _normalise_root(req.root)
+        root = normalise_root(req.root)
         if root:
             err = root_error(Path(root))
             if err is not None:
@@ -154,7 +108,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
             if sess is None:
                 raise HTTPException(404, "session not found")
             # the requested root must match the session's valid primary.
-            if project_key(root) != project_key(_session_primary(sess)):
+            if project_key(root) != project_key(session_primary(sess)):
                 raise HTTPException(409, "project root does not match session primary")
 
         def mutate() -> dict:
@@ -186,7 +140,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
 
     @app.post("/api/workspaces/pin")
     async def pin_project(req: PinProjectRequest) -> dict:
-        root = _normalise_root(req.root)
+        root = normalise_root(req.root)
         async with store.config_change():
             entry = _ensure_project_entry(root)
             entry["pinned"] = bool(req.pinned)
@@ -204,13 +158,13 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         """Reveal the project directory in the system file browser (macOS ``open``)."""
         if not (req.root or Path(cfg.root).is_dir()):
             return {"ok": False, "supported": False, "error": "no directory"}
-        path = _normalise_root(req.root) or str(cfg.root)
+        path = normalise_root(req.root) or str(cfg.root)
         return finder_reveal(path)
 
     @app.post("/api/workspaces/projects/remove")
     async def remove_project(req: RemoveProjectRequest) -> dict:
         """Remove a project binding; with ``delete_sessions`` delete its chats too."""
-        root = _normalise_root(req.root)
+        root = normalise_root(req.root)
         key = project_key(root)
         async with store.config_change():
             cfg.workspace_projects = [
@@ -234,7 +188,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
     @app.post("/api/workspaces/archive")
     async def archive_project_chats(req: RevealRequest) -> dict:
         """Archive every chat under the project (对齐 codex 归档语义)."""
-        root = _normalise_root(req.root)
+        root = normalise_root(req.root)
         count = await store.archive_root(root)
         return {"ok": True, "archived_sessions": count, "projects": build_projects(cfg, store)}
 
@@ -248,7 +202,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         applies local changes + ``.worktreeinclude`` files, and runs
         ``.easycode/setup.sh`` if present.
         """
-        root = _normalise_root(req.root)
+        root = normalise_root(req.root)
         if not root:
             raise HTTPException(422, "default project has no directory to worktree")
         src = Path(root)

@@ -478,30 +478,6 @@ def scope_config_path(scope: str, root: str | None, cfg) -> Path:
     raise MCPConfigError(f"未知作用域: {scope!r}")
 
 
-def known_projects(cfg, store) -> list[dict[str, Any]]:
-    """Projects a request may name as the MCP scope root.
-
-    Registered projects and the configured default workspace, never the process
-    CWD: the server's own directory is not the user's project.
-    """
-    from easycode.web.routes.workspaces import build_projects
-
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for project in [*build_projects(cfg, store), {"root": None, "secondary": []}]:
-        resolved = str(Path(project.get("root") or cfg.root).expanduser().resolve())
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        out.append(
-            {
-                "root": resolved,
-                "name": str(project.get("name") or Path(resolved).name),
-            }
-        )
-    return out
-
-
 def resolve_cwd(config: MCPServerConfig, ctx: PathContext) -> str:
     """The working directory for a stdio server, checked against the sandbox.
 

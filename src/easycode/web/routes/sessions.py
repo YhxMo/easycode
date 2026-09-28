@@ -60,11 +60,11 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         no session behind.
         """
         from easycode.permissions.policy import permission_parse, require_full_access_consent
-        from easycode.web.routes.workspaces import _normalise_root
+        from easycode.web.projects import normalise_root
 
         kwargs: dict = {}
         if req.root:
-            kwargs["root"] = _normalise_root(req.root)
+            kwargs["root"] = normalise_root(req.root)
         if req.secondary_roots is not None:
             kwargs["secondary_roots"] = req.secondary_roots
         if req.permission_mode:
@@ -119,13 +119,13 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         refused request leaves the session exactly as it was.
         """
         from easycode.permissions.boundary import root_error
-        from easycode.web.routes.workspaces import _normalise_root, build_projects
+        from easycode.web.projects import build_projects, normalise_root
 
         cfg = store.cfg
         sess = store.get(session_id)
         if sess is None:
             raise HTTPException(404, "session not found")
-        root = _normalise_root(req.root)
+        root = normalise_root(req.root)
         if root:
             err = root_error(Path(root))
             if err is not None:

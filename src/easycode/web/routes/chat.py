@@ -136,9 +136,9 @@ def _draft_roots(
 
     ``secondary_raw=None`` inherits the project binding; ``[]`` is explicit.
     """
-    from easycode.web.routes.workspaces import _normalise_root
+    from easycode.web.projects import normalise_root
 
-    root = _normalise_root(root_raw)
+    root = normalise_root(root_raw)
     secondary = [str(p) for p in store._resolve_secondary(root, secondary_raw)]
     base = Path(root) if root else Path(cfg.root)
     return [base, *(Path(p) for p in secondary)]
@@ -192,7 +192,7 @@ def _command_entries(cfg: Config, store: SessionStore) -> tuple[list[tuple[dict,
     """
     from easycode.extensions.commands import personal_commands, project_commands, skill_command
     from easycode.extensions.skills import personal_skills, project_skills
-    from easycode.web.routes.workspaces import build_projects
+    from easycode.web.projects import build_projects
 
     out: list[tuple[dict, Command]] = []
     errors: list[str] = []
@@ -328,7 +328,7 @@ def _expand_by_id(command_id: str, message: str, cfg: Config, store: SessionStor
 
 def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: ApprovalBroker) -> None:
     """Connect chat and command endpoints to this app's session store."""
-    from easycode.web.routes.workspaces import _normalise_root, _session_primary
+    from easycode.web.projects import normalise_root, session_primary
     from easycode.web.session import project_key
 
     def _get_session(session_id: str | None, **agent_kwargs: object) -> Session:
@@ -347,8 +347,8 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         if sess is None:
             return  # _get_session surfaces the 404
         if root_raw:
-            request_root = _normalise_root(root_raw)
-            if project_key(request_root) != project_key(_session_primary(sess)):
+            request_root = normalise_root(root_raw)
+            if project_key(request_root) != project_key(session_primary(sess)):
                 raise HTTPException(409, "workspace root does not match session primary")
         if secondary_raw is not None:
             request_sec = sorted(
@@ -371,17 +371,17 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         start page has no conversation yet, so it names a registered project —
         or nothing, which means the default one.
         """
-        from easycode.extensions.mcp.config import known_projects
+        from easycode.web.projects import known_projects
 
         if session_id:
             sess = store.get(session_id)
             if sess is None:
                 raise HTTPException(404, "session not found")
-            project_root = _session_primary(sess) or str(Path(cfg.root).expanduser().resolve())
-            if root and _normalise_root(root) != project_root:
+            project_root = session_primary(sess) or str(Path(cfg.root).expanduser().resolve())
+            if root and normalise_root(root) != project_root:
                 raise HTTPException(409, "workspace root does not match session primary")
             return project_root
-        claimed = _normalise_root(root)
+        claimed = normalise_root(root)
         if claimed is None:
             return str(Path(cfg.root).expanduser().resolve())
         if claimed not in {p["root"] for p in known_projects(cfg, store)}:
@@ -432,7 +432,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
         if req.secondary_roots is not None:
             kwargs["secondary_roots"] = req.secondary_roots
         if req.root:
-            kwargs["root"] = _normalise_root(req.root)
+            kwargs["root"] = normalise_root(req.root)
         if perm_mode and not req.session_id:
             kwargs["permission_mode"] = perm_mode
         # an existing session must answer its own project — a root/secondary

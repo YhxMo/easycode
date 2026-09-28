@@ -21,7 +21,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.config import Config
-from easycode.extensions.mcp.config import known_projects
 from easycode.extensions.skill_import import SkillConflictError, SkillImportError, import_skill
 from easycode.extensions.skills import (
     Skill,
@@ -30,7 +29,7 @@ from easycode.extensions.skills import (
     personal_skills_dir,
     project_skills_dir,
 )
-from easycode.web.routes.workspaces import _normalise_root
+from easycode.web.projects import known_projects, normalise_root
 from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
 
 log = logging.getLogger("easycode.web.skills")
@@ -49,7 +48,7 @@ def register_skills(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         An omitted root means the default project, which every session without a
         directory of its own runs in.
         """
-        root = _normalise_root(requested) or str(Path(cfg.root).expanduser().resolve())
+        root = normalise_root(requested) or str(Path(cfg.root).expanduser().resolve())
         if root not in {p["root"] for p in known_projects(cfg, store)}:
             raise HTTPException(422, "需要一个已登记的项目目录")
         return root
@@ -131,8 +130,8 @@ def register_skills(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         default_root = str(Path(cfg.root).expanduser().resolve())
         out: list[Session] = []
         for sess in store.list():
-            keys = {project_key(_normalise_root(sess.root) or default_root)}
-            keys |= {project_key(_normalise_root(p)) for p in sess.secondary_roots or []}
+            keys = {project_key(normalise_root(sess.root) or default_root)}
+            keys |= {project_key(normalise_root(p)) for p in sess.secondary_roots or []}
             if key in keys:
                 out.append(sess)
         return out
