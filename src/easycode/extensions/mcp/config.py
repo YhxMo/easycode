@@ -13,8 +13,9 @@ another's environment would be a third configuration nobody wrote. Setting
 ``enabled: false`` in a higher layer is therefore how a project switches off a
 personal server, and removing the override brings the lower one back.
 
-This module holds configuration only. Credentials live in ``mcp_auth`` and are
-referenced from here; the connection itself stays in ``mcp``.
+This module holds configuration only. Credentials live in
+``easycode.extensions.mcp.credentials`` and are referenced from here; the
+connection itself stays in ``connection``.
 """
 
 from __future__ import annotations
@@ -26,6 +27,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from easycode.extensions.mcp.credentials import (
+    apply_credentials,
+    related_credential_versions,
+)
+from easycode.extensions.mcp.credentials import (
+    store as credential_store,
+)
 from easycode.paths import data_home
 from easycode.permissions.boundary import CONFIG_FILENAME, PathContext, resolve_workspace_path
 
@@ -147,7 +155,7 @@ class MCPServerConfig:
     http_headers: dict[str, str] = field(default_factory=dict)
     env_http_headers: dict[str, str] = field(default_factory=dict)
     bearer_token_env_var: str | None = None
-    #: Credential references (see ``mcp_auth``): config stores where a secret
+    #: Credential references (see ``mcp.credentials``): config stores where a secret
     #: lives, never the secret itself.
     secret_env: dict[str, str] = field(default_factory=dict)
     secret_headers: dict[str, str] = field(default_factory=dict)
@@ -434,8 +442,6 @@ def effective_servers(
     Secrets belong to the scope that won the name — a personal credential must
     not authenticate a project's replacement entry for that server.
     """
-    from easycode.extensions.mcp.auth import store as credential_store
-
     project_root = str(root or "")
     # One read for the whole list: every server is looked up in the same view of
     # the credential file, and the file is read once instead of once per server.
@@ -444,104 +450,12 @@ def effective_servers(
     for server in configured_servers(app, root):
         cred_root = project_root if server.scope == "project" else ""
         config = apply_credentials(
-            server.config, scope=server.scope, root=cred_root, store=credentials
+            server.config, scope=server.scope, root=cred_root, credential_store=credentials
         )
         out.append(replace(server, config=config))
     return out
 
 
-def matching_credential(
-    config: MCPServerConfig,
-    *,
-    scope: str,
-    root: str = "",
-    store: Any,
-):
-    """The stored grant that authenticates ``config``, or None.
-
-    The one place this rule exists: the panel, the connecting path and the
-    connection fingerprint all ask the same question, so a token is never
-    filled in from one record and invalidated by another.
-    """
-    if not (config.secret_env or config.secret_headers or config.bearer_credential):
-        return None
-    cred = store.find(scope=scope, server=config.name, root=root)
-    if cred is None:
-        return None
-    # A record is only used for the URL it was issued for. Pointing the server
-    # at a different host must not send it the old host's token, because nobody
-    # agreed to that host.
-    if cred.url and config.url and cred.url != config.url:
-        return None
-    return cred
-
-
-def related_credential_versions(
-    servers: list[ResolvedServer], project_root: str, store: Any
-) -> dict[str, str]:
-    """Per-credential digests, for the records these servers actually use.
-
-    Only the related ones: an unrelated token rotation is not a reason to drop a
-    running process. Matching goes through :func:`matching_credential`, so a
-    server whose credential was replaced by one for another URL is covered too
-    — otherwise that change would leave the old token in a live session.
-    """
-    from easycode.extensions.mcp.auth import credential_versions
-
-    credentials = store.snapshot()
-    all_versions = credential_versions(store)
-    out: dict[str, str] = {}
-    for server in servers:
-        cred = matching_credential(
-            server.config,
-            scope=server.scope,
-            root=project_root if server.scope == "project" else "",
-            store=credentials,
-        )
-        if cred is not None and cred.id in all_versions:
-            out[cred.id] = all_versions[cred.id]
-    return out
-
-
-def apply_credentials(
-    config: MCPServerConfig,
-    *,
-    scope: str,
-    root: str = "",
-    store: Any = None,
-) -> MCPServerConfig:
-    """``config`` with the secrets it references filled in from the store.
-
-    The names in ``secret_env``/``secret_headers`` are the *targets* (an
-    environment variable, an HTTP header) and their values are the key to read
-    inside the stored record, so one server can take several secrets and each
-    can be replaced on its own.
-
-    A record is only used for the URL it was issued for. Pointing the server at
-    a different host must not send it the old host's token, because nobody
-    agreed to that host.
-    """
-    from easycode.extensions.mcp.auth import store as credential_store
-
-    cred = matching_credential(config, scope=scope, root=root, store=store or credential_store())
-    if cred is None:
-        return config
-
-    def value(key: str) -> str:
-        return cred.values.get(key, "")
-
-    out = replace(config, env=dict(config.env), http_headers=dict(config.http_headers))
-    for target, key in config.secret_env.items():
-        if secret := value(key):
-            out.env[target] = secret
-    for target, key in config.secret_headers.items():
-        if secret := value(key):
-            out.http_headers[target] = secret
-    if config.bearer_credential:
-        token = value(config.bearer_credential)
-        if token:
-            out.http_headers["Authorization"] = f"Bearer {token}"
-    return out
 
 
 def scope_config_path(scope: str, root: str | None, cfg) -> Path:
@@ -619,8 +533,6 @@ def fingerprint(
     to some other project's server is not this session's business.
     """
     import hashlib
-
-    from easycode.extensions.mcp.auth import store as credential_store
 
     payload = json.dumps(
         [{"name": s.name, "scope": s.scope, "config": s.config.to_dict()} for s in servers],

@@ -6,7 +6,6 @@ import json
 
 import pytest
 
-from easycode.extensions.mcp.auth import CredentialStore, MCPCredential
 from easycode.extensions.mcp.config import (
     MCPConfigError,
     MCPServerConfig,
@@ -23,6 +22,7 @@ from easycode.extensions.mcp.config import (
     scope_config_path,
     write_scope,
 )
+from easycode.extensions.mcp.credentials import CredentialStore, MCPCredential
 from easycode.permissions.boundary import PathContext
 
 
@@ -219,7 +219,7 @@ def test_secrets_are_filled_from_the_store(tmp_path):
         },
     )
 
-    out = apply_credentials(config, scope="app", store=store)
+    out = apply_credentials(config, scope="app", credential_store=store)
 
     assert out.env == {"GITHUB_TOKEN": "ghp_x"}
     assert out.http_headers == {"X-Key": "Bearer stored"}
@@ -234,7 +234,7 @@ def test_a_bearer_credential_becomes_an_authorization_header(tmp_path):
     )
     config = MCPServerConfig.parse("s", {"url": "https://h/mcp", "bearer_credential": "token"})
 
-    out = apply_credentials(config, scope="app", store=store)
+    out = apply_credentials(config, scope="app", credential_store=store)
 
     assert out.http_headers == {"Authorization": "Bearer t"}
 
@@ -254,19 +254,19 @@ def test_a_token_is_not_sent_to_a_host_it_was_not_issued_for(tmp_path):
     moved = MCPServerConfig.parse(
         "s", {"url": "https://new.example/mcp", "bearer_credential": "token"}
     )
-    assert apply_credentials(moved, scope="app", store=store).http_headers == {}
+    assert apply_credentials(moved, scope="app", credential_store=store).http_headers == {}
 
     unchanged = MCPServerConfig.parse(
         "s", {"url": "https://old.example/mcp", "bearer_credential": "token"}
     )
-    assert apply_credentials(unchanged, scope="app", store=store).http_headers == {
+    assert apply_credentials(unchanged, scope="app", credential_store=store).http_headers == {
         "Authorization": "Bearer t"
     }
 
 
 def test_a_credential_belongs_to_the_scope_that_won_the_name(tmp_path):
     """A personal token must not authenticate a project's replacement entry."""
-    from easycode.extensions.mcp.auth import store as credential_store
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     write_scope(
         project_config_path(tmp_path),
@@ -283,7 +283,7 @@ def test_a_credential_belongs_to_the_scope_that_won_the_name(tmp_path):
 
 
 def test_effective_servers_uses_the_project_scopes_own_credential_root(tmp_path):
-    from easycode.extensions.mcp.auth import store as credential_store
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     write_scope(project_config_path(tmp_path), {"srv": {"command": "c"}})
     credential_store().save(
@@ -318,7 +318,7 @@ def test_fingerprint_tracks_configuration_and_context(tmp_path):
 
 
 def test_fingerprint_tracks_credential_rotation(tmp_path):
-    from easycode.extensions.mcp.auth import store as credential_store
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     ctx = PathContext(primary=tmp_path)
     # The server has to reference the secret, otherwise no credential of its
@@ -338,7 +338,7 @@ def test_fingerprint_tracks_credential_rotation(tmp_path):
 
 def test_fingerprint_ignores_credentials_this_session_cannot_use(tmp_path):
     """A token for another project's server is not this session's business."""
-    from easycode.extensions.mcp.auth import store as credential_store
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     ctx = PathContext(primary=tmp_path)
     here = tmp_path / "here"
@@ -417,7 +417,7 @@ def test_configured_servers_parse_each_entry_once(tmp_path):
 
 def test_fingerprint_follows_a_changed_server_url(tmp_path):
     """Pointing the server elsewhere retires its token, so the setup changed."""
-    from easycode.extensions.mcp.auth import store as credential_store
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     ctx = PathContext(primary=tmp_path)
     servers = resolve(
@@ -463,7 +463,7 @@ def test_fingerprint_follows_a_changed_server_url(tmp_path):
 
 def test_fingerprint_separates_projects_that_share_a_server_name(tmp_path):
     """Two projects, one server name: each root fingerprints its own token."""
-    from easycode.extensions.mcp.auth import store as credential_store
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     here = tmp_path / "here"
     elsewhere = tmp_path / "elsewhere"

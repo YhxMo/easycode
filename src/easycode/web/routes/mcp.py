@@ -21,8 +21,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.config import Config
-from easycode.extensions.mcp.auth import KINDS, MCPCredential
-from easycode.extensions.mcp.auth import store as credential_store
 from easycode.extensions.mcp.config import (
     SCOPES,
     MCPConfigError,
@@ -33,6 +31,8 @@ from easycode.extensions.mcp.config import (
     scope_config_path,
     write_scope,
 )
+from easycode.extensions.mcp.credentials import KINDS, MCPCredential
+from easycode.extensions.mcp.credentials import store as credential_store
 from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
 
 

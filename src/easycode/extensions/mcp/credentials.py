@@ -18,13 +18,16 @@ import json
 import logging
 import os
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from easycode.paths import data_home
 
-log = logging.getLogger("easycode.extensions.mcp.client.auth")
+if TYPE_CHECKING:
+    from easycode.extensions.mcp.config import MCPServerConfig, ResolvedServer
+
+log = logging.getLogger("easycode.extensions.mcp.credentials")
 
 CREDENTIALS_FILENAME = "mcp-credentials.json"
 
@@ -264,3 +267,95 @@ def credential_versions(credential_store: CredentialStore | None = None) -> dict
         return (credential_store or store()).versions()
     except OSError:
         return {}
+
+
+def matching_credential(
+    config: MCPServerConfig,
+    *,
+    scope: str,
+    root: str = "",
+    credential_store: Any,
+):
+    """The stored grant that authenticates ``config``, or None.
+
+    The one place this rule exists: the panel, the connecting path and the
+    connection fingerprint all ask the same question, so a token is never
+    filled in from one record and invalidated by another.
+    """
+    if not (config.secret_env or config.secret_headers or config.bearer_credential):
+        return None
+    cred = credential_store.find(scope=scope, server=config.name, root=root)
+    if cred is None:
+        return None
+    # A record is only used for the URL it was issued for. Pointing the server
+    # at a different host must not send it the old host's token, because nobody
+    # agreed to that host.
+    if cred.url and config.url and cred.url != config.url:
+        return None
+    return cred
+
+
+def related_credential_versions(
+    servers: list[ResolvedServer], project_root: str, credential_store: Any
+) -> dict[str, str]:
+    """Per-credential digests, for the records these servers actually use.
+
+    Only the related ones: an unrelated token rotation is not a reason to drop a
+    running process. Matching goes through :func:`matching_credential`, so a
+    server whose credential was replaced by one for another URL is covered too
+    — otherwise that change would leave the old token in a live session.
+    """
+    credentials = credential_store.snapshot()
+    all_versions = credential_versions(credential_store)
+    out: dict[str, str] = {}
+    for server in servers:
+        cred = matching_credential(
+            server.config,
+            scope=server.scope,
+            root=project_root if server.scope == "project" else "",
+            credential_store=credentials,
+        )
+        if cred is not None and cred.id in all_versions:
+            out[cred.id] = all_versions[cred.id]
+    return out
+
+
+def apply_credentials(
+    config: MCPServerConfig,
+    *,
+    scope: str,
+    root: str = "",
+    credential_store: Any = None,
+) -> MCPServerConfig:
+    """``config`` with the secrets it references filled in from the store.
+
+    The names in ``secret_env``/``secret_headers`` are the *targets* (an
+    environment variable, an HTTP header) and their values are the key to read
+    inside the stored record, so one server can take several secrets and each
+    can be replaced on its own.
+
+    A record is only used for the URL it was issued for. Pointing the server at
+    a different host must not send it the old host's token, because nobody
+    agreed to that host.
+    """
+    cred = matching_credential(
+        config, scope=scope, root=root, credential_store=credential_store or store()
+    )
+    if cred is None:
+        return config
+
+    def value(key: str) -> str:
+        return cred.values.get(key, "")
+
+    out = replace(config, env=dict(config.env), http_headers=dict(config.http_headers))
+    for target, key in config.secret_env.items():
+        if secret := value(key):
+            out.env[target] = secret
+    for target, key in config.secret_headers.items():
+        if secret := value(key):
+            out.http_headers[target] = secret
+    if config.bearer_credential:
+        token = value(config.bearer_credential)
+        if token:
+            out.http_headers["Authorization"] = f"Bearer {token}"
+    return out

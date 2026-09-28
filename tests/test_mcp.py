@@ -48,7 +48,7 @@ def wait_for(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_mcp_manager_connects_and_lists_tools():
-    from easycode.extensions.mcp.client import MCPSessionManager, mcp_tool_name
+    from easycode.extensions.mcp.manager import MCPSessionManager, mcp_tool_name
 
     mgr = MCPSessionManager(mcp_servers(mcp_server_config()))
     await mgr.start()
@@ -68,7 +68,7 @@ async def test_mcp_manager_connects_and_lists_tools():
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_mcp_manager_call_tool():
-    from easycode.extensions.mcp.client import MCPSessionManager, mcp_tool_name
+    from easycode.extensions.mcp.manager import MCPSessionManager, mcp_tool_name
 
     mgr = MCPSessionManager(mcp_servers(mcp_server_config()))
     await mgr.start()
@@ -89,7 +89,7 @@ async def test_mcp_manager_call_tool():
 
 @pytest.mark.asyncio
 async def test_mcp_manager_bad_server_degrades():
-    from easycode.extensions.mcp.client import MCPSessionManager
+    from easycode.extensions.mcp.manager import MCPSessionManager
 
     mgr = MCPSessionManager(
         mcp_servers({"ghost": {"command": "definitely-not-a-command-xyz", "args": []}})
@@ -101,7 +101,7 @@ async def test_mcp_manager_bad_server_degrades():
 @pytest.mark.asyncio
 async def test_agent_routes_mcp_tool(tmp_path):
     from easycode.agent.loop import Agent
-    from easycode.extensions.mcp.client import mcp_tool_name
+    from easycode.extensions.mcp.manager import mcp_tool_name
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
@@ -139,7 +139,7 @@ async def test_agent_routes_mcp_tool(tmp_path):
 async def test_unknown_mcp_tool_call_is_rejected(tmp_path):
     """A hallucinated MCP tool name is not advertised and is rejected."""
     from easycode.agent.loop import Agent
-    from easycode.extensions.mcp.client import mcp_tool_name
+    from easycode.extensions.mcp.manager import mcp_tool_name
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
@@ -173,7 +173,7 @@ async def test_unknown_mcp_tool_call_is_rejected(tmp_path):
 async def test_empty_tool_cap_rejects_registered_mcp_tool(tmp_path):
     """An empty explicit cap rejects even a connected MCP tool, without executing it."""
     from easycode.agent.loop import Agent
-    from easycode.extensions.mcp.client import mcp_tool_name
+    from easycode.extensions.mcp.manager import mcp_tool_name
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
 
@@ -206,7 +206,8 @@ async def test_empty_tool_cap_rejects_registered_mcp_tool(tmp_path):
 @pytest.mark.asyncio
 async def test_failed_connect_closes_connection(monkeypatch):
     """A connection created before a server's init failed must be closed."""
-    from easycode.extensions.mcp.client import MCPConnection, MCPSessionManager
+    from easycode.extensions.mcp.connection import MCPConnection
+    from easycode.extensions.mcp.manager import MCPSessionManager
 
     closed: list[str] = []
 
@@ -228,7 +229,7 @@ async def test_failed_connect_closes_connection(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_close_reaps_server_process(tmp_path):
-    from easycode.extensions.mcp.client import MCPSessionManager
+    from easycode.extensions.mcp.manager import MCPSessionManager
     from easycode.permissions.boundary import PathContext
 
     pidfile = tmp_path / "mcp.pid"
@@ -252,7 +253,7 @@ async def test_close_reaps_server_process(tmp_path):
 async def test_subagent_task_keeps_borrowed_parent_mcp(tmp_path):
     """A subtask borrowing the parent's MCP manager must not close it."""
     from easycode.agent.loop import Agent
-    from easycode.extensions.mcp.client import mcp_tool_name
+    from easycode.extensions.mcp.manager import mcp_tool_name
     from easycode.extensions.subagents import AgentRegistry, AgentSpec
     from easycode.tools import build_registry
     from tests.conftest import FakeProvider
@@ -382,7 +383,7 @@ def test_web_shutdown_closes_owned_mcp(tmp_path):
 
     from easycode.agent.loop import Agent
     from easycode.config import Config
-    from easycode.extensions.mcp.client import mcp_tool_name
+    from easycode.extensions.mcp.manager import mcp_tool_name
     from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.session import SessionStore
@@ -526,7 +527,7 @@ async def test_subagent_reuses_mcp_manager(tmp_path):
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_mcp_schemas_skip_invalid():
     """A server with an unserializable schema is skipped, others survive."""
-    from easycode.extensions.mcp.client import MCPSessionManager
+    from easycode.extensions.mcp.manager import MCPSessionManager
 
     servers = mcp_servers(mcp_server_config())
     mgr = MCPSessionManager(servers)
@@ -544,8 +545,9 @@ def test_mcp_requires_approval_is_fail_closed():
     destructiveHint not True) is auto-allowed. Missing annotations, readOnly
     false, and destructive all require approval; unknown names are not an MCP
     approval scope."""
-    from easycode.extensions.mcp.client import MCPConnection, MCPSession, MCPSessionManager
     from easycode.extensions.mcp.config import MCPServerConfig
+    from easycode.extensions.mcp.connection import MCPConnection
+    from easycode.extensions.mcp.manager import MCPSession, MCPSessionManager
 
     mgr = MCPSessionManager([])
     config = MCPServerConfig.parse("demo", {"command": "mcp-server"})
@@ -595,8 +597,8 @@ def test_mcp_requires_approval_is_fail_closed():
 
 
 def test_a_launcher_gets_easycodes_own_cache_and_a_write_grant():
-    from easycode.extensions.mcp.client import _launcher_env, _stdio_grant
     from easycode.extensions.mcp.config import MCPServerConfig, mcp_cache_dir
+    from easycode.extensions.mcp.connection import _launcher_env, _stdio_grant
 
     config = MCPServerConfig.parse("s", {"command": "npx", "args": ["-y", "pkg"]})
     assert _launcher_env(config) == {"npm_config_cache": str(mcp_cache_dir("npx"))}
@@ -611,8 +613,8 @@ def test_a_launcher_gets_easycodes_own_cache_and_a_write_grant():
 
 
 def test_network_is_granted_only_when_the_configuration_asks_for_it():
-    from easycode.extensions.mcp.client import _stdio_grant
     from easycode.extensions.mcp.config import MCPServerConfig, mcp_cache_dir
+    from easycode.extensions.mcp.connection import _stdio_grant
 
     off = MCPServerConfig.parse("s", {"command": "npx", "network_enabled": False})
     assert _stdio_grant(off).network_allowed is False
@@ -627,7 +629,7 @@ def test_network_is_granted_only_when_the_configuration_asks_for_it():
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_tool_list_follows_every_page():
     """A server that pages its tools still gets all of them registered."""
-    from easycode.extensions.mcp.client import MCPSessionManager, mcp_tool_name
+    from easycode.extensions.mcp.manager import MCPSessionManager, mcp_tool_name
 
     raw = mcp_server_config()
     raw["demo"]["env"] = {"MCP_DEMO_PAGE_SIZE": "1"}
@@ -646,7 +648,7 @@ async def test_tool_list_follows_every_page():
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_tool_filter_removes_a_tool_before_it_is_registered():
-    from easycode.extensions.mcp.client import MCPSessionManager, mcp_tool_name
+    from easycode.extensions.mcp.manager import MCPSessionManager, mcp_tool_name
 
     raw = mcp_server_config()
     raw["demo"]["disabled_tools"] = ["boom"]
@@ -665,7 +667,7 @@ async def test_tool_filter_removes_a_tool_before_it_is_registered():
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_a_slow_tool_call_returns_an_error_instead_of_hanging():
-    from easycode.extensions.mcp.client import MCPSessionManager, mcp_tool_name
+    from easycode.extensions.mcp.manager import MCPSessionManager, mcp_tool_name
 
     raw = mcp_server_config()
     raw["demo"]["tool_timeout_sec"] = 0.3
@@ -689,7 +691,7 @@ async def test_a_slow_tool_call_returns_an_error_instead_of_hanging():
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_a_server_that_never_initializes_times_out_without_leaking_a_child(tmp_path):
-    from easycode.extensions.mcp.client import MCPSessionManager
+    from easycode.extensions.mcp.manager import MCPSessionManager
     from easycode.permissions.boundary import PathContext
 
     pidfile = tmp_path / "mcp.pid"
@@ -718,7 +720,7 @@ async def test_a_server_that_never_initializes_times_out_without_leaking_a_child
 
 @pytest.mark.asyncio
 async def test_status_reports_disabled_failed_and_connected_servers():
-    from easycode.extensions.mcp.client import STATE_DISABLED, STATE_FAILED, MCPSessionManager
+    from easycode.extensions.mcp.manager import STATE_DISABLED, STATE_FAILED, MCPSessionManager
 
     raw = {
         "off": {"command": "node", "enabled": False},
@@ -739,7 +741,7 @@ async def test_status_reports_disabled_failed_and_connected_servers():
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_status_reports_a_connected_servers_tools():
-    from easycode.extensions.mcp.client import STATE_CONNECTED, MCPSessionManager
+    from easycode.extensions.mcp.manager import STATE_CONNECTED, MCPSessionManager
 
     mgr = MCPSessionManager(mcp_servers(mcp_server_config()))
     await mgr.start()
@@ -772,8 +774,8 @@ def agent_for(root: Path, **kwargs):
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_a_servers_own_project_file_is_what_connects_it(tmp_path):
     """The project scope is the agent's own directory, not the app config."""
-    from easycode.extensions.mcp.client import STATE_CONNECTED, mcp_tool_name
     from easycode.extensions.mcp.config import project_config_path, write_scope
+    from easycode.extensions.mcp.manager import STATE_CONNECTED, mcp_tool_name
 
     write_scope(project_config_path(tmp_path), mcp_server_config())
     agent = agent_for(tmp_path, permission_mode="allow-all")
@@ -791,8 +793,8 @@ async def test_a_servers_own_project_file_is_what_connects_it(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_a_project_can_switch_off_an_app_server_for_itself_only(tmp_path):
-    from easycode.extensions.mcp.client import STATE_CONNECTED, STATE_DISABLED
     from easycode.extensions.mcp.config import project_config_path, write_scope
+    from easycode.extensions.mcp.manager import STATE_CONNECTED, STATE_DISABLED
 
     other = tmp_path / "other"
     other.mkdir()
@@ -823,7 +825,6 @@ async def test_a_project_can_switch_off_an_app_server_for_itself_only(tmp_path):
 @pytest.mark.asyncio
 async def test_a_settings_change_drops_the_running_connection(tmp_path):
     """Editing the servers must not leave the old process serving their tools."""
-    from easycode.extensions.mcp.client import MCPSessionManager
     from easycode.extensions.mcp.config import (
         effective_servers,
         fingerprint,
@@ -831,6 +832,7 @@ async def test_a_settings_change_drops_the_running_connection(tmp_path):
         project_config_path,
         write_scope,
     )
+    from easycode.extensions.mcp.manager import MCPSessionManager
 
     write_scope(project_config_path(tmp_path), mcp_server_config())
     agent = agent_for(tmp_path, mcp_servers=mcp_server_config())
@@ -868,9 +870,9 @@ async def test_a_settings_change_drops_the_running_connection(tmp_path):
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_unrelated_credential_rotation_keeps_the_process(tmp_path):
     """A token for another project's server must not drop this connection."""
-    from easycode.extensions.mcp.auth import MCPCredential
-    from easycode.extensions.mcp.auth import store as credential_store
     from easycode.extensions.mcp.config import project_config_path, write_scope
+    from easycode.extensions.mcp.credentials import MCPCredential
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     other = tmp_path / "other"
     other.mkdir()

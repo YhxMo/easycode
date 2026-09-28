@@ -10,9 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from easycode.config import Config
-from easycode.extensions.mcp.auth import CredentialStore, credentials_path
-from easycode.extensions.mcp.client import MCPSessionManager
 from easycode.extensions.mcp.config import effective_servers, personal_config_path
+from easycode.extensions.mcp.credentials import CredentialStore, credentials_path
+from easycode.extensions.mcp.manager import MCPSessionManager
 from easycode.web.main import create_app
 
 
@@ -410,8 +410,8 @@ async def test_editing_is_refused_while_a_turn_is_running(tmp_path):
 
 def test_panel_reads_the_credential_file_once_per_request(tmp_path):
     """Five credentialed servers, one read: the panel is one snapshot."""
-    from easycode.extensions.mcp.auth import MCPCredential
-    from easycode.extensions.mcp.auth import store as credential_store
+    from easycode.extensions.mcp.credentials import MCPCredential
+    from easycode.extensions.mcp.credentials import store as credential_store
 
     app, _cfg, _store, roots = build(tmp_path)
     store = credential_store()
