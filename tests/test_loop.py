@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from easycode.agent.loop import Agent, AgentEvent
+from easycode.agent.events import AgentEvent
+from easycode.agent.loop import Agent
 from easycode.models.base import StreamEvent, ToolCall
 from easycode.tools import build_registry
 from tests.conftest import FakeProvider

@@ -9,7 +9,8 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from easycode.agent.loop import Agent, AgentEvent
+from easycode.agent.events import AgentEvent
+from easycode.agent.loop import Agent
 from easycode.models.base import ToolCall
 from easycode.web.session import Session
 

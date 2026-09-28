@@ -20,6 +20,7 @@ from easycode.agent.builtin_tools import (
 )
 from easycode.agent.compaction import COMPACTION_DEFAULTS, Compactor
 from easycode.agent.context import History
+from easycode.agent.events import AgentEvent, file_change
 from easycode.agent.summarizer import Summarizer
 from easycode.agent.system import build_system_prompt, find_agents_rules
 from easycode.agent.turns import TurnRecorder
@@ -47,40 +48,6 @@ if TYPE_CHECKING:
     from easycode.extensions.mcp.client import MCPSessionManager
     from easycode.extensions.skills import SkillRegistry
     from easycode.extensions.subagents import AgentRegistry
-
-
-@dataclass
-class AgentEvent:
-    """Event yielded to the UI as a turn progresses."""
-
-    kind: str  # "text" | "tool_start" | "tool_result" | "error" | "done" | "cancelled"
-    content: str | None = None
-    tool_call: ToolCall | None = None
-    tool_result: str | None = None
-    error: str | None = None
-    #: Machine-readable reason for an ``error`` event, when there is one (e.g.
-    #: ``tool_iteration_limit``); the text stays the human-facing statement.
-    code: str | None = None
-
-
-def file_change(name: str, result: str) -> dict | None:
-    """Extract a real file change from a tool result, else ``None``.
-
-    Only ``write_file``/``edit_file`` results that succeeded, were not a
-    dry-run preview, and carry a path count as changes.
-    """
-    if name not in ("write_file", "edit_file"):
-        return None
-    try:
-        data = json.loads(result)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict) or data.get("status") != "ok" or data.get("dry_run"):
-        return None
-    path = data.get("path")
-    if not path:
-        return None
-    return {"tool": name, "path": path, "diff": data.get("diff") or ""}
 
 
 @dataclass

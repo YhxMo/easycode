@@ -14,8 +14,9 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
+from easycode.agent.events import file_change
 from easycode.agent.factory import bind_agent, make_agent
-from easycode.agent.loop import Agent, file_change
+from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.permissions.boundary import root_error
 from easycode.permissions.policy import PERM_ALLOW_ALL
@@ -76,7 +77,7 @@ async def repl_loop(cfg: Config, agent: Agent, current: str, commands) -> None:
     )
 
     always_allow: set[str] = set()
-    from easycode.agent.loop import ToolCall
+    from easycode.models.base import ToolCall
 
     async def approval_handler(tc: ToolCall, _reason: str, key: str) -> bool:
         if key in always_allow:

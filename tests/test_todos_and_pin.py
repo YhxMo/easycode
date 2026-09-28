@@ -47,7 +47,7 @@ def test_update_todos_is_offered_and_needs_no_approval(tmp_path):
     assert "update_todos" in {s["function"]["name"] for s in agent.tool_schemas()}
     assert "update_todos" in agent._tools_desc()
 
-    from easycode.agent.loop import ToolCall
+    from easycode.models.base import ToolCall
 
     call = ToolCall(id="t1", name="update_todos", arguments={"todos": []})
     assert needs_approval(call, agent.path_context(), "ask") is False
@@ -154,7 +154,7 @@ async def test_cleared_list_is_committed_and_announced(tmp_path):
     agent = make_agent(tmp_path, [])
     agent.todos = [{"text": "旧的", "status": "pending"}]
     from easycode.agent.builtin_tools import run_builtin
-    from easycode.agent.loop import ToolCall
+    from easycode.models.base import ToolCall
 
     result = await run_builtin(agent, ToolCall(id="c1", name="update_todos", arguments={"todos": []}))
     assert json.loads(result)["status"] == "ok"

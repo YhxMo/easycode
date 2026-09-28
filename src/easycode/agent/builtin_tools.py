@@ -11,8 +11,9 @@ from pydantic import BaseModel, Field, StringConstraints, ValidationError
 from easycode.permissions.policy import cap_permission
 
 if TYPE_CHECKING:
-    from easycode.agent.loop import Agent, ToolCall
+    from easycode.agent.loop import Agent
     from easycode.extensions.subagents import AgentSpec
+    from easycode.models.base import ToolCall
 
 DEFAULT_MAX_PARALLEL = 4
 MAX_PARALLEL_TASKS = 6

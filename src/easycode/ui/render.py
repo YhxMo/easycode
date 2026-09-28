@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from easycode.agent.loop import AgentEvent
+from easycode.agent.events import AgentEvent
 
 console = Console()
 
