@@ -23,7 +23,7 @@ from easycode.web.routes.skills import register_skills
 from easycode.web.routes.workspaces import register_workspaces
 from easycode.web.store import SessionStore
 
-FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 def create_app(

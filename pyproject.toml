@@ -28,11 +28,29 @@ dev = [
 easycode = "easycode.cli:app"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/easycode"]
+# Sources live directly in `src/`, so the directory name and the import name
+# differ; package-dir is what maps one onto the other. Setuptools has no prefix
+# rule to derive `easycode.<name>` from the tree, so every subpackage is listed
+# here — a new one that is missing still imports when running from source, and
+# only goes missing from a built wheel.
+[tool.setuptools]
+package-dir = { easycode = "src" }
+packages = [
+    "easycode",
+    "easycode.agent",
+    "easycode.extensions",
+    "easycode.extensions.mcp",
+    "easycode.models",
+    "easycode.permissions",
+    "easycode.permissions.sandbox",
+    "easycode.tools",
+    "easycode.ui",
+    "easycode.web",
+    "easycode.web.routes",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,3 +86,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["RUF015", "RUF006"]  # 测试里 list()[0] 的 IndexError 语义本身就是断言的一部分；ensure_future 后台任务同理
+
+[tool.ruff.lint.isort]
+# `easycode` 的来源目录现在叫 `src`，ruff 无法从目录名推出这个包名。
+known-first-party = ["easycode"]
