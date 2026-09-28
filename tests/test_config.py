@@ -160,3 +160,38 @@ def test_max_tool_iterations_survives_other_saves_only_when_set(tmp_path, monkey
     cfg.save()
     assert json.loads(cfg_file.read_text(encoding="utf-8"))["max_tool_iterations"] == 40
     assert Config.load().max_tool_iterations == 40
+
+
+def test_each_file_stops_at_its_own_nearest_ancestor(tmp_path, monkeypatch):
+    """The two searches are independent: each finds its own nearest file."""
+    from easycode.config import find_config_file, find_env_file
+
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (tmp_path / "easycode.config.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "a" / "b" / ".env").write_text("X=1", encoding="utf-8")
+    monkeypatch.chdir(deep)
+
+    assert find_config_file() == tmp_path / "easycode.config.json"
+    assert find_env_file() == tmp_path / "a" / "b" / ".env"
+
+
+def test_upward_search_takes_the_nearest_of_two(tmp_path):
+    from easycode.config import find_config_file
+
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+    (tmp_path / "easycode.config.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "a" / "easycode.config.json").write_text("{}", encoding="utf-8")
+
+    assert find_config_file(start=deep) == tmp_path / "a" / "easycode.config.json"
+
+
+def test_upward_search_reports_nothing_found(tmp_path):
+    from easycode.config import find_config_file, find_env_file
+
+    deep = tmp_path / "a" / "b"
+    deep.mkdir(parents=True)
+
+    assert find_config_file(start=deep) is None
+    assert find_env_file(start=deep) is None

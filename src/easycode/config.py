@@ -118,24 +118,24 @@ def infer_api_format(model: str) -> str:
     return DEFAULT_API_FORMAT
 
 
-def find_config_file(start: Path | None = None) -> Path | None:
-    """Search from cwd (or ``start``) upward for the nearest config file."""
+def _find_upward(filename: str, start: Path | None) -> Path | None:
+    """The nearest ``filename`` from cwd (or ``start``) upward."""
     cur = (start or Path.cwd()).resolve()
-    for d in (cur, *cur.parents):
-        candidate = d / CONFIG_FILENAME
+    for directory in (cur, *cur.parents):
+        candidate = directory / filename
         if candidate.is_file():
             return candidate
     return None
+
+
+def find_config_file(start: Path | None = None) -> Path | None:
+    """Search from cwd (or ``start``) upward for the nearest config file."""
+    return _find_upward(CONFIG_FILENAME, start)
 
 
 def find_env_file(start: Path | None = None) -> Path | None:
     """Search from cwd (or ``start``) upward for the nearest ``.env`` file."""
-    cur = (start or Path.cwd()).resolve()
-    for d in (cur, *cur.parents):
-        candidate = d / ".env"
-        if candidate.is_file():
-            return candidate
-    return None
+    return _find_upward(".env", start)
 
 
 @dataclass

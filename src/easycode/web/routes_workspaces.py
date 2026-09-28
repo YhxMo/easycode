@@ -79,17 +79,16 @@ def merge_projects(base: list[dict], extra: list[dict]) -> list[dict]:
     """
     meta: dict[str, dict] = {}
     secondary: dict[str, set[str]] = {}
-    order: list[str] = []
     for source in (base, extra):
         for p in source:
             key = project_key(p.get("root"))
-            if key not in order:
-                order.append(key)
+            # setdefault keeps first-seen order, so the dict's own order is
+            # already "config entries first, then whatever only history knows".
             secondary.setdefault(key, set()).update(p.get("secondary") or [])
             if source is base:
                 meta[key] = {k: p[k] for k in ("name", "pinned") if p.get(k)}
     out = []
-    for key in order:
+    for key in secondary:
         root = key if key else None
         entry = {"root": root, "secondary": sorted(secondary[key])}
         entry.update(meta.get(key, {}))

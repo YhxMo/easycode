@@ -772,3 +772,144 @@ def test_move_rejects_a_bad_root_or_secondary_without_partial_update(tmp_path):
     assert sess.root == str(proj)
     assert str(sess.agent.root) == str(proj)
     assert sess.secondary_roots == []
+
+
+def test_merge_projects_union_metadata_and_pinning():
+    """Config entries keep their naming; history only adds secondaries."""
+    from easycode.web.routes_workspaces import merge_projects
+
+    base = [
+        {"root": None, "secondary": ["/a"], "name": "默认"},
+        {"root": "/p", "secondary": [], "name": "项目", "pinned": True},
+    ]
+    extra = [
+        # Repeats a base project with another secondary: merged, not duplicated.
+        {"root": "/p", "secondary": ["/b"]},
+        {"root": "/p", "secondary": ["/c"]},
+        {"root": "/q", "secondary": []},
+        {"root": None, "secondary": ["/d"]},
+    ]
+
+    out = merge_projects(base, extra)
+
+    # No new key, no duplicate, and the pinned config entry sorts first.
+    assert [p["root"] for p in out] == ["/p", None, "/q"]
+    pinned, default, only_history = out
+    assert pinned["secondary"] == ["/b", "/c"]
+    assert pinned["name"] == "项目"
+    assert pinned["pinned"] is True
+    assert default["secondary"] == ["/a", "/d"]
+    assert default["name"] == "默认"
+    assert "pinned" not in default
+    assert "name" not in only_history
+
+
+def _worktree_client(tmp_path):
+    """An app whose default project is the throwaway root."""
+    from easycode.agent.loop import Agent
+    from easycode.tools import build_registry
+    from easycode.web.session import SessionStore
+    from tests.conftest import FakeProvider
+
+    (tmp_path / "easycode.config.json").write_text(
+        json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8"
+    )
+    cfg = Config.load(start=tmp_path)
+    cfg.root = tmp_path
+
+    def factory(alias: str, **kw):
+        root = Path(kw["root"]).resolve() if kw.get("root") else tmp_path
+        return Agent(
+            provider=FakeProvider(script=[{"text": "ok"}]),
+            registry=build_registry(8000),
+            root=root,
+        )
+
+    store = SessionStore(cfg, tmp_path, factory)
+    return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+
+
+def _git_repo(tmp_path, name="repo"):
+    import subprocess
+
+    repo = tmp_path / name
+    repo.mkdir()
+    for cmd in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t.t"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(cmd, cwd=repo, check=True)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    return repo
+
+
+def test_worktree_applies_uncommitted_changes_through_stdin(tmp_path):
+    """Local edits arrive in the new worktree, including odd file names."""
+    client = _worktree_client(tmp_path)
+    repo = _git_repo(tmp_path)
+    (repo / "f.txt").write_text("hello\nchanged\n", encoding="utf-8")
+    odd = repo / "带 空格 的文件.txt"
+    odd.write_text("中文内容\n", encoding="utf-8")
+    import subprocess
+
+    subprocess.run(["git", "add", "-N", odd.name], cwd=repo, check=True)
+
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "applied uncommitted changes" in data["notes"]
+    wt = Path(data["root"])
+    assert (wt / "f.txt").read_text(encoding="utf-8") == "hello\nchanged\n"
+    assert (wt / "带 空格 的文件.txt").read_text(encoding="utf-8") == "中文内容\n"
+    # The patch travelled through stdin: nothing is left next to the worktree.
+    assert list(wt.parent.glob("*.patch")) == []
+
+
+def test_worktree_skips_apply_when_there_is_nothing_to_apply(tmp_path, monkeypatch):
+    """A clean checkout must not run a diff at all."""
+    client = _worktree_client(tmp_path)
+    repo = _git_repo(tmp_path)
+    import easycode.web.platform as platform
+
+    seen: list[list[str]] = []
+    real_run = platform.subprocess.run
+
+    def spy(cmd, **kwargs):
+        seen.append(list(cmd))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(platform.subprocess, "run", spy)
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["notes"] == []
+    assert not any("apply" in cmd for cmd in seen), seen
+
+
+def test_worktree_survives_a_patch_that_does_not_apply(tmp_path, monkeypatch):
+    """A failing apply is best-effort: the worktree is still created."""
+    client = _worktree_client(tmp_path)
+    repo = _git_repo(tmp_path)
+    (repo / "f.txt").write_text("hello\nchanged\n", encoding="utf-8")
+    import easycode.web.platform as platform
+
+    real_run = platform.subprocess.run
+
+    def corrupting(cmd, **kwargs):
+        res = real_run(cmd, **kwargs)
+        if cmd[:3] == ["git", "diff", "HEAD"]:
+            res.stdout = "this is not a patch\n"
+        return res
+
+    monkeypatch.setattr(platform.subprocess, "run", corrupting)
+    r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
+
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["notes"] == []
+    # The worktree exists at the committed state, untouched by the bad patch.
+    assert (Path(data["root"]) / "f.txt").read_text(encoding="utf-8") == "hello\n"

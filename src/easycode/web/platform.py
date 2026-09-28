@@ -108,9 +108,17 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
     injected so the caller (``main.py``) can keep it patchable in tests.
     """
 
-    def run(cmd: list[str], cwd: Path, timeout: int = 30) -> subprocess.CompletedProcess:
+    def run(
+        cmd: list[str], cwd: Path, timeout: int = 30, input: str | None = None
+    ) -> subprocess.CompletedProcess:
         return subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=timeout
+            cmd,
+            cwd=cwd,
+            input=input,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
         )
 
     if not shutil.which("git"):
@@ -142,16 +150,9 @@ def create_worktree(src: Path, *, sandbox_command) -> dict:
     # best-effort: apply uncommitted changes from the source checkout
     diff = run(["git", "diff", "HEAD"], src)
     if diff.returncode == 0 and diff.stdout.strip():
-        # git apply needs stdin; use a temp patch file instead
-        patch = wt.parent / f"{slug}.patch"
-        patch.write_text(diff.stdout, encoding="utf-8")
-        res = run(["git", "apply", str(patch)], wt, timeout=15)
+        res = run(["git", "apply", "-"], wt, timeout=15, input=diff.stdout)
         if res.returncode == 0:
             notes.append("applied uncommitted changes")
-        try:
-            patch.unlink(missing_ok=True)
-        except OSError:
-            pass
 
     # .worktreeinclude: copy gitignored files listed at the repo root. Every
     # entry is resolve-checked so it can never escape the source or
