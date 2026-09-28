@@ -4,7 +4,6 @@ import type {
   ModelsInfo,
   SessionDetail,
   SessionSummary,
-  WorkspacesInfo,
   WorkspaceProject,
 } from "../api";
 import {
@@ -12,12 +11,10 @@ import {
   createSession,
   createWorktree,
   deleteSession,
-  fetchArchivedSessions,
   fetchModels,
   fetchSession,
   fetchSessions,
   pinSession,
-  fetchWorkspaces,
   pinProject,
   removeProject,
   revealInFinder,
@@ -63,9 +60,9 @@ import {
   EMPTY_MODELS,
   NARROW_CHAT_PX,
   PANE_SECTIONS,
-  readStoredCurrentTab,
-  readStoredTabs,
 } from "./constants";
+import { useSessionList } from "./useSessionList";
+import { useTabs } from "./useTabs";
 import { ConfirmDialogs } from "./ConfirmDialogs";
 import { usePermission } from "./usePermission";
 import { useToast } from "./useToast";
@@ -88,9 +85,6 @@ function commandIdFor(draft: Draft): string | null {
 }
 
 export default function App() {
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  // Read-only view of the server list; never written to on its own.
-  const sessionById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   // Unsent composer text, one record per conversation: switching sessions must
   // never carry what was typed here into another conversation's field.
@@ -98,10 +92,24 @@ export default function App() {
   // ---- toast (shared by openSession failure + project actions) ----
   const [toast, showToast] = useToast();
   const [models, setModels] = useState<ModelsInfo>(EMPTY_MODELS);
-  const [workspaces, setWorkspaces] = useState<WorkspacesInfo>({ projects: [] });
-  // False until the workspace list has been answered once, so the directory
-  // card shows a loading state instead of a wrong project name.
-  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
+  // The sidebar's two lists and the tabs opened from them. The list hands its
+  // ids to the tabs, which is what keeps a tab from outliving its conversation.
+  const tabList = useTabs();
+  const {
+    sessions,
+    setSessions,
+    archived,
+    setArchived,
+    workspaces,
+    workspacesLoaded,
+    setProjects,
+    sessionById,
+    refresh: refreshSessions,
+    refreshArchived,
+  } = useSessionList({ onListLoaded: tabList.keepOnly, onArchivedLoaded: tabList.drop });
+  // Bound by name: several callbacks below depend on these, and through the
+  // hook's own object the rule asks for the whole per-render value.
+  const { register: registerTab, setOpen: setOpenTabs, open: openTabs } = tabList;
 
   const [chosenRoot, setChosenRoot] = useState<string | null>(null);
   // One pair of states serves both the new-session draft and the open session:
@@ -118,11 +126,10 @@ export default function App() {
   // on mobile (<=760px) the sidebar is hidden; `sidebarOpen` drives the
   // drawer overlay so core session/project/model navigation stays reachable.
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // Open session tabs: `openTabs` is the single list of opened conversations,
+  // Open session tabs: the tab list is the single record of opened conversations,
   // in the order they were opened. Closing one closes only the view: the
   // conversation stays in the sidebar and a running turn keeps streaming into
   // its own slot.
-  const [openTabs, setOpenTabs] = useState<string[]>(() => readStoredTabs());
   // File-tool records per conversation, as fetched with the session. They are
   // what the pane reads once a refresh (or a compaction) has taken the tool
   // results out of the message history.
@@ -135,10 +142,6 @@ export default function App() {
   // View version: a response is applied only while it still matches, and the
   // ref is readable at response time by child editors.
   const openSeqRef = useRef(0);
-  // Newest session-list request: an out-of-order reply must not prune tabs the
-  // list it lost to still has.
-  const sessionsSeqRef = useRef(0);
-
   const permission = usePermission({
     sessionId: currentId,
     sessionBlocked: sessionLoad !== null,
@@ -171,38 +174,6 @@ export default function App() {
     () => stickyRef.current?.reveal(".approval-card.pending"),
     [],
   );
-
-  const setProjects = useCallback(
-    (projects: WorkspaceProject[]) => setWorkspaces((w) => ({ ...w, projects })),
-    [],
-  );
-
-  const registerTab = useCallback((id: string) => {
-    setOpenTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
-  }, []);
-
-  const refreshSessions = useCallback(() => {
-    const seq = ++sessionsSeqRef.current;
-    fetchSessions()
-      .then((list) => {
-        // An older reply that lost the race must not prune a tab the newest
-        // list still carries (e.g. one a turn named while the request was out).
-        if (seq !== sessionsSeqRef.current) return;
-        setSessions(list);
-        // Tabs are ids: a conversation the server no longer lists loses its tab
-        // here, after a successful load — never on initialization or failure.
-        const known = new Set(list.map((s) => s.id));
-        setOpenTabs((prev) => {
-          const kept = prev.filter((id) => known.has(id));
-          return kept.length === prev.length ? prev : kept;
-        });
-      })
-      .catch(() => {});
-    fetchWorkspaces()
-      .then(setWorkspaces)
-      .catch(() => {})
-      .finally(() => setWorkspacesLoaded(true));
-  }, []);
 
   // Resolved ahead of useChatStream so send() can stamp the model name onto the
   // turn's assistant messages (reply meta row).
@@ -307,20 +278,6 @@ export default function App() {
     [setItems],
   );
 
-  const [archived, setArchived] = useState<SessionSummary[]>([]);
-  const refreshArchived = useCallback(() => {
-    fetchArchivedSessions()
-      .then((list) => {
-        setArchived(list);
-        // An archived conversation has no tab: it left the main list on purpose.
-        const gone = new Set(list.map((s) => s.id));
-        setOpenTabs((prev) =>
-          prev.some((id) => gone.has(id)) ? prev.filter((id) => !gone.has(id)) : prev,
-        );
-      })
-      .catch(() => {});
-  }, []);
-
   useEffect(() => {
     refreshSessions();
     fetchModels().then(setModels).catch(() => {});
@@ -354,14 +311,6 @@ export default function App() {
   useEffect(() => {
     refreshArchived();
   }, [refreshArchived]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("easycode:open_tabs", JSON.stringify(openTabs));
-    } catch {
-      // localStorage 不可用（隐私模式等）——仅内存态，忽略即可
-    }
-  }, [openTabs]);
 
   useEffect(() => {
     try {
@@ -473,7 +422,7 @@ export default function App() {
   // view of something that is gone. The id is read during the first render —
   // the effect below writes the current (still empty) view back to the same key
   // before this check could run, so reading it later would always find "none".
-  const [rememberedTab] = useState(readStoredCurrentTab);
+  const rememberedTab = tabList.remembered;
   const restoredTabRef = useRef(false);
   useEffect(() => {
     if (restoredTabRef.current) return;
@@ -525,7 +474,7 @@ export default function App() {
       setSecondary(updated.secondary_roots ?? []);
       setProjects(projects);
     },
-    [setProjects],
+    [setProjects, setSessions],
   );
 
   /**
@@ -597,6 +546,8 @@ export default function App() {
     drafts,
     forgetSession,
     openSession,
+    setArchived,
+    setOpenTabs,
     refreshSessions,
     refreshArchived,
     setDeleteTarget,
@@ -755,6 +706,7 @@ export default function App() {
     drafts,
     forgetSession,
     sessions,
+    setOpenTabs,
     archived,
     refreshSessions,
     refreshArchived,
@@ -831,6 +783,7 @@ export default function App() {
       currentId,
       sessionById,
       drafts,
+      setOpenTabs,
       dropEntry,
       forgetSession,
       isStreaming,
