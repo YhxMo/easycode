@@ -30,13 +30,31 @@ describe("groupSessions", () => {
     expect(groups.recents.map((x) => x.id)).toEqual(["b"]);
   });
 
-  it("置顶的会话同时留在原分区", () => {
+  it("置顶会话仍在项目成员表里，但项目只显示未置顶的那些", () => {
     const groups = groupSessions(
-      [s("a", "/p/x", "2026-01-02T00:00:00Z", { pinned: true, pinned_at: "2026-02-01T00:00:00Z" })],
+      [
+        s("a", "/p/x", "2026-01-02T00:00:00Z", { pinned: true, pinned_at: "2026-02-01T00:00:00Z" }),
+        s("b", "/p/x", "2026-01-01T00:00:00Z"),
+      ],
       [project("/p/x")],
     );
     expect(groups.pinned.map((x) => x.id)).toEqual(["a"]);
-    expect(groups.projects[0].sessions.map((x) => x.id)).toEqual(["a"]);
+    // The full membership is what ordering, running state and the project's own
+    // actions read; it must keep every conversation.
+    expect(groups.projects[0].sessions.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(groups.projects[0].visibleSessions.map((x) => x.id)).toEqual(["b"]);
+  });
+
+  it("无根目录的置顶会话只进置顶，不进最近", () => {
+    const groups = groupSessions(
+      [
+        s("a", null, "2026-01-02T00:00:00Z", { pinned: true, pinned_at: "2026-02-01T00:00:00Z" }),
+        s("b", null, "2026-01-01T00:00:00Z"),
+      ],
+      [],
+    );
+    expect(groups.pinned.map((x) => x.id)).toEqual(["a"]);
+    expect(groups.recents.map((x) => x.id)).toEqual(["b"]);
   });
 
   it("置顶按 pinned_at 倒序，而不是创建时间", () => {

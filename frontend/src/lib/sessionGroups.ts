@@ -6,7 +6,12 @@ export interface ProjectGroup {
   root: string;
   name: string;
   pinned: boolean;
+  /** Every member: ordering, running state and the project's own actions read
+   *  this list, so pinned members still count as belonging here. */
   sessions: SessionSummary[];
+  /** What the group actually lists: pinned members are shown in their own
+   *  section instead of a second time under their project. */
+  visibleSessions: SessionSummary[];
 }
 
 export interface SessionGroups {
@@ -28,14 +33,15 @@ export function groupSessions(
   const recents: SessionSummary[] = [];
   const pinned: SessionSummary[] = [];
   for (const s of sessions) {
-    // A pinned conversation stays in its own section too: pinning is a
-    // shortcut, not a move.
+    // A pinned conversation is listed in the pinned section instead of the
+    // project or recents list it came from, but a project keeps it as a member
+    // either way: the group's own ordering, running state and actions count it.
     if (s.pinned) pinned.push(s);
     if (s.root) {
       const list = byRoot.get(s.root);
       if (list) list.push(s);
       else byRoot.set(s.root, [s]);
-    } else {
+    } else if (!s.pinned) {
       recents.push(s);
     }
   }
@@ -47,11 +53,13 @@ export function groupSessions(
   const roots = new Set<string>([...configured.keys(), ...byRoot.keys()]);
   const groups: ProjectGroup[] = [...roots].map((root) => {
     const project = configured.get(root);
+    const sessions = [...(byRoot.get(root) ?? [])].sort((a, b) => created(b) - created(a));
     return {
       root,
       name: project?.name || basename(root),
       pinned: project?.pinned ?? false,
-      sessions: [...(byRoot.get(root) ?? [])].sort((a, b) => created(b) - created(a)),
+      sessions,
+      visibleSessions: sessions.filter((s) => !s.pinned),
     };
   });
 

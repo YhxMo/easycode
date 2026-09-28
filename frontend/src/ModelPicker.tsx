@@ -592,16 +592,18 @@ export function ModelPicker({
           <div className="modal-section-title">连接设置</div>
           <label>
             接口格式
-            <select
-              value={form.api_format}
-              onChange={(e) => setForm({ ...form, api_format: e.target.value })}
-            >
-              {API_FORMATS.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                </option>
-              ))}
-            </select>
+            <span className="modal-select-wrap">
+              <select
+                value={form.api_format}
+                onChange={(e) => setForm({ ...form, api_format: e.target.value })}
+              >
+                {API_FORMATS.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </span>
           </label>
           <label>
             Base URL

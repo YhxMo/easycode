@@ -1585,6 +1585,16 @@
   stroke-width: 1.8;
 }
 
+/* Two states, both neutral: pinned fills the pin's body, unpinned stays an
+   outline. The colour carries the state, so a pinned row never needs a badge. */
+.session-pin .session-pin-cap {
+  fill: none;
+}
+
+.session-pin.on .session-pin-cap {
+  fill: currentColor;
+}
+
 .session-item:hover .session-pin,
 .session-item.active .session-pin,
 .session-item:focus-within .session-pin {
@@ -1592,12 +1602,13 @@
 }
 
 .session-pin.on {
-  color: var(--orange);
+  color: var(--ink-2);
   opacity: 1;
 }
 
 .session-pin:hover {
   background: var(--hover-2);
+  color: var(--ink);
 }
 
 .session-del {
@@ -1633,6 +1644,42 @@
 
 .session-del:hover {
   color: var(--red);
+}
+
+/* Project hint for a pinned row. Non-interactive: it must never take the hover
+   that opened it, nor a click meant for the row underneath. */
+.session-hint {
+  position: fixed;
+  z-index: 320;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 7px 10px;
+  border: 1px solid var(--tooltip-border);
+  border-radius: var(--r-md);
+  background: var(--tooltip-bg);
+  box-shadow: var(--shadow-raised);
+  pointer-events: none;
+}
+
+.session-hint-title {
+  color: var(--tooltip-fg);
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.session-hint-project {
+  color: var(--tooltip-muted);
+  font-size: 11px;
+}
+
+.session-hint-root {
+  color: var(--tooltip-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
 }
 
 .session-empty {
@@ -3327,14 +3374,18 @@
   line-height: 1.5;
 }
 
-.modal input,
+/* Flat fields: raised by their border and fill, never recessed. Checkboxes and
+   radios are their own controls — a 36px text box would be a different widget,
+   not a styled one. */
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
 .modal select,
 .modal textarea {
-  padding: 8px 11px;
+  height: 36px;
+  padding: 0 11px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  background: var(--inset);
-  box-shadow: var(--shadow-inset-field);
+  background: var(--field);
+  box-shadow: none;
   color: var(--ink);
   font-family: inherit;
   font-size: 13px;
@@ -3343,7 +3394,9 @@
 /* Multiline fields carry lists (args, KEY=VALUE, headers): they keep the
    field width, stay resizable vertically, and never wrap a key mid-word. */
 .modal textarea {
+  height: auto;
   min-height: 62px;
+  padding: 8px 11px;
   resize: vertical;
   line-height: 1.5;
   white-space: pre;
@@ -3351,11 +3404,59 @@
   overflow-x: auto;
 }
 
-.modal input:focus,
+/* A native select keeps its own arrow, which the platform draws in its own
+   colours and which ignores the field's padding. The wrapper draws it instead:
+   the select is left with no appearance, and the marker is a plain CSS shape. */
+.modal-select-wrap {
+  position: relative;
+  display: block;
+}
+
+.modal-select-wrap select {
+  width: 100%;
+  padding-right: 30px;
+  appearance: none;
+}
+
+.modal-select-wrap::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--ink-3);
+  border-bottom: 1.5px solid var(--ink-3);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+/* The field carries focus itself: an accent border with a ring that hugs it.
+   A text field matches :focus-visible however it was focused — including the
+   programmatic focus a dialog gives its first field — so the base outline
+   would draw a second box around a field that is already showing focus, and
+   every dialog would open with one. Checkboxes keep the outline: they are
+   reached by keyboard only, and it is their only focus affordance. */
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
 .modal select:focus,
 .modal textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus-visible,
+.modal select:focus-visible,
+.modal textarea:focus-visible {
   outline: none;
-  border-color: var(--line-strong);
+}
+
+/* A disabled field stays readable: its value is still what the form holds. */
+.modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):disabled,
+.modal select:disabled,
+.modal textarea:disabled {
+  border-color: var(--line-soft);
+  background: var(--inset);
+  color: var(--ink-2);
 }
 
 .secret-input-row {
@@ -3373,8 +3474,8 @@
   display: grid;
   flex: none;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
