@@ -68,7 +68,7 @@ function renderSidebar(
     onDeleteSession: vi.fn(),
     onTogglePin: vi.fn(),
     onRestoreSession: vi.fn(),
-    onOpenMcp: vi.fn(),
+    onOpenExtensions: vi.fn(),
     onError: vi.fn(),
   };
   const view = render(<Sidebar {...props} />);

@@ -175,8 +175,8 @@ export interface SidebarProps {
   onDeleteSession: (session: SessionSummary) => void;
   onTogglePin: (session: SessionSummary) => void;
   onRestoreSession: (session: SessionSummary) => void;
-  /** Open the MCP settings for the project the current view is in. */
-  onOpenMcp: () => void;
+  /** Open the extensions dialog for the project the current view is in. */
+  onOpenExtensions: () => void;
   /** Global error reporter (app-level toast) for picker/editor failures. */
   onError: (message: string) => void;
 }
@@ -213,7 +213,7 @@ export function Sidebar({
   onDeleteSession,
   onTogglePin,
   onRestoreSession,
-  onOpenMcp,
+  onOpenExtensions,
   onError,
 }: SidebarProps) {
   const [showAllProjects, setShowAllProjects] = useState(false);
@@ -351,17 +351,17 @@ export function Sidebar({
         <h1>Easy code</h1>
       </div>
       {/* Global, not per conversation: every project needs a way in, and a
-          sidebar with no project group (the default workspace) has none. */}
-      <button
-        type="button"
-        className="brand-settings"
-        title="MCP 服务"
-        aria-label="MCP 服务设置"
-        onClick={onOpenMcp}
-      >
+          sidebar with no project group (the default workspace) has none. It
+          names itself in words, because an icon alone read as an unknown
+          switch rather than as where skills and servers are managed. */}
+      <button type="button" className="side-ext" onClick={onOpenExtensions}>
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path d="M12 3v6m0 0-3 3v9m3-12 3 3v9M4 6h4M16 6h4M9 18h6" />
+          <rect x="3.5" y="3.5" width="7" height="7" rx="1.6" />
+          <rect x="13.5" y="3.5" width="7" height="7" rx="1.6" />
+          <rect x="3.5" y="13.5" width="7" height="7" rx="1.6" />
+          <path d="M17 13.5v7M13.5 17h7" />
         </svg>
+        <span>扩展</span>
       </button>
       <div className="sidebar-scroll">
         {section(

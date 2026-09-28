@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Modal } from "./components/Modal";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   fetchMcp,
   fetchMcpStatus,
@@ -26,12 +26,18 @@ const STATE_LABELS: Record<McpStatusServer["state"], string> = {
   disabled: "已停用",
 };
 
-export interface McpSettingsProps {
+export interface McpSettingsPanelProps {
   /** The project whose servers are shown; the effective list depends on it. */
   root: string | null;
   /** A session to read live connection status from, when one is open. */
   sessionId?: string | null;
+  /** Whether this is the tab on screen; an inactive panel loads nothing. */
+  active: boolean;
+  /** The dialog's actions row, filled by whichever panel is active. */
+  actionsHost: HTMLElement | null;
   onClose: () => void;
+  /** The effective server set changed: the `/` menu must be re-read. */
+  onChanged: () => void;
   onToast: (kind: "ok" | "err", text: string) => void;
 }
 
@@ -207,7 +213,15 @@ function configFrom(form: ServerForm, base: Record<string, unknown>): Record<str
   return cfg;
 }
 
-export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsProps) {
+export function McpSettingsPanel({
+  root,
+  sessionId,
+  active,
+  actionsHost,
+  onClose,
+  onChanged,
+  onToast,
+}: McpSettingsPanelProps) {
   const [info, setInfo] = useState<McpInfo | null>(null);
   const [status, setStatus] = useState<Record<string, McpStatusServer>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -215,21 +229,26 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
   const [busy, setBusy] = useState(false);
 
   // Every mutation answers with the whole new view, so this is the only fetch
-  // that is not the direct result of something the user just did.
+  // that is not the direct result of something the user just did. It waits for
+  // the first look at this tab: the dialog must not read a project's servers
+  // for a reader who never opened it.
+  const loaded = useRef(false);
   useEffect(() => {
+    if (!active || loaded.current) return;
+    loaded.current = true;
     fetchMcp(root)
       .then((next) => {
         setInfo(next);
         setLoadError(null);
       })
       .catch((e) => setLoadError(e instanceof Error ? e.message : String(e)));
-  }, [root]);
+  }, [active, root]);
 
   // Status is per session and only exists once a turn has connected the
   // servers, so it is read separately from the configuration — and re-read
   // whenever the configuration changed, since a save drops the connections.
   useEffect(() => {
-    if (!sessionId) return;
+    if (!active || !sessionId) return;
     let live = true;
     void fetchMcpStatus(sessionId)
       .then((r) => {
@@ -241,7 +260,7 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
     return () => {
       live = false;
     };
-  }, [sessionId, info]);
+  }, [active, sessionId, info]);
 
   const scopesFor = useCallback(
     (scope: McpScope) => info?.scopes.find((s) => s.scope === scope),
@@ -256,6 +275,7 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
     setBusy(true);
     try {
       setInfo(await run());
+      onChanged();
       onToast("ok", message);
     } catch (e) {
       onToast("err", e instanceof Error ? e.message : String(e));
@@ -278,12 +298,26 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
     try {
       let next = await saveMcpServer(form.scope, root, name, config);
       if (form.secretValue) {
-        next = await saveMcpCredential(form.scope, root, name, form.secretKind, {
-          token: form.secretValue,
-        });
+        try {
+          next = await saveMcpCredential(form.scope, root, name, form.secretKind, {
+            token: form.secretValue,
+          });
+        } catch (e) {
+          // The server entry itself is already saved and in effect, so this is
+          // a partial success: the menu is told to re-read, and the user is
+          // told exactly which half is missing.
+          setInfo(next);
+          onChanged();
+          onToast(
+            "err",
+            `已保存「${name}」，但凭据保存失败：${e instanceof Error ? e.message : String(e)}`,
+          );
+          return;
+        }
       }
       setInfo(next);
       setForm(null);
+      onChanged();
       onToast("ok", `已保存「${name}」`);
     } catch (e) {
       onToast("err", e instanceof Error ? e.message : String(e));
@@ -351,38 +385,41 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
   );
 
   return (
-    <Modal
-      open
-      onClose={onClose}
-      title="MCP 服务"
-      variant="mcp-settings-modal"
-      actions={
-        <>
-          <button type="button" className="modal-cancel" onClick={onClose}>
-            关闭
-          </button>
-          {form ? (
+    <>
+      {active && actionsHost
+        ? createPortal(
             <>
-              <button type="button" className="modal-cancel" onClick={() => setForm(null)}>
-                取消编辑
+              <button type="button" className="modal-cancel" onClick={onClose}>
+                关闭
               </button>
-              <button type="button" className="primary" disabled={busy} onClick={() => void submit()}>
-                保存
-              </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              className="primary"
-              disabled={busy}
-              onClick={() => setForm({ ...EMPTY_FORM })}
-            >
-              添加服务
-            </button>
-          )}
-        </>
-      }
-    >
+              {form ? (
+                <>
+                  <button type="button" className="modal-cancel" onClick={() => setForm(null)}>
+                    取消编辑
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={busy}
+                    onClick={() => void submit()}
+                  >
+                    保存
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => setForm({ ...EMPTY_FORM })}
+                >
+                  添加服务
+                </button>
+              )}
+            </>,
+            actionsHost,
+          )
+        : null}
       {loadError ? <p className="modal-error">{loadError}</p> : null}
       {info?.errors.map((message) => (
         <p className="modal-error" key={message}>
@@ -396,34 +433,38 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
             <div className="modal-section-title">基本信息</div>
             <label className="modal-field">
               <span>作用域</span>
-              <select
-                value={form.scope}
-                onChange={(e) => setForm({ ...form, scope: e.target.value as McpScope })}
-              >
-                {(info?.scopes ?? [{ scope: "project" as McpScope, path: "" }]).map((row) => (
-                  <option key={row.scope} value={row.scope}>
-                    {row.scope === "project"
-                      ? `当前项目${projectLabel ? `（${projectLabel}）` : ""}`
-                      : row.scope === "personal"
-                        ? "个人（所有项目）"
-                        : "应用启动配置"}
-                  </option>
-                ))}
-              </select>
+              <span className="modal-select-wrap">
+                <select
+                  value={form.scope}
+                  onChange={(e) => setForm({ ...form, scope: e.target.value as McpScope })}
+                >
+                  {(info?.scopes ?? [{ scope: "project" as McpScope, path: "" }]).map((row) => (
+                    <option key={row.scope} value={row.scope}>
+                      {row.scope === "project"
+                        ? `当前项目${projectLabel ? `（${projectLabel}）` : ""}`
+                        : row.scope === "personal"
+                          ? "个人（所有项目）"
+                          : "应用启动配置"}
+                    </option>
+                  ))}
+                </select>
+              </span>
               <small>{scopesFor(form.scope)?.path ?? ""}</small>
             </label>
             {field("名称", "name", { placeholder: "filesystem" })}
             <label className="modal-field">
               <span>传输</span>
-              <select
-                value={form.transport}
-                onChange={(e) =>
-                  setForm({ ...form, transport: e.target.value as "stdio" | "http" })
-                }
-              >
-                <option value="stdio">本地命令（stdio）</option>
-                <option value="http">远程地址（Streamable HTTP）</option>
-              </select>
+              <span className="modal-select-wrap">
+                <select
+                  value={form.transport}
+                  onChange={(e) =>
+                    setForm({ ...form, transport: e.target.value as "stdio" | "http" })
+                  }
+                >
+                  <option value="stdio">本地命令（stdio）</option>
+                  <option value="http">远程地址（Streamable HTTP）</option>
+                </select>
+              </span>
             </label>
           </div>
 
@@ -469,16 +510,18 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
             <div className="modal-section-title">凭据</div>
             <label className="modal-field">
               <span>凭据类型</span>
-              <select
-                value={form.secretKind}
-                onChange={(e) =>
-                  setForm({ ...form, secretKind: e.target.value as ServerForm["secretKind"] })
-                }
-              >
-                <option value="env">环境变量</option>
-                <option value="header">请求头</option>
-                <option value="bearer">Bearer Token</option>
-              </select>
+              <span className="modal-select-wrap">
+                <select
+                  value={form.secretKind}
+                  onChange={(e) =>
+                    setForm({ ...form, secretKind: e.target.value as ServerForm["secretKind"] })
+                  }
+                >
+                  <option value="env">环境变量</option>
+                  <option value="header">请求头</option>
+                  <option value="bearer">Bearer Token</option>
+                </select>
+              </span>
             </label>
             {form.secretKind !== "bearer"
               ? field(form.secretKind === "env" ? "变量名" : "请求头名", "secretName", {
@@ -572,6 +615,6 @@ export function McpSettings({ root, sessionId, onClose, onToast }: McpSettingsPr
       ) : !loadError ? (
         <p className="modal-desc">正在读取配置…</p>
       ) : null}
-    </Modal>
+    </>
   );
 }

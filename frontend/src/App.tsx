@@ -36,7 +36,7 @@ import {
 import { DRAFT_KEY, useChatStream } from "./useChatStream";
 import { MENTION_LIST_ID, MENTION_OPTION_PREFIX, MentionMenu } from "./MentionMenu";
 import type { MentionAnswer, MentionState } from "./MentionMenu";
-import { McpSettings } from "./McpSettings";
+import { ExtensionsSettings, type ExtensionTarget } from "./ExtensionsSettings";
 import { ModelPicker } from "./ModelPicker";
 import { currentTurn } from "./chatStream";
 import { artifactsToItems, historyToItems } from "./lib/history";
@@ -179,6 +179,9 @@ export default function App() {
   const [commandState, setCommandState] = useState<CommandMenuState>({ status: "loading" });
   // Bumped by the menu's retry, and by a change in the registered projects.
   const [commandRetry, setCommandRetry] = useState(0);
+  /** Bumped whenever the extensions dialog installs or saves something: the `/`
+   *  menu reads its sources again, so a new skill is selectable without a reload. */
+  const [extensionsRevision, setExtensionsRevision] = useState(0);
   // The menu entry the user picked. It stays only as long as the composer still
   // holds that command; see `activeCommandId`.
   const [pickedCommand, setPickedCommand] = useState<{ id: string; name: string } | null>(null);
@@ -452,7 +455,7 @@ export default function App() {
     return () => {
       live = false;
     };
-  }, [commandRetry, projectSig]);
+  }, [commandRetry, projectSig, extensionsRevision]);
   // A stable list per state: the keyboard handler below depends on it.
   const commands = useMemo(
     () => (commandState.status === "ready" ? commandState.commands : []),
@@ -771,9 +774,8 @@ export default function App() {
 
   // ---- project row actions (new chat / more menu) ----
   const [editTarget, setEditTarget] = useState<{ root: string | null; name: string } | null>(null);
-  /** The project whose MCP servers the settings dialog is editing. */
-  const [mcpOpen, setMcpOpen] = useState(false);
-  const [mcpRoot, setMcpRoot] = useState<string | null>(null);
+  /** The project whose skills and servers the extensions dialog is editing. */
+  const [extensionTarget, setExtensionTarget] = useState<ExtensionTarget | null>(null);
   const [removeTarget, setRemoveTarget] = useState<{ root: string | null; count: number } | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null);
@@ -851,15 +853,37 @@ export default function App() {
     [createAndOpen],
   );
 
+  /**
+   * Open the extensions dialog for one project.
+   *
+   * The target is fixed here, at the moment of the click: the dialog then
+   * describes one project's skills and servers even if the view moves on. A
+   * session is carried along only when it really runs in that project — its
+   * connection status says nothing about another project's servers.
+   */
+  const openExtensions = useCallback(
+    (initialTab: ExtensionTarget["initialTab"], root: string | null) => {
+      // Read from the session list rather than the view's own root: a session
+      // whose summary has not loaded yet must not be mistaken for a match.
+      const sameProject = currentSession !== undefined && (currentSession.root ?? null) === root;
+      setExtensionTarget({
+        root,
+        sessionId: sameProject && currentId ? currentId : null,
+        initialTab,
+      });
+    },
+    [currentId, currentSession],
+  );
+
   const runProjectAction = useCallback(
     async (root: string | null, action: ProjectAction) => {
       try {
         if (action === "edit") {
           const proj = root ? projectMeta.get(root) : projectMeta.get(null);
           setEditTarget({ root, name: proj?.name ?? (root ? basename(root) : DEFAULT_PROJECT) });
-        } else if (action === "mcp") {
-          setMcpRoot(root);
-          setMcpOpen(true);
+        } else if (action === "extensions") {
+          // The project whose row was acted on, not whatever is on screen.
+          openExtensions("skills", root);
         } else if (action === "pin" || action === "unpin") {
           const r = await pinProject(root, action === "pin");
           setProjects(r.projects);
@@ -894,6 +918,7 @@ export default function App() {
       }
     },
     [
+      openExtensions,
       projectMeta,
       refreshSessions,
       refreshArchived,
@@ -1549,10 +1574,7 @@ export default function App() {
         onTogglePin={togglePin}
         onDeleteSession={setDeleteTarget}
         onRestoreSession={restoreArchived}
-        onOpenMcp={() => {
-          setMcpRoot(currentId ? currentRoot : chosenRoot);
-          setMcpOpen(true);
-        }}
+        onOpenExtensions={() => openExtensions("skills", currentId ? currentRoot : chosenRoot)}
         onError={(msg) => showToast("err", msg)}
       />
       {sidebarOpen && (
@@ -1818,11 +1840,16 @@ export default function App() {
             仅在你确认模型和任务可信时使用。
           </p>
         </Modal>
-        {mcpOpen && (
-          <McpSettings
-            root={mcpRoot}
-            sessionId={currentId}
-            onClose={() => setMcpOpen(false)}
+        {extensionTarget && (
+          <ExtensionsSettings
+            // A new target is a new dialog: its tab, its loaded panels and the
+            // project it names all belong to this one opening.
+            key={`${extensionTarget.root ?? ""}|${extensionTarget.sessionId ?? ""}|${extensionTarget.initialTab}`}
+            {...extensionTarget}
+            projectName={projectLabel(extensionTarget.root)}
+            projectPath={extensionTarget.root ?? workspaces.default ?? null}
+            onClose={() => setExtensionTarget(null)}
+            onChanged={() => setExtensionsRevision((n) => n + 1)}
             onToast={showToast}
           />
         )}

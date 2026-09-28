@@ -762,33 +762,39 @@
   letter-spacing: -0.01em;
 }
 
-.brand-settings {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  margin-left: auto;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
+/* The extensions entry: a labelled row under the brand, above the directory
+   cards, so it reads as a place rather than as another icon button. */
+.side-ext {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
   background: transparent;
-  color: var(--ink-3);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 550;
   cursor: pointer;
-  transition: color 120ms, border-color 120ms;
+  transition: background 120ms, border-color 120ms, color 120ms;
 }
 
-.brand-settings svg {
+.side-ext svg {
   width: 15px;
   height: 15px;
+  flex: none;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.7;
+  stroke-width: 1.6;
 }
 
-.brand-settings:hover {
-  border-color: var(--line);
+.side-ext:hover {
+  border-color: var(--line-strong);
+  background: var(--hover);
   color: var(--ink);
 }
 
@@ -3590,13 +3596,82 @@
   cursor: not-allowed;
 }
 
-/* --------------------------------------------------------------- MCP 设置 */
+/* ------------------------------------------------------------------- 扩展 */
 
-/* The panel carries a form and a list, so it needs more room than the short
+/* The dialog carries a form and a list, so it needs more room than the short
    confirm dialogs it shares the modal shell with. */
-.mcp-settings-modal {
+.extensions-modal {
   width: min(560px, 100%);
 }
+
+.ext-target {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.ext-target-name {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ext-target-path {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.ext-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--inset);
+}
+
+.ext-tab {
+  flex: 1;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.ext-tab:hover {
+  color: var(--ink);
+}
+
+.ext-tab.on {
+  background: var(--field);
+  color: var(--ink);
+  box-shadow: var(--shadow-hairline);
+}
+
+/* Both panels stay mounted so an unsaved form survives a glance at the other
+   tab; ``hidden`` is what keeps the inactive one out of sight — and, because
+   the dialog's focus trap skips hidden subtrees, out of the Tab order too. */
+.ext-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ext-panel[hidden] {
+  display: none;
+}
+
+/* --------------------------------------------------------------- MCP 设置 */
 
 .modal-check {
   flex-direction: row;

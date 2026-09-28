@@ -1,10 +1,23 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode, type Ref } from "react";
 import { createPortal } from "react-dom";
 
 // Every focusable control that should participate in the dialog's Tab cycle.
 // Disabled controls are excluded so the trap never lands on an inert element.
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * The dialog's focusable controls, in document order.
+ *
+ * Controls inside a hidden or inert branch are left out: a tab panel that is
+ * kept mounted for its unsaved form must still not be reachable by Tab, or the
+ * trap would walk into fields the user cannot see.
+ */
+function focusableIn(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+    (el) => !el.closest("[hidden], [inert]"),
+  );
+}
 
 /**
  * Generic modal dialog.
@@ -30,6 +43,7 @@ export function Modal({
   variant,
   children,
   actions,
+  footerRef,
 }: {
   open: boolean;
   onClose: () => void;
@@ -38,6 +52,15 @@ export function Modal({
   variant?: string;
   children?: ReactNode;
   actions?: ReactNode;
+  /**
+   * The actions row itself, for a child that owns its own buttons.
+   *
+   * A panel with its own form state must not have that state lifted into the
+   * dialog just to render a busy-aware save button, so the row is published as
+   * a container the panel can portal into. Passing this without ``actions``
+   * still renders the row (empty), which is what the portal fills.
+   */
+  footerRef?: Ref<HTMLDivElement>;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   // Keep the latest onClose in a ref so the keydown effect can be stable (only
@@ -54,8 +77,8 @@ export function Modal({
 
     // Record the trigger and move focus into the dialog.
     restoreRef.current = (document.activeElement as HTMLElement | null) ?? null;
-    const first = cardRef.current?.querySelector<HTMLElement>(FOCUSABLE);
-    first?.focus();
+    const card = cardRef.current;
+    if (card) focusableIn(card)[0]?.focus();
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -67,7 +90,7 @@ export function Modal({
       if (e.key !== "Tab") return;
       const container = cardRef.current;
       if (!container) return;
-      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
+      const focusables = focusableIn(container);
       if (focusables.length === 0) {
         e.preventDefault();
         return;
@@ -116,7 +139,11 @@ export function Modal({
         <div className="modal-title">{title}</div>
         {/* Only the body scrolls: the title and the actions stay reachable. */}
         <div className="modal-body">{children}</div>
-        {actions ? <div className="modal-actions">{actions}</div> : null}
+        {actions || footerRef ? (
+          <div className="modal-actions" ref={footerRef}>
+            {actions}
+          </div>
+        ) : null}
       </div>
     </div>,
     document.body,
