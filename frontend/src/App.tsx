@@ -396,6 +396,7 @@ export default function App() {
     setItems,
     loadHistory,
     dropEntry,
+    forgetEntry,
     isStreaming,
   } = useChatStream({
     input,
@@ -414,6 +415,33 @@ export default function App() {
     onApprovalRequired: revealApproval,
     onSessionNamed: registerTab,
   });
+
+  /**
+   * Release every per-conversation cache this page holds for a deleted session.
+   *
+   * Only for a delete the server has confirmed: a closed tab or an archived
+   * conversation must keep everything, because reopening it reads these back.
+   * Callers own the tab list, the draft and the view, which differ per path.
+   */
+  const forgetSession = useCallback(
+    (id: string) => {
+      forgetEntry(id);
+      setArtifactRecords((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setPaneState((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      stickyRef.current?.forget(id);
+    },
+    [forgetEntry],
+  );
 
   // The message pane follows the live edge only while the reader is at it, and
   // remembers each conversation's place. Declared after the stream because it
@@ -842,6 +870,7 @@ export default function App() {
     // Only a successful delete drops the tab (and the draft it holds).
     setOpenTabs((prev) => prev.filter((t) => t !== target.id));
     drafts.clear(target.id);
+    forgetSession(target.id);
     // Clear the view only when it is still the one the delete targeted: a
     // switch during the delete must not blank the new view.
     if (isCurrent && openSeqRef.current === viewToken) openSession(null);
@@ -852,6 +881,7 @@ export default function App() {
     deleteTarget,
     currentId,
     drafts,
+    forgetSession,
     openSession,
     refreshSessions,
     refreshArchived,
@@ -980,11 +1010,19 @@ export default function App() {
     // Sessions of this project, captured now: a failed removal leaves every
     // tab where it was.
     const removed = sessions.filter((s) => (s.root ?? null) === removedRoot).map((s) => s.id);
+    // Archived conversations of that project are removed as well, so their
+    // caches have to go too — the sidebar just was not showing them.
+    const removedAll = [
+      ...new Set([...removed, ...archived.filter((s) => (s.root ?? null) === removedRoot).map((s) => s.id)]),
+    ];
     try {
       const r = await removeProject(removedRoot);
       setProjects(r.projects);
-      setOpenTabs((prev) => prev.filter((id) => !removed.includes(id)));
-      for (const id of removed) drafts.clear(id);
+      setOpenTabs((prev) => prev.filter((id) => !removedAll.includes(id)));
+      for (const id of removedAll) {
+        drafts.clear(id);
+        forgetSession(id);
+      }
       refreshSessions();
       refreshArchived();
       if (openSeqRef.current === viewToken) {
@@ -1001,7 +1039,9 @@ export default function App() {
     removeTarget,
     chooseRoot,
     drafts,
+    forgetSession,
     sessions,
+    archived,
     refreshSessions,
     refreshArchived,
     currentSession,
@@ -1061,6 +1101,7 @@ export default function App() {
           return;
         }
         drafts.clear(id);
+        forgetSession(id);
         refreshSessions();
       }
       setOpenTabs(remaining);
@@ -1077,6 +1118,7 @@ export default function App() {
       sessionById,
       drafts,
       dropEntry,
+      forgetSession,
       isStreaming,
       openSession,
       refreshSessions,

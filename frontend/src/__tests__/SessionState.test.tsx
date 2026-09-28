@@ -12,13 +12,18 @@ const m = vi.mocked(api);
 
 /** Captures every started stream so a test can drive them independently. */
 function captureStreams() {
-  const calls: Array<{ onEvent: (e: api.ChatEvent) => void; resolve: () => void }> = [];
-  m.streamChat.mockImplementation((_sid, _msg, cb) => {
+  const calls: Array<{
+    onEvent: (e: api.ChatEvent) => void;
+    resolve: () => void;
+    /** True once the caller aborted the request this call represents. */
+    aborted: () => boolean;
+  }> = [];
+  m.streamChat.mockImplementation((_sid, _msg, cb, opts) => {
     let resolve!: () => void;
     const done = new Promise<void>((res) => {
       resolve = res;
     });
-    calls.push({ onEvent: cb, resolve });
+    calls.push({ onEvent: cb, resolve, aborted: () => opts?.signal?.aborted === true });
     return done;
   });
   return calls;
@@ -432,5 +437,56 @@ describe("App · 草稿标签", () => {
     expect(m.fetchSession).not.toHaveBeenCalled();
     expect(screen.queryByText(/会话加载失败/)).toBeNull();
     expect(activeTitle()).toBe("新会话");
+  });
+});
+
+describe("App · 删除会话释放本机缓存", () => {
+  const artifact = (id: string, path: string): api.ArtifactRecord => ({
+    id,
+    name: "read_file",
+    args: { path },
+    result: JSON.stringify({
+      status: "ok",
+      path,
+      absolute_path: `/ws/${path}`,
+      start_line: 1,
+      end_line: 1,
+      total_lines: 1,
+      truncated: false,
+      lines: 1,
+      chars: 3,
+      content: "1: x",
+    }),
+  });
+
+  it("删除完成后到达的流事件不会把会话重新填回视图", async () => {
+    const user = userEvent.setup();
+    const streams = captureStreams();
+    m.fetchSessions.mockResolvedValue([session("A", "会话A"), session("B", "会话B")]);
+    m.fetchSession.mockImplementation((id: string) =>
+      Promise.resolve({
+        ...detail(id, id === "A" ? "会话A" : "会话B", []),
+        started: true,
+        artifacts: [artifact(`c-${id}`, `only-in-${id}.ts`)],
+      }),
+    );
+
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await user.type(composerField(), "问一句");
+    await user.click(screen.getByRole("button", { name: /发送消息/ }));
+    await waitFor(() => expect(streams.length).toBe(1));
+
+    await user.click(screen.getByRole("button", { name: /删除会话 会话A/ }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(m.deleteSession).toHaveBeenCalledWith("A"));
+
+    // The conversation is gone: the request it was streaming is aborted, which
+    // is what stops the page waiting on it, and a text event that was already
+    // on the wire no longer lands anywhere the view can read it back from.
+    expect(streams[0].aborted()).toBe(true);
+    await act(async () => streams[0].onEvent({ type: "text", content: "迟到的输出" }));
+    expect(screen.queryByText("迟到的输出")).toBeNull();
   });
 });

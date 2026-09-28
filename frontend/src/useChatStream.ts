@@ -84,11 +84,15 @@ export function useChatStream(params: UseChatStreamParams) {
   // conversation is still streaming (a render-scope read would be stale there).
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
+  // Conversations the server has confirmed deleted: events already in flight
+  // for them must not recreate an entry nobody can open any more.
+  const deletedKeys = useRef<Set<string>>(new Set());
 
   const viewKey = params.currentId ?? DRAFT_KEY;
 
   const patchEntry = useCallback(
     (key: string, patch: (entry: Entry) => Entry) => {
+      if (deletedKeys.current.has(key)) return;
       setEntries((prev) => {
         const entry = prev.get(key);
         if (!entry) return prev;
@@ -258,6 +262,24 @@ export function useChatStream(params: UseChatStreamParams) {
     });
   }, []);
 
+  /**
+   * Release a conversation the server has deleted, whatever it was doing.
+   *
+   * Unlike ``dropEntry`` this does not wait for a running turn: the session is
+   * gone, so the request is aborted and the key remembered, which is what makes
+   * a late event from that request a no-op instead of a resurrection.
+   */
+  const forgetEntry = useCallback((key: string) => {
+    deletedKeys.current.add(key);
+    setEntries((prev) => {
+      prev.get(key)?.request?.controller.abort();
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+
   const send = useCallback(async () => {
     const c = latest.current;
     const text = c.input.trim();
@@ -356,6 +378,7 @@ export function useChatStream(params: UseChatStreamParams) {
     setItems,
     loadHistory,
     dropEntry,
+    forgetEntry,
     isStreaming,
   };
 }

@@ -18,6 +18,8 @@ export interface StickToBottom {
   stick: () => void;
   /** Bring one element in the pane into view (a deliberate jump). */
   reveal: (selector: string) => void;
+  /** Drop one conversation's remembered place; it no longer exists. */
+  forget: (key: string) => void;
 }
 
 /**
@@ -145,5 +147,10 @@ export function useStickToBottom(
     [paneRef, schedule, stick],
   );
 
-  return { unread, stick, reveal };
+  // A conversation the server deleted leaves nothing to come back to.
+  const forget = useCallback((gone: string) => {
+    places.current.delete(gone);
+  }, []);
+
+  return { unread, stick, reveal, forget };
 }
