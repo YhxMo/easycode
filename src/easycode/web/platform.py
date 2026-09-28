@@ -9,8 +9,8 @@ import uuid
 from pathlib import Path
 
 from easycode.credentials import data_home
-from easycode.sandbox import child_env
-from easycode.workspace import PathContext
+from easycode.permissions.boundary import PathContext
+from easycode.permissions.sandbox import child_env
 
 FINDER_APPLESCRIPT = 'POSIX path of (choose folder with prompt "{prompt}"{multiple})'
 FINDER_MULTIPLE_SUFFIX = " with multiple selections allowed"

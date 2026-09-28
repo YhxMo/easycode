@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from easycode.workspace import PathContext, ToolGrant
+    from easycode.permissions.boundary import PathContext, ToolGrant
 
 MAX_DEFAULT_CHARS = 8000
 
@@ -67,7 +67,7 @@ def json_out(status: str, payload: dict) -> str:
 
 def tool_scope(root: Path, ctx: PathContext | None) -> PathContext:
     """Effective sandbox context for a tool call; ``root`` alone when absent."""
-    from easycode.workspace import PathContext
+    from easycode.permissions.boundary import PathContext
 
     return ctx if ctx is not None else PathContext(primary=root)
 

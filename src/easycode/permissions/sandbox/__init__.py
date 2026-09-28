@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 
-from easycode.sandbox.macos import sandbox_command
+from easycode.permissions.sandbox.macos import sandbox_command
 
 __all__ = ["child_env", "sandbox_command"]
 

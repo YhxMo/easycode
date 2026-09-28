@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
-from easycode.policy import cap_permission
+from easycode.permissions.policy import cap_permission
 
 if TYPE_CHECKING:
     from easycode.agent.loop import Agent, ToolCall

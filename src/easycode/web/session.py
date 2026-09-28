@@ -17,9 +17,9 @@ from typing import Any
 from easycode.agent.loop import Agent
 from easycode.credentials import data_home
 from easycode.models.base import DeferredProvider
-from easycode.policy import PERM_ALLOW_ALL, PERM_ASK
+from easycode.permissions.boundary import normalise_secondary, root_error
+from easycode.permissions.policy import PERM_ALLOW_ALL, PERM_ASK
 from easycode.web.turns import full_messages, repair_interrupted, split_legacy
-from easycode.workspace import normalise_secondary, root_error
 
 log = logging.getLogger("easycode.web.session")
 

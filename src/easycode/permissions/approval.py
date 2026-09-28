@@ -23,8 +23,8 @@ import shlex
 from pathlib import Path
 
 from easycode.models.base import ToolCall
-from easycode.policy import PERM_ALLOW_ALL
-from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
+from easycode.permissions.boundary import PathContext, ToolGrant, validate_writable_roots
+from easycode.permissions.policy import PERM_ALLOW_ALL
 
 NETWORK_HINTS = (
     "curl",

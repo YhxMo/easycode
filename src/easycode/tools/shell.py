@@ -7,11 +7,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from easycode.approval import destructive_command_reason
-from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
-from easycode.sandbox import child_env, sandbox_command
+from easycode.permissions.approval import destructive_command_reason
+from easycode.permissions.boundary import PathContext, ToolGrant, validate_writable_roots
+from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS
+from easycode.permissions.sandbox import child_env, sandbox_command
 from easycode.tools.registry import json_out, tool_scope
-from easycode.workspace import PathContext, ToolGrant, validate_writable_roots
 
 
 class ExecuteShellArgs(BaseModel):

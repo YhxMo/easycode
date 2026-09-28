@@ -25,12 +25,12 @@ from fastapi.testclient import TestClient
 from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.credentials import Credential, data_home, new_credential_id, save_credential
-from easycode.sandbox import child_env
+from easycode.permissions.boundary import PathContext, ToolGrant
+from easycode.permissions.sandbox import child_env
 from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.middleware import _origin_is_local
 from easycode.web.session import SessionStore
-from easycode.workspace import PathContext, ToolGrant
 from tests.conftest import FakeProvider
 
 # ----------------------------------------------------------------
@@ -116,7 +116,7 @@ def test_in_allowed_false_for_credentials_even_when_missing(tmp_path, monkeypatc
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
 def test_sandbox_command_grant_relaxes_network_not_bare(tmp_path):
-    from easycode.sandbox.macos import sandbox_command
+    from easycode.permissions.sandbox.macos import sandbox_command
 
     cmd = ["/bin/sh", "-c", "curl -I https://example.com"]
     ctx = PathContext(primary=tmp_path)
@@ -135,7 +135,7 @@ def test_sandbox_command_grant_relaxes_network_not_bare(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
 def test_approved_shell_still_cannot_write_credentials(tmp_path, monkeypatch):
-    from easycode.sandbox.macos import sandbox_command
+    from easycode.permissions.sandbox.macos import sandbox_command
 
     _, home = make_home_ctx(tmp_path)
     monkeypatch.setenv("HOME", str(home))
@@ -258,7 +258,7 @@ def test_destructive_shell_commands_are_denied_before_execution(tmp_path):
 
 
 def test_destructive_denylist_is_off_under_danger_full_access(tmp_path):
-    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+    from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS
 
     registry = build_registry(8000)
     ctx = PathContext(primary=tmp_path, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS)
@@ -272,7 +272,7 @@ def test_destructive_denylist_is_off_under_danger_full_access(tmp_path):
 
 
 def test_writable_roots_declaration_is_not_gated_under_danger_full_access(tmp_path):
-    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+    from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS
 
     registry = build_registry(8000)
     ext = tmp_path / "ext"
@@ -293,9 +293,9 @@ def test_writable_roots_declaration_is_not_gated_under_danger_full_access(tmp_pa
 
 
 def test_definitive_deny_reason_respects_sandbox_mode(tmp_path):
-    from easycode.approval import definitive_deny_reason
     from easycode.models.base import ToolCall
-    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+    from easycode.permissions.approval import definitive_deny_reason
+    from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS
 
     tc = ToolCall(id="t1", name="execute_shell", arguments={"command": "rm -rf /"})
     assert definitive_deny_reason(tc, PathContext(primary=tmp_path)) is not None
@@ -338,7 +338,7 @@ def test_secondary_root_keeps_workspace_access_but_protects_metadata(tmp_path):
 
 
 def test_normal_shell_commands_are_not_in_destructive_denylist(tmp_path):
-    from easycode.approval import destructive_command_reason
+    from easycode.permissions.approval import destructive_command_reason
 
     assert destructive_command_reason("git status --short") is None
     assert destructive_command_reason("pytest tests/test_permissions.py -q") is None
@@ -347,7 +347,7 @@ def test_normal_shell_commands_are_not_in_destructive_denylist(tmp_path):
 def test_file_tools_keep_protected_paths_closed_in_workspace_write(tmp_path):
     """The sandboxed presets keep the permanent write boundaries: neither a
     workspace-write context nor an approval grant may open them."""
-    from easycode.workspace import CONFIG_FILENAME
+    from easycode.permissions.boundary import CONFIG_FILENAME
 
     (tmp_path / ".git").mkdir()
     (tmp_path / ".easycode").mkdir()
@@ -365,7 +365,7 @@ def test_file_tools_keep_protected_paths_closed_in_workspace_write(tmp_path):
 
 
 def test_sandbox_command_grant_fails_closed_non_macos(monkeypatch, tmp_path):
-    import easycode.sandbox.macos as macos
+    import easycode.permissions.sandbox.macos as macos
 
     monkeypatch.setattr(sys, "platform", "linux")
     with pytest.raises(RuntimeError):
@@ -825,7 +825,7 @@ def test_finder_prompt_script_no_newline_and_quotes_escaped(tmp_path, monkeypatc
 
 def test_secret_policy_denies_data_home_writes(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.sandbox.macos import _secret_policy
+    from easycode.permissions.sandbox.macos import _secret_policy
 
     dh = data_home()
     policy = _secret_policy(include_write=True, protect_all_data_home=True)
@@ -838,7 +838,7 @@ def test_secret_policy_denies_data_home_writes(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
 def test_sandbox_command_profile_denies_data_home_write(tmp_path, monkeypatch):
-    from easycode.sandbox.macos import sandbox_command
+    from easycode.permissions.sandbox.macos import sandbox_command
 
     proj = tmp_path / "proj"
     proj.mkdir(exist_ok=True)
@@ -878,9 +878,9 @@ def test_shell_cannot_write_sessions_in_workspace_write(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_read_file_external_requires_approval_ask_mode(tmp_path, monkeypatch):
-    from easycode.approval import needs_approval
     from easycode.models.base import ToolCall
-    from easycode.workspace import PathContext
+    from easycode.permissions.approval import needs_approval
+    from easycode.permissions.boundary import PathContext
 
     home = tmp_path / "home"
     home.mkdir()
@@ -973,7 +973,7 @@ async def test_mcp_command_follows_the_session_sandbox_mode(monkeypatch, tmp_pat
     import contextlib
 
     from easycode import mcp as mcp_module
-    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+    from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS
 
     captured: list = []
 

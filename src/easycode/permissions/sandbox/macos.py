@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from easycode.credentials import data_home
-from easycode.workspace import (
+from easycode.permissions.boundary import (
     CONFIG_FILENAME,
     DATA_HOME_STATE_DIRS,
     PathContext,

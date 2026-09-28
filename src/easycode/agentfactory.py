@@ -102,7 +102,7 @@ def bind_agent(agent: Agent, cfg: Config, alias: str) -> Provider:
     returned for ``DeferredProvider``'s first resolve.
     """
     from easycode.agent.summarizer import LLMSummarizer
-    from easycode.reviewer import AutoReviewer
+    from easycode.permissions.reviewer import AutoReviewer
 
     model, kwargs = provider_kwargs(cfg, alias)
     provider = LiteLLMProvider(model, **kwargs)

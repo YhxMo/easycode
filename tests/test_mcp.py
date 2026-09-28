@@ -229,7 +229,7 @@ async def test_failed_connect_closes_connection(monkeypatch):
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_close_reaps_server_process(tmp_path):
     from easycode.mcp import MCPSessionManager
-    from easycode.workspace import PathContext
+    from easycode.permissions.boundary import PathContext
 
     pidfile = tmp_path / "mcp.pid"
     mgr = MCPSessionManager(
@@ -690,7 +690,7 @@ async def test_a_slow_tool_call_returns_an_error_instead_of_hanging():
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_a_server_that_never_initializes_times_out_without_leaking_a_child(tmp_path):
     from easycode.mcp import MCPSessionManager
-    from easycode.workspace import PathContext
+    from easycode.permissions.boundary import PathContext
 
     pidfile = tmp_path / "mcp.pid"
     raw = mcp_server_config(pidfile)

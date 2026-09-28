@@ -862,7 +862,7 @@ def test_classify_path_categories(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     import tempfile
 
-    from easycode.workspace import PathContext
+    from easycode.permissions.boundary import PathContext
 
     primary = tmp_path / "work"
     secondary = tmp_path / "other"
@@ -878,7 +878,7 @@ def test_classify_path_categories(tmp_path, monkeypatch):
 
 
 def test_in_allowed_with_extra_safe_dirs(tmp_path):
-    from easycode.workspace import PathContext
+    from easycode.permissions.boundary import PathContext
 
     extra = tmp_path / "notes"
     extra.mkdir()
@@ -891,8 +891,8 @@ def test_multi_root_write_and_read(tmp_path):
     """With a context of primary + secondary, tools reach both roots."""
     import json as _json
 
+    from easycode.permissions.boundary import PathContext
     from easycode.tools import build_registry
-    from easycode.workspace import PathContext
 
     reg = build_registry(8000)
     primary = tmp_path / "p"
@@ -923,8 +923,8 @@ def test_multi_root_write_and_read(tmp_path):
 def test_multi_root_glob_and_grep(tmp_path):
     import json as _json
 
+    from easycode.permissions.boundary import PathContext
     from easycode.tools import build_registry
-    from easycode.workspace import PathContext
 
     reg = build_registry(8000)
     primary = tmp_path / "p"
@@ -946,8 +946,8 @@ def test_multi_root_glob_and_grep(tmp_path):
 def test_write_outside_roots_reports_in_allowed(tmp_path):
     import json as _json
 
+    from easycode.permissions.boundary import PathContext
     from easycode.tools import build_registry
-    from easycode.workspace import PathContext
 
     reg = build_registry(8000)
     primary = tmp_path / "p"
@@ -1027,10 +1027,10 @@ def test_web_session_with_secondary_roots(tmp_path):
 
 def test_needs_approval_modes(tmp_path):
 
-    from easycode.approval import needs_approval
     from easycode.models.base import ToolCall
-    from easycode.policy import permission_parse
-    from easycode.workspace import PathContext
+    from easycode.permissions.approval import needs_approval
+    from easycode.permissions.boundary import PathContext
+    from easycode.permissions.policy import permission_parse
 
     primary = tmp_path / "work"
     primary.mkdir()

@@ -10,12 +10,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.config import Config
-from easycode.sandbox import sandbox_command
+from easycode.permissions.boundary import normalise_secondary, root_error
+from easycode.permissions.sandbox import sandbox_command
 from easycode.web.platform import WorktreeAddError, choose_folders_via_finder, finder_supported
 from easycode.web.platform import create_worktree as platform_create_worktree
 from easycode.web.platform import reveal_in_finder as platform_reveal
 from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
-from easycode.workspace import normalise_secondary, root_error
 
 
 class ChooseWorkspaceRequest(BaseModel):

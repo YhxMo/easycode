@@ -18,8 +18,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from easycode.permissions.boundary import PathContext, ToolGrant
 from easycode.tools.registry import json_out, tool_scope
-from easycode.workspace import PathContext, ToolGrant
 
 #: Dependency, cache and build directories: skipped in every mode, because
 #: descending into them is cost without content.

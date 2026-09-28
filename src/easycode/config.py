@@ -10,8 +10,8 @@ from typing import Any
 from dotenv import load_dotenv
 
 from easycode.agent.compaction import COMPACTION_DEFAULTS
-from easycode.policy import PERM_ASK, permission_parse
-from easycode.workspace import CONFIG_FILENAME, PathContext, resolve_workspace_path
+from easycode.permissions.boundary import CONFIG_FILENAME, PathContext, resolve_workspace_path
+from easycode.permissions.policy import PERM_ASK, permission_parse
 
 DEFAULT_MAX_TOOL_RESULT_CHARS = 8000
 DEFAULT_MAX_CONTEXT_TOKENS = 32_000

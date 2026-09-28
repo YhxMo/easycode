@@ -20,8 +20,8 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from easycode.permissions.boundary import PathContext, root_error
 from easycode.tools.files import MAX_READ_BYTES, _iter_files, _read_window
-from easycode.workspace import PathContext, root_error
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 1000

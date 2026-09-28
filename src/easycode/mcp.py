@@ -36,8 +36,8 @@ from easycode.mcp_config import (
     mcp_cache_dir,
     resolve_cwd,
 )
-from easycode.sandbox import child_env, sandbox_command
-from easycode.workspace import PathContext, ToolGrant
+from easycode.permissions.boundary import PathContext, ToolGrant
+from easycode.permissions.sandbox import child_env, sandbox_command
 
 log = logging.getLogger("easycode.mcp")
 

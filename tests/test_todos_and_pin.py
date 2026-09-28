@@ -9,8 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from easycode.agent.loop import Agent
-from easycode.approval import needs_approval
 from easycode.config import Config
+from easycode.permissions.approval import needs_approval
 from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.session import SessionStore

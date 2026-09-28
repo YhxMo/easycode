@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from easycode.credentials import data_home
-from easycode.workspace import CONFIG_FILENAME, PathContext, resolve_workspace_path
+from easycode.permissions.boundary import CONFIG_FILENAME, PathContext, resolve_workspace_path
 
 PERSONAL_FILENAME = "mcp.json"
 

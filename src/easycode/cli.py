@@ -17,7 +17,8 @@ from prompt_toolkit.keys import Keys
 from easycode.agent.loop import Agent, file_change
 from easycode.agentfactory import bind_agent, make_agent
 from easycode.config import Config
-from easycode.policy import PERM_ALLOW_ALL
+from easycode.permissions.boundary import root_error
+from easycode.permissions.policy import PERM_ALLOW_ALL
 from easycode.ui.render import (
     banner,
     console,
@@ -25,7 +26,6 @@ from easycode.ui.render import (
     render_event,
     show_diff_summary,
 )
-from easycode.workspace import root_error
 
 if TYPE_CHECKING:
     from easycode.commands import CommandRegistry
@@ -167,7 +167,7 @@ def main(
 ) -> None:
     cfg = Config.load(start=root)
     if permission:
-        from easycode.policy import permission_parse
+        from easycode.permissions.policy import permission_parse
 
         cfg.permission_mode = permission_parse(permission)
     if cfg.permission_mode == PERM_ALLOW_ALL:

@@ -59,7 +59,7 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         is a 422, and a failed agent build (e.g. no usable default model) leaves
         no session behind.
         """
-        from easycode.policy import permission_parse, require_full_access_consent
+        from easycode.permissions.policy import permission_parse, require_full_access_consent
         from easycode.web.routes_workspaces import _normalise_root
 
         kwargs: dict = {}
@@ -118,8 +118,8 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
         is written, and the move is applied under the session's own lock, so a
         refused request leaves the session exactly as it was.
         """
+        from easycode.permissions.boundary import root_error
         from easycode.web.routes_workspaces import _normalise_root, build_projects
-        from easycode.workspace import root_error
 
         cfg = store.cfg
         sess = store.get(session_id)
@@ -247,7 +247,7 @@ def register_sessions(app: FastAPI, store: SessionStore, broker: ApprovalBroker)
 
     @app.post("/api/sessions/{session_id}/permission")
     async def set_session_permission(session_id: str, req: PermissionRequest) -> dict:
-        from easycode.policy import permission_parse, require_full_access_consent
+        from easycode.permissions.policy import permission_parse, require_full_access_consent
 
         sess = store.get(session_id)
         if sess is None:

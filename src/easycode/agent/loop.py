@@ -22,15 +22,16 @@ from easycode.agent.compaction import COMPACTION_DEFAULTS, Compactor
 from easycode.agent.context import History
 from easycode.agent.summarizer import Summarizer
 from easycode.agent.system import build_system_prompt, find_agents_rules
-from easycode.approval import (
+from easycode.models.base import Provider, ToolCall
+from easycode.permissions.approval import (
     approval_key,
     approval_reason,
     definitive_deny_reason,
     grant_for_toolcall,
     needs_approval,
 )
-from easycode.models.base import Provider, ToolCall
-from easycode.policy import (
+from easycode.permissions.boundary import PathContext, ToolGrant
+from easycode.permissions.policy import (
     APPROVAL_NEVER,
     PERM_ASK,
     PERM_AUTO_REVIEW,
@@ -38,9 +39,8 @@ from easycode.policy import (
     ExecutionPolicy,
     permission_rule_action,
 )
-from easycode.reviewer import ReviewDecision
+from easycode.permissions.reviewer import ReviewDecision
 from easycode.tools.registry import ToolRegistry
-from easycode.workspace import PathContext, ToolGrant
 
 if TYPE_CHECKING:
     from easycode.agents import AgentRegistry

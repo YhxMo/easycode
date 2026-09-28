@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from easycode.config import Config
+from easycode.permissions.boundary import resolve_workspace_path, root_error
 from easycode.skills import MCP_COMMAND_PREFIX, SkillRegistry
 from easycode.web.bridge import (
     ApprovalBroker,
@@ -26,7 +27,6 @@ from easycode.web.bridge import (
     turn_accepted_sse,
 )
 from easycode.web.session import Session, SessionStore
-from easycode.workspace import resolve_workspace_path, root_error
 
 log = logging.getLogger("easycode.web.chat")
 
@@ -419,7 +419,7 @@ def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: Approv
             raise HTTPException(422, "edit_turn_id needs an existing session")
         if req.edit_turn_id and req.expected_revision is None:
             raise HTTPException(422, "编辑需要携带 expected_revision")
-        from easycode.policy import permission_parse, require_full_access_consent
+        from easycode.permissions.policy import permission_parse, require_full_access_consent
 
         perm_mode: str | None = None
         if req.permission_mode:

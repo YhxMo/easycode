@@ -16,10 +16,10 @@ import pytest
 from easycode.agent.builtin_tools import make_subagent
 from easycode.agent.loop import Agent
 from easycode.models.base import ToolCall
-from easycode.policy import ExecutionPolicy, cap_permission, permission_rule_action
-from easycode.reviewer import ReviewDecision
+from easycode.permissions.boundary import PathContext, ToolGrant
+from easycode.permissions.policy import ExecutionPolicy, cap_permission, permission_rule_action
+from easycode.permissions.reviewer import ReviewDecision
 from easycode.tools import build_registry
-from easycode.workspace import PathContext, ToolGrant
 from tests.conftest import FakeProvider
 from tests.helpers_history import assert_valid_tool_protocol
 
@@ -169,7 +169,7 @@ async def test_approval_identity_binds_capabilities_and_is_reused(tmp_path):
     """The loop hands the handler a capability-bound identity: the same command
     with different granted capabilities must not silently reuse an earlier
     'always allow'; an identical call does reuse it."""
-    from easycode.approval import approval_key, grant_for_toolcall
+    from easycode.permissions.approval import approval_key, grant_for_toolcall
 
     ext = tmp_path / "ext"
     ext.mkdir()
@@ -218,7 +218,7 @@ async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
     returned grant and regenerate the precise grant for the capped subagent.
     """
     from easycode.agents import AgentRegistry, AgentSpec
-    from easycode.approval import grant_for_toolcall
+    from easycode.permissions.approval import grant_for_toolcall
 
     root = tmp_path / "proj"
     root.mkdir()
@@ -426,7 +426,7 @@ async def test_auto_reviewer_can_approve_exact_external_write(tmp_path):
 
 
 def test_approval_scope_and_key_for_file_tools():
-    from easycode.approval import approval_key, approval_scope
+    from easycode.permissions.approval import approval_key, approval_scope
 
     tc = ToolCall(id="c1", name="write_file", arguments={"path": "/tmp/easycode-test-project/foo.txt", "content": "x"})
     assert approval_scope(tc) == "/tmp/easycode-test-project/*"
@@ -451,7 +451,7 @@ def test_approval_key_uses_full_command_hash_and_is_stable():
     truncated prefix. Two commands sharing the first 80 chars but differing in
     the tail must produce different keys; an identical command must produce the
     same key on every call."""
-    from easycode.approval import approval_key
+    from easycode.permissions.approval import approval_key
 
     prefix80 = "echo " + ("a" * 75)  # exactly 80 characters
     c1 = prefix80 + "one"
@@ -472,7 +472,7 @@ def test_approval_key_uses_full_command_hash_and_is_stable():
 
 
 def test_approval_reason_is_categorical(tmp_path):
-    from easycode.approval import approval_reason
+    from easycode.permissions.approval import approval_reason
 
     ctx = PathContext(primary=tmp_path)
     external = ToolCall(id="c1", name="write_file", arguments={"path": str(tmp_path.parent / "x.txt"), "content": "x"})
@@ -496,8 +496,8 @@ def test_approval_reason_is_categorical(tmp_path):
 def test_data_home_state_dirs_need_approval_but_worktrees_stay_writable(tmp_path, monkeypatch):
     """DEC-T3: ~/.easycode state dirs are no longer silently writable."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.approval import needs_approval
     from easycode.credentials import data_home
+    from easycode.permissions.approval import needs_approval
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -619,7 +619,7 @@ def test_git_easycode_and_config_hard_denied_everywhere(tmp_path):
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
 def test_grant_external_writable_root_succeeds_neighbor_fails(tmp_path):
     """A precise writable-root grant lets a shell write there, but not next door."""
-    from easycode.sandbox.macos import sandbox_command
+    from easycode.permissions.sandbox.macos import sandbox_command
 
     primary = tmp_path / "p"
     ext = tmp_path / "ext"
@@ -664,7 +664,7 @@ def test_grant_external_writable_root_succeeds_neighbor_fails(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
 def test_grant_network_and_file_dimensions_are_separate(tmp_path):
-    from easycode.sandbox.macos import sandbox_command
+    from easycode.permissions.sandbox.macos import sandbox_command
 
     primary = tmp_path / "p"
     ext = tmp_path / "ext"
@@ -683,7 +683,7 @@ def test_grant_network_and_file_dimensions_are_separate(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt integration is macOS-only")
 def test_grant_protects_git_under_grant_root(tmp_path):
-    from easycode.sandbox.macos import sandbox_command
+    from easycode.permissions.sandbox.macos import sandbox_command
 
     primary = tmp_path / "p"
     groot = tmp_path / "groot"
@@ -705,8 +705,8 @@ def test_grant_protects_git_under_grant_root(tmp_path):
 
 def test_shell_writable_roots_validation_fails_closed(tmp_path):
     """Invalid / un-granted writable_roots declaration never grants external writes."""
-    from easycode.approval import needs_approval
     from easycode.models.base import ToolCall
+    from easycode.permissions.approval import needs_approval
     from easycode.tools import build_registry
 
     proj = tmp_path / "proj"
@@ -751,8 +751,8 @@ def test_shell_writable_roots_validation_fails_closed(tmp_path):
 
 
 def test_shell_grant_for_toolcall_uses_declared_roots(tmp_path):
-    from easycode.approval import grant_for_toolcall
     from easycode.models.base import ToolCall
+    from easycode.permissions.approval import grant_for_toolcall
 
     proj = tmp_path / "proj"
     ext = tmp_path / "ext"
@@ -838,8 +838,8 @@ def test_shell_grant_approved_explicit_root_succeeds_neighbor_fails(tmp_path):
 
 def test_grant_for_toolcall_mixed_invalid_roots_no_grant(tmp_path):
     """A single invalid writable_roots entry voids the whole grant (fail closed)."""
-    from easycode.approval import grant_for_toolcall
     from easycode.models.base import ToolCall
+    from easycode.permissions.approval import grant_for_toolcall
 
     proj = tmp_path / "proj"
     ext = tmp_path / "ext"
@@ -865,8 +865,8 @@ def test_grant_for_toolcall_mixed_invalid_roots_no_grant(tmp_path):
 
 def test_file_tool_target_git_easycode_denied_even_with_grant(tmp_path):
     """write_file to .git/.easycode is permanently denied — a grant cannot enable it."""
-    from easycode.approval import grant_for_toolcall
     from easycode.models.base import ToolCall
+    from easycode.permissions.approval import grant_for_toolcall
     from easycode.tools import build_registry
 
     proj = tmp_path / "proj"
@@ -972,7 +972,7 @@ def test_system_prompt_mentions_writable_roots(tmp_path):
 
 
 def _full_access_ctx(primary: Path, **kw) -> PathContext:
-    from easycode.policy import SANDBOX_DANGER_FULL_ACCESS
+    from easycode.permissions.policy import SANDBOX_DANGER_FULL_ACCESS
 
     return PathContext(primary=primary, sandbox_mode=SANDBOX_DANGER_FULL_ACCESS, **kw)
 
@@ -981,7 +981,7 @@ def test_full_access_reports_no_protected_paths(tmp_path, monkeypatch):
     """保护判定随模式变化：完全访问下没有任何永久边界，模式之外一律保留。"""
     monkeypatch.setenv("HOME", str(tmp_path))
     from easycode.credentials import data_home
-    from easycode.workspace import CONFIG_FILENAME
+    from easycode.permissions.boundary import CONFIG_FILENAME
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -1019,7 +1019,7 @@ def test_full_access_file_tools_read_and_write_protected_paths(tmp_path, monkeyp
     """`.git`、`.easycode`、项目配置、凭据、会话文件与工作区外绝对路径都可读写。"""
     monkeypatch.setenv("HOME", str(tmp_path))
     from easycode.credentials import data_home
-    from easycode.workspace import CONFIG_FILENAME
+    from easycode.permissions.boundary import CONFIG_FILENAME
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -1094,7 +1094,7 @@ def test_full_access_grep_and_glob_reach_the_git_dir(tmp_path):
 def test_full_access_shell_runs_unwrapped_on_every_platform(tmp_path, monkeypatch, platform):
     """完全访问不再套 Seatbelt（其他平台本来也只有这一种可执行方式），
     ``child_env`` 的密钥清洗仍然保留。"""
-    import easycode.sandbox.macos as macos
+    import easycode.permissions.sandbox.macos as macos
 
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-secret")
@@ -1128,7 +1128,11 @@ def test_full_access_shell_runs_unwrapped_on_every_platform(tmp_path, monkeypatc
 def test_full_access_does_not_prompt_or_deny(tmp_path, monkeypatch):
     """完全访问下不生成 ToolGrant、不触发审批 handler，也不被破坏性命令拦截。"""
     monkeypatch.setenv("HOME", str(tmp_path))
-    from easycode.approval import definitive_deny_reason, grant_for_toolcall, needs_approval
+    from easycode.permissions.approval import (
+        definitive_deny_reason,
+        grant_for_toolcall,
+        needs_approval,
+    )
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -1191,7 +1195,7 @@ async def test_full_access_turn_writes_protected_path_without_asking(tmp_path, m
 
 
 def test_require_full_access_consent_gate():
-    from easycode.policy import require_full_access_consent
+    from easycode.permissions.policy import require_full_access_consent
 
     require_full_access_consent("ask", False)
     require_full_access_consent("auto-review", False)

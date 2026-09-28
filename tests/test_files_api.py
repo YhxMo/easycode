@@ -434,7 +434,7 @@ def test_preview_reads_a_large_file_in_bounded_chunks(tmp_path, monkeypatch):
 def test_full_access_previews_any_host_path(tmp_path):
     """完全访问会话的预览与其工具的边界一致：项目元数据、凭据与工作区外
     绝对路径都能打开；普通模式继续按工作区与保护策略拒绝。"""
-    from easycode.policy import PERM_ALLOW_ALL
+    from easycode.permissions.policy import PERM_ALLOW_ALL
 
     _workspace(tmp_path)
     outside = tmp_path.parent / f"outside-preview-{tmp_path.name}.txt"

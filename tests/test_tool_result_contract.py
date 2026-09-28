@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from easycode.permissions.boundary import PathContext
 from easycode.tools import build_registry
-from easycode.workspace import PathContext
 
 FIXTURES = (
     Path(__file__).resolve().parents[1]

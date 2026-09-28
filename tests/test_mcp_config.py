@@ -23,7 +23,7 @@ from easycode.mcp_config import (
     scope_config_path,
     write_scope,
 )
-from easycode.workspace import PathContext
+from easycode.permissions.boundary import PathContext
 
 
 def store_from(tmp_path) -> CredentialStore:

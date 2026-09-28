@@ -514,7 +514,7 @@ def test_save_project_with_session_id_updates_session(tmp_path):
 def test_root_error_rejects_sensitive_descendants_and_symlinks(tmp_path, monkeypatch):
     """DEC-T5: the whole media path is checked, not only the last name."""
     from easycode.credentials import data_home
-    from easycode.workspace import root_error
+    from easycode.permissions.boundary import root_error
 
     proj = tmp_path / "proj"
     objects = proj / ".git" / "objects"
@@ -547,7 +547,7 @@ def test_root_error_rejects_sensitive_descendants_and_symlinks(tmp_path, monkeyp
 def test_shell_grant_root_keeps_sensitive_children_protected(tmp_path):
     """An approval grant for an external directory must not lift the
     .git/.easycode/config protections inside that directory."""
-    from easycode.workspace import CONFIG_FILENAME, PathContext, ToolGrant
+    from easycode.permissions.boundary import CONFIG_FILENAME, PathContext, ToolGrant
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -567,9 +567,9 @@ def test_primary_root_validated_like_other_roots(tmp_path):
     """DEC-T5: the primary root must pass root_error; worktrees stay exempt."""
     from easycode.agent.loop import Agent
     from easycode.credentials import data_home
+    from easycode.permissions.boundary import root_error
     from easycode.tools import build_registry
     from easycode.web.session import SessionStore
-    from easycode.workspace import root_error
     from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"

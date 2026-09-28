@@ -181,7 +181,7 @@ async def stream_chat_with_approval(
             agent.active_turn = turn
 
         async def approval_handler(tc: ToolCall, reason: str, identity: str) -> bool:
-            from easycode.approval import approval_scope
+            from easycode.permissions.approval import approval_scope
 
             scope = approval_scope(tc)
             if session and identity in session.always_allow:
