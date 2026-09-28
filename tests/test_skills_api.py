@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import easycode.web.routes_skills as routes_skills
+import easycode.web.routes.skills as routes_skills
 from easycode.config import Config
 from easycode.web.main import create_app
 

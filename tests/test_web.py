@@ -487,7 +487,7 @@ def test_reveal_unavailable_on_non_darwin(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(cmd, 0, "", "")
         return real_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr("easycode.web.platform.subprocess.run", fake_run)
+    monkeypatch.setattr("easycode.web.finder.subprocess.run", fake_run)
 
     r = client.post("/api/workspaces/reveal", json={"root": str(repo)})
     assert r.status_code == 200

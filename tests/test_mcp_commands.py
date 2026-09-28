@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from easycode.config import Config
 from easycode.web.main import create_app
-from easycode.web.routes_chat import mcp_command_id
+from easycode.web.routes.chat import mcp_command_id
 
 
 def demo_server(**extra):

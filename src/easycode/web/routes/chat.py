@@ -136,7 +136,7 @@ def _draft_roots(
 
     ``secondary_raw=None`` inherits the project binding; ``[]`` is explicit.
     """
-    from easycode.web.routes_workspaces import _normalise_root
+    from easycode.web.routes.workspaces import _normalise_root
 
     root = _normalise_root(root_raw)
     secondary = [str(p) for p in store._resolve_secondary(root, secondary_raw)]
@@ -192,7 +192,7 @@ def _command_entries(cfg: Config, store: SessionStore) -> tuple[list[tuple[dict,
     """
     from easycode.extensions.commands import personal_commands, project_commands, skill_command
     from easycode.extensions.skills import personal_skills, project_skills
-    from easycode.web.routes_workspaces import build_projects
+    from easycode.web.routes.workspaces import build_projects
 
     out: list[tuple[dict, Command]] = []
     errors: list[str] = []
@@ -328,7 +328,7 @@ def _expand_by_id(command_id: str, message: str, cfg: Config, store: SessionStor
 
 def register_chat(app: FastAPI, cfg: Config, store: SessionStore, broker: ApprovalBroker) -> None:
     """Connect chat and command endpoints to this app's session store."""
-    from easycode.web.routes_workspaces import _normalise_root, _session_primary
+    from easycode.web.routes.workspaces import _normalise_root, _session_primary
     from easycode.web.session import project_key
 
     def _get_session(session_id: str | None, **agent_kwargs: object) -> Session:

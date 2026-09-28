@@ -616,7 +616,7 @@ def test_worktreeinclude_copies_valid_entries(tmp_path):
 
 
 def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatch):
-    import easycode.web.routes_workspaces as main_mod
+    import easycode.web.routes.workspaces as main_mod
 
     client = make_app(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup")
@@ -645,7 +645,7 @@ def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatc
 
 
 def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, monkeypatch):
-    import easycode.web.routes_workspaces as main_mod
+    import easycode.web.routes.workspaces as main_mod
 
     client = make_app(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup-nosand")
@@ -767,24 +767,24 @@ def test_grant_root_shell_cannot_write_metadata(tmp_path):
 
 
 def test_finder_prompt_sanitizer_strips_controls_and_caps():
-    import easycode.web.platform as platform_mod
+    import easycode.web.finder as finder_mod
 
     raw = "a\nb\tc\x00d" + "x" * 1000
-    out = platform_mod._sanitize_finder_prompt(raw)
+    out = finder_mod._sanitize_finder_prompt(raw)
     assert "\n" not in out
     assert "\t" not in out
     assert "\x00" not in out
     # length-capped for the script literal
-    assert len(out) == platform_mod.FINDER_PROMPT_MAX_LEN
+    assert len(out) == finder_mod.FINDER_PROMPT_MAX_LEN
     # leading/trailing whitespace is trimmed
-    assert platform_mod._sanitize_finder_prompt("   hi  ") == "hi"
+    assert finder_mod._sanitize_finder_prompt("   hi  ") == "hi"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 def test_finder_prompt_script_no_newline_and_quotes_escaped(tmp_path, monkeypatch):
     import subprocess as sp
 
-    import easycode.web.routes_workspaces as main_mod
+    import easycode.web.routes.workspaces as main_mod
 
     monkeypatch.setattr(main_mod, "finder_supported", lambda: True)
     captured: dict[str, list[str]] = {}

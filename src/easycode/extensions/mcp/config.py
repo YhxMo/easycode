@@ -570,7 +570,7 @@ def known_projects(cfg, store) -> list[dict[str, Any]]:
     Registered projects and the configured default workspace, never the process
     CWD: the server's own directory is not the user's project.
     """
-    from easycode.web.routes_workspaces import build_projects
+    from easycode.web.routes.workspaces import build_projects
 
     out: list[dict[str, Any]] = []
     seen: set[str] = set()

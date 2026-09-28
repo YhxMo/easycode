@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from easycode.config import API_FORMATS, DEFAULT_API_FORMAT, Config
-from easycode.web import services
+from easycode.web import model_admin
 from easycode.web.session import SessionStore, idle_sessions, run_mutation
 
 
@@ -37,7 +37,7 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
     @app.get("/api/models")
     def get_models() -> dict:
         """Return model records without exposing API keys (in-memory config)."""
-        return services.models_response(cfg)
+        return model_admin.models_response(cfg)
 
     @app.post("/api/models/add")
     async def add_model(req: AddModelRequest) -> dict:
@@ -51,7 +51,7 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         async with store.config_change():
             if alias in cfg.models:
                 raise HTTPException(409, f"model alias already exists: {alias}")
-            return services.add_model(
+            return model_admin.add_model(
                 cfg,
                 alias=alias,
                 model=model,
@@ -72,7 +72,7 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         """
         if cfg.models.get(alias) is None:
             raise HTTPException(404, f"unknown alias: {alias}")
-        return services.get_model_detail(cfg, alias)
+        return model_admin.get_model_detail(cfg, alias)
 
     @app.put("/api/models/{alias}")
     async def update_model(alias: str, req: UpdateModelRequest) -> dict:
@@ -92,7 +92,7 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
             affected = [s for s in store.list() if s.model_alias == alias]
             async with idle_sessions(affected):
                 return await run_mutation(
-                    services.update_model,
+                    model_admin.update_model,
                     cfg,
                     store,
                     affected,
@@ -114,7 +114,7 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
             affected = [s for s in store.list() if s.model_alias == alias]
             async with idle_sessions(affected):
                 return await run_mutation(
-                    services.delete_model, cfg, store, affected, alias=alias
+                    model_admin.delete_model, cfg, store, affected, alias=alias
                 )
 
     @app.post("/api/models")
@@ -131,7 +131,7 @@ def register_models(app: FastAPI, cfg: Config, store: SessionStore) -> None:
             try:
                 async with idle_sessions(sessions):
                     return await run_mutation(
-                        services.switch_default, cfg, store, sessions, alias=req.alias
+                        model_admin.switch_default, cfg, store, sessions, alias=req.alias
                     )
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc

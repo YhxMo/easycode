@@ -552,7 +552,7 @@ def test_update_model_rebinds_only_given_sessions(tmp_path):
     created after the snapshot must not be rebound without its lock."""
     from easycode.agent.loop import Agent
     from easycode.tools import build_registry
-    from easycode.web import services
+    from easycode.web import model_admin as services
     from easycode.web.session import SessionStore
     from tests.conftest import FakeProvider
 
@@ -1494,7 +1494,7 @@ async def test_cancelled_model_edit_finishes_before_next_chat(tmp_path, monkeypa
 
     import httpx
 
-    from easycode.web import services
+    from easycode.web import model_admin as services
     from tests.helpers_web import wait_until
 
     app = make_app(tmp_path).app

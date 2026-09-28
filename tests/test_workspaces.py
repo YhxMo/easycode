@@ -273,7 +273,7 @@ def test_chat_root_with_secondary_roots(tmp_path):
 
 
 def test_choose_workspaces_endpoint(tmp_path, monkeypatch):
-    import easycode.web.routes_workspaces as m
+    import easycode.web.routes.workspaces as m
 
     monkeypatch.setattr(m, "finder_supported", lambda: True)
     monkeypatch.setattr(
@@ -312,7 +312,7 @@ def test_choose_workspaces_endpoint(tmp_path, monkeypatch):
 
 
 def test_choose_unsupported_returns_empty(tmp_path, monkeypatch):
-    import easycode.web.routes_workspaces as m
+    import easycode.web.routes.workspaces as m
 
     monkeypatch.setattr(m, "finder_supported", lambda: False)
     monkeypatch.setattr(
@@ -776,7 +776,7 @@ def test_move_rejects_a_bad_root_or_secondary_without_partial_update(tmp_path):
 
 def test_merge_projects_union_metadata_and_pinning():
     """Config entries keep their naming; history only adds secondaries."""
-    from easycode.web.routes_workspaces import merge_projects
+    from easycode.web.routes.workspaces import merge_projects
 
     base = [
         {"root": None, "secondary": ["/a"], "name": "默认"},
@@ -873,16 +873,16 @@ def test_worktree_skips_apply_when_there_is_nothing_to_apply(tmp_path, monkeypat
     """A clean checkout must not run a diff at all."""
     client = _worktree_client(tmp_path)
     repo = _git_repo(tmp_path)
-    import easycode.web.platform as platform
+    import easycode.web.worktree as worktree
 
     seen: list[list[str]] = []
-    real_run = platform.subprocess.run
+    real_run = worktree.subprocess.run
 
     def spy(cmd, **kwargs):
         seen.append(list(cmd))
         return real_run(cmd, **kwargs)
 
-    monkeypatch.setattr(platform.subprocess, "run", spy)
+    monkeypatch.setattr(worktree.subprocess, "run", spy)
     r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
 
     assert r.status_code == 200, r.text
@@ -895,9 +895,9 @@ def test_worktree_survives_a_patch_that_does_not_apply(tmp_path, monkeypatch):
     client = _worktree_client(tmp_path)
     repo = _git_repo(tmp_path)
     (repo / "f.txt").write_text("hello\nchanged\n", encoding="utf-8")
-    import easycode.web.platform as platform
+    import easycode.web.worktree as worktree
 
-    real_run = platform.subprocess.run
+    real_run = worktree.subprocess.run
 
     def corrupting(cmd, **kwargs):
         res = real_run(cmd, **kwargs)
@@ -905,7 +905,7 @@ def test_worktree_survives_a_patch_that_does_not_apply(tmp_path, monkeypatch):
             res.stdout = "this is not a patch\n"
         return res
 
-    monkeypatch.setattr(platform.subprocess, "run", corrupting)
+    monkeypatch.setattr(worktree.subprocess, "run", corrupting)
     r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
 
     assert r.status_code == 200, r.text

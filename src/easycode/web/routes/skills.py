@@ -30,7 +30,7 @@ from easycode.extensions.skills import (
     personal_skills_dir,
     project_skills_dir,
 )
-from easycode.web.routes_workspaces import _normalise_root
+from easycode.web.routes.workspaces import _normalise_root
 from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
 
 log = logging.getLogger("easycode.web.skills")

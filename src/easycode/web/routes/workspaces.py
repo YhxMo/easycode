@@ -12,10 +12,16 @@ from pydantic import BaseModel
 from easycode.config import Config
 from easycode.permissions.boundary import normalise_secondary, root_error
 from easycode.permissions.sandbox import sandbox_command
-from easycode.web.platform import WorktreeAddError, choose_folders_via_finder, finder_supported
-from easycode.web.platform import create_worktree as platform_create_worktree
-from easycode.web.platform import reveal_in_finder as platform_reveal
+from easycode.web.finder import (
+    choose_folders_via_finder,
+    finder_supported,
+)
+from easycode.web.finder import (
+    reveal_in_finder as finder_reveal,
+)
 from easycode.web.session import Session, SessionStore, idle_sessions, project_key, run_mutation
+from easycode.web.worktree import WorktreeAddError
+from easycode.web.worktree import create_worktree as worktree_add
 
 
 class ChooseWorkspaceRequest(BaseModel):
@@ -199,7 +205,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
         if not (req.root or Path(cfg.root).is_dir()):
             return {"ok": False, "supported": False, "error": "no directory"}
         path = _normalise_root(req.root) or str(cfg.root)
-        return platform_reveal(path)
+        return finder_reveal(path)
 
     @app.post("/api/workspaces/projects/remove")
     async def remove_project(req: RemoveProjectRequest) -> dict:
@@ -250,7 +256,7 @@ def register_workspaces(app: FastAPI, cfg: Config, store: SessionStore) -> None:
             raise HTTPException(422, f"not a directory: {root}")
         try:
             result = await asyncio.to_thread(
-                platform_create_worktree, src, sandbox_command=sandbox_command
+                worktree_add, src, sandbox_command=sandbox_command
             )
         except WorktreeAddError as exc:
             raise HTTPException(500, str(exc)) from exc
