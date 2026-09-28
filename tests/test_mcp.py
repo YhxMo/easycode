@@ -837,7 +837,7 @@ async def test_a_settings_change_drops_the_running_connection(tmp_path):
     ctx = agent.path_context()
     servers = effective_servers(agent.mcp_servers, str(tmp_path))
     agent.mcp_manager = MCPSessionManager(
-        servers, ctx, fingerprint=fingerprint(servers, ctx)
+        servers, ctx, fingerprint=fingerprint(servers, ctx, project_root=str(tmp_path))
     )
     agent.mcp_owned = True
 
@@ -854,7 +854,7 @@ async def test_a_settings_change_drops_the_running_connection(tmp_path):
     write_scope(project_config_path(tmp_path), mcp_server_config())
     servers = effective_servers(agent.mcp_servers, str(tmp_path))
     agent.mcp_manager = MCPSessionManager(
-        servers, ctx, fingerprint=fingerprint(servers, ctx)
+        servers, ctx, fingerprint=fingerprint(servers, ctx, project_root=str(tmp_path))
     )
     agent.mcp_owned = True
     personal_config_path().parent.mkdir(parents=True, exist_ok=True)
@@ -862,3 +862,52 @@ async def test_a_settings_change_drops_the_running_connection(tmp_path):
 
     await agent.invalidate_mcp_if_context_changed()
     assert agent.mcp_manager is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
+async def test_unrelated_credential_rotation_keeps_the_process(tmp_path):
+    """A token for another project's server must not drop this connection."""
+    from easycode.mcp_auth import MCPCredential
+    from easycode.mcp_auth import store as credential_store
+    from easycode.mcp_config import project_config_path, write_scope
+
+    other = tmp_path / "other"
+    other.mkdir()
+    # The server has to reference the secret for a token to reach it at all.
+    servers = mcp_server_config()
+    servers["demo"]["secret_env"] = {"DEMO_TOKEN": "token"}
+    write_scope(project_config_path(tmp_path), servers)
+    agent = agent_for(tmp_path, permission_mode="allow-all")
+    await agent.init_mcp()
+    try:
+        assert agent.mcp_manager is not None
+        # Same server name, another project: not this session's credential.
+        credential_store().save(
+            MCPCredential(
+                id="theirs",
+                kind="env",
+                scope="project",
+                server="demo",
+                root=str(other),
+                values={"token": "a"},
+            )
+        )
+        await agent.invalidate_mcp_if_context_changed()
+        assert agent.mcp_manager is not None, "an unrelated token is not a reconfiguration"
+
+        # Its own credential, however, must reconnect.
+        credential_store().save(
+            MCPCredential(
+                id="mine",
+                kind="env",
+                scope="project",
+                server="demo",
+                root=str(tmp_path),
+                values={"token": "b"},
+            )
+        )
+        await agent.invalidate_mcp_if_context_changed()
+        assert agent.mcp_manager is None, "rotating its own token must reconnect"
+    finally:
+        await agent.close_mcp()

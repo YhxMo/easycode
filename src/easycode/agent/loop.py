@@ -168,7 +168,9 @@ class Agent:
         if not servers:
             return
         ctx = self.path_context()
-        self.mcp_manager = MCPSessionManager(servers, ctx, fingerprint=fingerprint(servers, ctx))
+        self.mcp_manager = MCPSessionManager(
+            servers, ctx, fingerprint=fingerprint(servers, ctx, project_root=str(self.root))
+        )
         self.mcp_owned = True
         await self.mcp_manager.start()
         if self.mcp_manager.tool_schemas():
@@ -219,7 +221,7 @@ class Agent:
             servers = effective_servers(self.mcp_servers, str(self.root))
         except MCPConfigError:
             return ""
-        return fingerprint(servers, self.path_context())
+        return fingerprint(servers, self.path_context(), project_root=str(self.root))
 
     async def close_mcp(self) -> None:
         """Release the MCP manager when this agent owns it; safe to call twice.

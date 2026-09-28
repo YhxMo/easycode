@@ -305,30 +305,79 @@ def test_effective_servers_uses_the_project_scopes_own_credential_root(tmp_path)
 def test_fingerprint_tracks_configuration_and_context(tmp_path):
     ctx = PathContext(primary=tmp_path)
     servers = resolve(app={"s": {"command": "c"}})
+    base = fingerprint(servers, ctx, project_root="")
 
-    assert fingerprint(servers, ctx) == fingerprint(resolve(app={"s": {"command": "c"}}), ctx)
-    assert fingerprint(servers, ctx) != fingerprint(resolve(app={"s": {"command": "d"}}), ctx)
-    assert fingerprint(servers, ctx) != fingerprint(
-        servers, PathContext(primary=tmp_path, sandbox_mode="danger-full-access")
+    assert base == fingerprint(resolve(app={"s": {"command": "c"}}), ctx, project_root="")
+    assert base != fingerprint(resolve(app={"s": {"command": "d"}}), ctx, project_root="")
+    assert base != fingerprint(
+        servers,
+        PathContext(primary=tmp_path, sandbox_mode="danger-full-access"),
+        project_root="",
     )
-    assert fingerprint(servers, ctx) != fingerprint(servers, PathContext(primary=tmp_path.parent))
+    assert base != fingerprint(servers, PathContext(primary=tmp_path.parent), project_root="")
 
 
 def test_fingerprint_tracks_credential_rotation(tmp_path):
     from easycode.mcp_auth import store as credential_store
 
     ctx = PathContext(primary=tmp_path)
-    servers = resolve(app={"s": {"command": "c"}})
-    before = fingerprint(servers, ctx)
+    # The server has to reference the secret, otherwise no credential of its
+    # name could ever reach it and rotating one changes nothing about the run.
+    servers = resolve(app={"s": {"command": "c", "secret_env": {"TOKEN": "token"}}})
+    before = fingerprint(servers, ctx, project_root="")
 
     credential_store().save(
         MCPCredential(id="c1", kind="env", scope="app", server="s", values={"token": "a"})
     )
-    issued = fingerprint(servers, ctx)
+    issued = fingerprint(servers, ctx, project_root="")
     assert issued != before
 
     credential_store().replace_values("c1", {"token": "b"})
-    assert fingerprint(servers, ctx) != issued
+    assert fingerprint(servers, ctx, project_root="") != issued
+
+
+def test_fingerprint_ignores_credentials_this_session_cannot_use(tmp_path):
+    """A token for another project's server is not this session's business."""
+    from easycode.mcp_auth import store as credential_store
+
+    ctx = PathContext(primary=tmp_path)
+    here = tmp_path / "here"
+    elsewhere = tmp_path / "elsewhere"
+    here.mkdir()
+    elsewhere.mkdir()
+    servers = resolve(project={"s": {"command": "c", "secret_env": {"TOKEN": "token"}}})
+
+    # Two projects, same server name, one token each: only this project's is
+    # the one this session would actually send.
+    credential_store().save(
+        MCPCredential(
+            id="mine",
+            kind="env",
+            scope="project",
+            server="s",
+            root=str(here),
+            values={"token": "a"},
+        )
+    )
+    other = credential_store().save(
+        MCPCredential(
+            id="their",
+            kind="env",
+            scope="project",
+            server="s",
+            root=str(elsewhere),
+            values={"token": "b"},
+        )
+    )
+    before = fingerprint(servers, ctx, project_root=str(here))
+
+    # Rotating the other project's token leaves this session's process alone...
+    credential_store().replace_values(other.id, {"token": "rotated"})
+    assert fingerprint(servers, ctx, project_root=str(here)) == before
+
+    # ...while rotating the one it uses must reconnect.
+    credential_store().replace_values("mine", {"token": "rotated"})
+    assert fingerprint(servers, ctx, project_root=str(here)) != before
 
 
 def test_configured_servers_parse_each_entry_once(tmp_path):
@@ -364,3 +413,93 @@ def test_configured_servers_parse_each_entry_once(tmp_path):
     assert [s.name for s in servers] == ["alpha", "beta"]
     # Two entries, two parses: resolving must not re-parse what was just read.
     assert calls["n"] == 2, calls
+
+
+def test_fingerprint_follows_a_changed_server_url(tmp_path):
+    """Pointing the server elsewhere retires its token, so the setup changed."""
+    from easycode.mcp_auth import store as credential_store
+
+    ctx = PathContext(primary=tmp_path)
+    servers = resolve(
+        project={
+            "s": {
+                "transport": "http",
+                "url": "http://127.0.0.1:9/a",
+                "bearer_credential": "token",
+            }
+        }
+    )
+    plain = fingerprint(servers, ctx, project_root=str(tmp_path))
+
+    credential_store().save(
+        MCPCredential(
+            id="c1",
+            kind="bearer",
+            scope="project",
+            server="s",
+            root=str(tmp_path),
+            url="http://127.0.0.1:9/a",
+            values={"token": "a"},
+        )
+    )
+    attached = fingerprint(servers, ctx, project_root=str(tmp_path))
+    assert attached != plain
+
+    # The same record no longer authenticates a server pointed at another URL:
+    # the session keeps no token, which is a different setup again.
+    credential_store().save(
+        MCPCredential(
+            id="c1",
+            kind="bearer",
+            scope="project",
+            server="s",
+            root=str(tmp_path),
+            url="http://127.0.0.1:9/b",
+            values={"token": "a"},
+        )
+    )
+    assert fingerprint(servers, ctx, project_root=str(tmp_path)) == plain
+
+
+def test_fingerprint_separates_projects_that_share_a_server_name(tmp_path):
+    """Two projects, one server name: each root fingerprints its own token."""
+    from easycode.mcp_auth import store as credential_store
+
+    here = tmp_path / "here"
+    elsewhere = tmp_path / "elsewhere"
+    here.mkdir()
+    elsewhere.mkdir()
+    ctx = PathContext(primary=here)
+    servers = resolve(project={"s": {"command": "c", "secret_env": {"TOKEN": "token"}}})
+
+    credential_store().save(
+        MCPCredential(
+            id="here",
+            kind="env",
+            scope="project",
+            server="s",
+            root=str(here),
+            values={"token": "a"},
+        )
+    )
+    credential_store().save(
+        MCPCredential(
+            id="there",
+            kind="env",
+            scope="project",
+            server="s",
+            root=str(elsewhere),
+            values={"token": "b"},
+        )
+    )
+
+    # Same server list and context, but each project's own root resolves to its
+    # own record: a subagent may borrow the parent's manager, and a session in
+    # another project must not look like the same setup.
+    assert fingerprint(servers, ctx, project_root=str(here)) != fingerprint(
+        servers, ctx, project_root=str(elsewhere)
+    )
+    # The same view twice is stable.
+    assert fingerprint(servers, ctx, project_root=str(here)) == fingerprint(
+        servers, ctx, project_root=str(here)
+    )

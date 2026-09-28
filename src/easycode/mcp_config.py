@@ -450,6 +450,59 @@ def effective_servers(
     return out
 
 
+def matching_credential(
+    config: MCPServerConfig,
+    *,
+    scope: str,
+    root: str = "",
+    store: Any,
+):
+    """The stored grant that authenticates ``config``, or None.
+
+    The one place this rule exists: the panel, the connecting path and the
+    connection fingerprint all ask the same question, so a token is never
+    filled in from one record and invalidated by another.
+    """
+    if not (config.secret_env or config.secret_headers or config.bearer_credential):
+        return None
+    cred = store.find(scope=scope, server=config.name, root=root)
+    if cred is None:
+        return None
+    # A record is only used for the URL it was issued for. Pointing the server
+    # at a different host must not send it the old host's token, because nobody
+    # agreed to that host.
+    if cred.url and config.url and cred.url != config.url:
+        return None
+    return cred
+
+
+def related_credential_versions(
+    servers: list[ResolvedServer], project_root: str, store: Any
+) -> dict[str, str]:
+    """Per-credential digests, for the records these servers actually use.
+
+    Only the related ones: an unrelated token rotation is not a reason to drop a
+    running process. Matching goes through :func:`matching_credential`, so a
+    server whose credential was replaced by one for another URL is covered too
+    — otherwise that change would leave the old token in a live session.
+    """
+    from easycode.mcp_auth import credential_versions
+
+    credentials = store.snapshot()
+    all_versions = credential_versions(store)
+    out: dict[str, str] = {}
+    for server in servers:
+        cred = matching_credential(
+            server.config,
+            scope=server.scope,
+            root=project_root if server.scope == "project" else "",
+            store=credentials,
+        )
+        if cred is not None and cred.id in all_versions:
+            out[cred.id] = all_versions[cred.id]
+    return out
+
+
 def apply_credentials(
     config: MCPServerConfig,
     *,
@@ -468,15 +521,10 @@ def apply_credentials(
     a different host must not send it the old host's token, because nobody
     agreed to that host.
     """
-    from easycode.mcp_auth import MCPCredential
     from easycode.mcp_auth import store as credential_store
 
-    if not (config.secret_env or config.secret_headers or config.bearer_credential):
-        return config
-    cred: MCPCredential | None = (store or credential_store()).find(
-        scope=scope, server=config.name, root=root
-    )
-    if cred is None or (cred.url and config.url and cred.url != config.url):
+    cred = matching_credential(config, scope=scope, root=root, store=store or credential_store())
+    if cred is None:
         return config
 
     def value(key: str) -> str:
@@ -558,18 +606,21 @@ def resolve_cwd(config: MCPServerConfig, ctx: PathContext) -> str:
     return str(target)
 
 
-def fingerprint(servers: list[ResolvedServer], ctx: PathContext | None) -> str:
+def fingerprint(
+    servers: list[ResolvedServer], ctx: PathContext | None, *, project_root: str
+) -> str:
     """A value that changes whenever a session's effective MCP setup does.
 
     The manager compares this against the one it started under: same value means
     the running processes still describe the configuration, a different one
-    means they are stale and the next turn must reconnect. Credentials are part
-    of it so that rotating a token reconnects instead of leaving the old one in
-    a live session.
+    means they are stale and the next turn must reconnect. The credentials of
+    these servers are part of it, so rotating one of their tokens reconnects
+    instead of leaving the old one in a live session — while a token belonging
+    to some other project's server is not this session's business.
     """
     import hashlib
 
-    from easycode.mcp_auth import credential_versions
+    from easycode.mcp_auth import store as credential_store
 
     payload = json.dumps(
         [{"name": s.name, "scope": s.scope, "config": s.config.to_dict()} for s in servers],
@@ -583,7 +634,9 @@ def fingerprint(servers: list[ResolvedServer], ctx: PathContext | None) -> str:
             "primary": str(getattr(ctx, "primary", "")),
             "secondary": sorted(str(p) for p in getattr(ctx, "secondary", []) or []),
             "extra": sorted(str(p) for p in getattr(ctx, "extra_safe_dirs", []) or []),
-            "credentials": credential_versions(),
+            "credentials": related_credential_versions(
+                servers, project_root, credential_store()
+            ),
         },
         ensure_ascii=False,
         sort_keys=True,

@@ -258,9 +258,9 @@ def store() -> CredentialStore:
     return CredentialStore(credentials_path())
 
 
-def credential_versions() -> dict[str, str]:
+def credential_versions(credential_store: CredentialStore | None = None) -> dict[str, str]:
     """A digest per credential record, for fingerprinting a connection."""
     try:
-        return store().versions()
+        return (credential_store or store()).versions()
     except OSError:
         return {}
