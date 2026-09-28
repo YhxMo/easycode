@@ -173,4 +173,3 @@ export function configFrom(form: ServerForm, base: Record<string, unknown>): Rec
   }
   return cfg;
 }
-
