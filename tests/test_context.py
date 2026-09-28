@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from easycode.agent.context import History
@@ -391,3 +393,79 @@ def test_message_estimate_matches_the_joined_text_estimate() -> None:
     joined = "".join(str(m.get("content") or "") for m in messages)
     assert History.estimate_messages_tokens(messages) == 6
     assert History.estimate_messages_tokens(messages) == History.estimate_text_tokens(joined)
+
+
+def _split_turn_start_reference(
+    history: History, start: int, end: int, remaining: int
+) -> int | None:
+    """The previous implementation: estimate each suffix from scratch.
+
+    Kept as the equivalence oracle for the accumulating version — linear
+    scaling is only acceptable if it picks the same cut every time.
+    """
+    if end - start <= 1:
+        return None
+    for s in range(start + 1, end):
+        if history.messages[s].get("role") == "tool":
+            continue
+        if history.estimate_messages_tokens(history.messages[s:end]) <= remaining:
+            return s
+    return None
+
+
+def test_tail_split_hand_computed():
+    #  "abcd" is 1 token, each CJK char is 1 token.
+    messages = [
+        {"role": "user", "content": "abcd"},
+        {"role": "assistant", "content": "中"},
+        {"role": "user", "content": "abcd"},
+    ]
+    h = History(messages=[dict(m) for m in messages])
+    # suffix [2:] = 1 token; [1:] = 2; budget 1 takes the latest cut.
+    assert h._split_turn_start(0, 3, 1) == 2
+    assert h._split_turn_start(0, 3, 2) == 1
+    # Nothing fits: no cut at all.
+    assert h._split_turn_start(0, 3, 0) is None
+    # A single candidate is never split (the caller keeps the whole turn).
+    assert h._split_turn_start(0, 1, 100) is None
+
+
+def test_tail_split_skips_a_cut_that_would_orphan_a_tool_result():
+    messages = [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "a", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "result"},
+        {"role": "assistant", "content": "done"},
+    ]
+    h = History(messages=[dict(m) for m in messages])
+
+    # A cut at 3 would orphan the tool result at 2, so the earliest valid cut
+    # that fits wins instead.
+    assert h._split_turn_start(0, 4, 1_000) == 1
+    # Too small for anything but the orphaned cut: no cut at all.
+    assert h._split_turn_start(0, 4, 0) is None
+
+
+def test_tail_split_matches_the_previous_implementation():
+    """Randomized equivalence against the re-estimating version (fixed seed)."""
+    random.seed(20260928)
+    styles = ("ascii", "cjk", "mixed", "tool")
+    for _ in range(500):
+        count = random.randrange(2, 30)
+        style = random.choice(styles)
+        messages = []
+        for i in range(count):
+            if style == "tool":
+                role, content = ("tool" if i % 3 == 0 else "assistant"), "y" * 3
+            elif style == "cjk":
+                role, content = ("user" if i % 2 else "assistant"), "中" * 10
+            elif style == "mixed":
+                role, content = "assistant", "ab" * i + "中"
+            else:
+                role, content = ("user" if i % 2 else "assistant"), "x" * 40
+            messages.append({"role": role, "content": content})
+        h = History(messages=[dict(m) for m in messages])
+        for remaining in (0, 1, 10, 100, 1_000, 10**9):
+            assert h._split_turn_start(0, count, remaining) == _split_turn_start_reference(
+                h, 0, count, remaining
+            ), (style, count, remaining, messages)

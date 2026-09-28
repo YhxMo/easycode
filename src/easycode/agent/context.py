@@ -264,10 +264,21 @@ class History:
         """
         if end - start <= 1:
             return None
+        # Suffix sizes accumulate backward in one pass: characters and non-ASCII
+        # counts add up, so the running totals are what estimating the whole
+        # suffix would produce. Re-estimating each suffix from scratch would
+        # make this quadratic in the turn's length.
+        total = wide = 0
+        fits: dict[int, bool] = {}
+        for s in range(end - 1, start, -1):
+            chars, non_ascii = self._char_stats([self.messages[s]])
+            total += chars
+            wide += non_ascii
+            fits[s] = wide + (total - wide + 3) // 4 <= remaining
         for s in range(start + 1, end):
             if self.messages[s].get("role") == "tool":
                 continue  # a cut here would orphan the tool result
-            if self.estimate_messages_tokens(self.messages[s:end]) <= remaining:
+            if fits[s]:
                 return s
         return None
 
