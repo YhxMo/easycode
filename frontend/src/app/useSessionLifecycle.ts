@@ -25,12 +25,11 @@ export interface SessionLifecycleInputs {
   isStreaming: (key: string) => boolean;
   forgetPane: (id: string) => void;
   forgetScroll: (id: string) => void;
-  /**
-   * The drafts store, read at call time rather than depended on: its `get`
-   * closes over the current map, so the store is a new object after every
-   * keystroke and depending on it would rebuild every callback below.
-   */
-  draftsRef: React.RefObject<DraftStore>;
+  // The draft operations, not the store: the store object changes with every
+  // keystroke (its `get` reads the current map), these never do.
+  clearDraft: DraftStore["clear"];
+  moveDraft: DraftStore["move"];
+  revalidateEdit: DraftStore["revalidateEdit"];
   openTabs: string[];
   setOpenTabs: (update: (prev: string[]) => string[]) => void;
   registerTab: (id: string) => void;
@@ -80,7 +79,9 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
     isStreaming,
     forgetPane,
     forgetScroll,
-    draftsRef,
+    clearDraft,
+    moveDraft,
+    revalidateEdit,
     openTabs,
     setOpenTabs,
     registerTab,
@@ -184,7 +185,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
           // the conversation: after a reload it may have been replaced here or in
           // another tab. The text the user typed stays; the target does not
           // silently become a different turn.
-          draftsRef.current.revalidateEdit(id, (detail.turns ?? []).map((t) => t.id), detail.revision);
+          revalidateEdit(id, (detail.turns ?? []).map((t) => t.id), detail.revision);
           setSecondary(detail.secondary_roots ?? []);
           resetPermission(detail.permission_mode ?? "ask");
           // Records describe the whole conversation, not one turn, so they are
@@ -232,7 +233,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
       setArtifactRecords,
       resetPermission,
       dropEntry,
-      draftsRef,
+      revalidateEdit,
       toast,
     ],
   );
@@ -267,14 +268,14 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
         // Text typed on the start page was meant for the conversation the user
         // just asked for, so it comes along instead of being parked on a page
         // they have left.
-        if (currentId === null) draftsRef.current.move(DRAFT_KEY, created.id);
+        if (currentId === null) moveDraft(DRAFT_KEY, created.id);
         refreshSessions();
         void openSession(created.id);
       } catch (e) {
         toast("err", `新建会话失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
-    [currentId, openSession, permissionMode, refreshSessions, setSidebarOpen, toast, draftsRef],
+    [currentId, openSession, permissionMode, refreshSessions, setSidebarOpen, toast, moveDraft],
   );
 
   const newSession = useCallback(() => {
@@ -312,7 +313,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
           toast("err", `关闭会话失败: ${e instanceof Error ? e.message : String(e)}`);
           return;
         }
-        draftsRef.current.clear(id);
+        clearDraft(id);
         forgetSession(id);
         refreshSessions();
       }
@@ -330,7 +331,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
       currentId,
       forgetSession,
       isStreaming,
-      draftsRef,
+      clearDraft,
       refreshSessions,
       setOpenTabs,
       dropEntry,
@@ -357,7 +358,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
     setArchived((prev) => prev.filter((x) => x.id !== target.id));
     // Only a successful delete drops the tab (and the draft it holds).
     setOpenTabs((prev) => prev.filter((t) => t !== target.id));
-    draftsRef.current.clear(target.id);
+    clearDraft(target.id);
     forgetSession(target.id);
     // Clear the view only when it is still the one the delete targeted: a
     // switch during the delete must not blank the new view.
@@ -373,7 +374,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
     setArchived,
     setOpenTabs,
     forgetSession,
-    draftsRef,
+    clearDraft,
     refreshSessions,
     refreshArchived,
     openSession,
@@ -399,7 +400,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
       setProjects(r.projects);
       setOpenTabs((prev) => prev.filter((id) => !removedAll.includes(id)));
       for (const id of removedAll) {
-        draftsRef.current.clear(id);
+        clearDraft(id);
         forgetSession(id);
       }
       refreshSessions();
@@ -425,7 +426,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
     setProjects,
     setOpenTabs,
     forgetSession,
-    draftsRef,
+    clearDraft,
     refreshSessions,
     refreshArchived,
     currentId,

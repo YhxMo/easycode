@@ -182,13 +182,6 @@ export default function App() {
     stickyRef.current = sticky;
   }, [sticky]);
 
-  // The drafts store changes identity on every edit, so the session lifecycle
-  // reads it through this ref instead of depending on it.
-  const draftsRef = useRef(drafts);
-  useEffect(() => {
-    draftsRef.current = drafts;
-  }, [drafts]);
-
   useEffect(() => {
     refreshSessions();
     fetchModels().then(setModels).catch(() => {});
@@ -342,7 +335,9 @@ export default function App() {
     isStreaming,
     forgetPane: pane.forget,
     forgetScroll: sticky.forget,
-    draftsRef,
+    clearDraft: drafts.clear,
+    moveDraft: drafts.move,
+    revalidateEdit: drafts.revalidateEdit,
     openTabs,
     setOpenTabs: tabList.setOpen,
     registerTab,
