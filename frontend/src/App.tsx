@@ -167,6 +167,8 @@ function commandIdFor(draft: Draft): string | null {
 
 export default function App() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  // Read-only view of the server list; never written to on its own.
+  const sessionById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   // Unsent composer text, one record per conversation: switching sessions must
   // never carry what was typed here into another conversation's field.
@@ -312,7 +314,7 @@ export default function App() {
 
   // Resolved ahead of useChatStream so send() can stamp the model name onto the
   // turn's assistant messages (reply meta row).
-  const currentSession = sessions.find((s) => s.id === currentId);
+  const currentSession = currentId === null ? undefined : sessionById.get(currentId);
   // The open conversation's own directory; a move (only a blank session can
   // make one) changes what every directory-derived view below reports.
   const currentRoot = currentSession?.root ?? null;
@@ -1023,7 +1025,7 @@ export default function App() {
   // strip always names what is on screen.
   const sessionTabs: OpenTab[] = openTabs.map((id) => ({
     id,
-    title: sessions.find((s) => s.id === id)?.title ?? "会话",
+    title: sessionById.get(id)?.title ?? "会话",
   }));
   const tabs: OpenTab[] =
     currentId === null ? [{ id: DRAFT_KEY, title: "新会话", draft: true }, ...sessionTabs] : sessionTabs;
@@ -1042,7 +1044,7 @@ export default function App() {
     async (id: string) => {
       const index = openTabs.indexOf(id);
       const remaining = openTabs.filter((t) => t !== id);
-      const target = sessions.find((s) => s.id === id);
+      const target = sessionById.get(id);
       // A conversation the server reports as never started is not worth
       // keeping: ask it to remove the session — it re-checks under its own lock,
       // so a turn that began in the meantime keeps it — and only then drop the
@@ -1072,7 +1074,7 @@ export default function App() {
     [
       openTabs,
       currentId,
-      sessions,
+      sessionById,
       drafts,
       dropEntry,
       isStreaming,

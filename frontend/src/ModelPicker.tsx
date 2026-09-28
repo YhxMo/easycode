@@ -101,6 +101,11 @@ function EyeOffIcon() {
   );
 }
 
+/** Which write path the model form is open on, and on what. */
+type Dialog =
+  | { kind: "add" }
+  | { kind: "edit"; alias: string; hasKey: boolean; keyTail: string };
+
 export function ModelPicker({
   models,
   current,
@@ -122,21 +127,16 @@ export function ModelPicker({
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   // One dialog serves both write paths: the fields, the busy state and the
-  // modal chrome are identical, and only the request bodies differ.
-  const [mode, setMode] = useState<"add" | "edit" | null>(null);
+  // modal chrome are identical, and only the request bodies differ. Which path
+  // it is and what it is editing are one state, so the form cannot be open for
+  // an edit whose target is missing.
+  const [dialog, setDialog] = useState<Dialog | null>(null);
   const [revealKey, setRevealKey] = useState(false);
   const [toast, setToast] = useState<{ kind: "success"; text: string } | null>(null);
   // Where the menu fits, in viewport coordinates: it is anchored to the trigger,
   // which sits wherever the composer happens to be, so the room actually
   // available decides its size and which side it opens on.
   const [placement, setPlacement] = useState<MenuPlacement | null>(null);
-  // The alias being edited plus what the backend knows about its credential —
-  // never the key itself.
-  const [editing, setEditing] = useState<{
-    alias: string;
-    hasKey: boolean;
-    keyTail: string;
-  } | null>(null);
   const [errors, setErrors] = useState<{ alias?: string; model?: string }>({});
   const [formError, setFormError] = useState<string | null>(null);
   // Deleting is confirmed: it takes the credential with it and leaves existing
@@ -252,11 +252,10 @@ export function ModelPicker({
     // whatever owns focus when it opens and returns it there on close.
     closeMenu();
     setForm(EMPTY_FORM);
-    setEditing(null);
     setErrors({});
     setFormError(null);
     setRevealKey(false);
-    setMode("add");
+    setDialog({ kind: "add" });
   };
 
   const openEdit = async (alias: string) => {
@@ -276,11 +275,10 @@ export function ModelPicker({
         api_format: detail.api_format ?? "openai_compatible",
         clear_key: false,
       });
-      setEditing({ alias, hasKey: detail.has_api_key, keyTail: detail.key_tail });
+      setDialog({ kind: "edit", alias, hasKey: detail.has_api_key, keyTail: detail.key_tail });
       setErrors({});
       setFormError(null);
       setRevealKey(false);
-      setMode("edit");
     } catch (error) {
       // Reading one model failed: say so instead of opening an empty form.
       onError?.(`读取失败：${error instanceof Error ? error.message : "请求失败"}`);
@@ -291,8 +289,7 @@ export function ModelPicker({
   };
 
   const closeForm = () => {
-    setMode(null);
-    setEditing(null);
+    setDialog(null);
     setErrors({});
     setFormError(null);
     setRevealKey(false);
@@ -307,20 +304,18 @@ export function ModelPicker({
     setErrors(next);
     setFormError(null);
     if (next.alias || next.model) return;
-    // An edit with nothing to edit would otherwise close as if it had saved.
-    if (mode === "edit" && !editing) return;
 
     setBusy(true);
     modelSeq.current += 1; // an in-flight refresh must not undo this write
     try {
-      if (mode === "add") {
+      if (dialog?.kind === "add") {
         const body: AddModelBody = { alias, model, api_format: form.api_format };
         if (form.provider.trim()) body.provider = form.provider.trim();
         if (form.base_url.trim()) body.base_url = form.base_url.trim();
         if (form.api_key.trim()) body.api_key = form.api_key.trim();
         onChange(await addModel(body));
         flash("添加成功");
-      } else if (editing) {
+      } else if (dialog?.kind === "edit") {
         const body: UpdateModelBody = {
           model,
           new_alias: alias,
@@ -330,7 +325,7 @@ export function ModelPicker({
           clear_key: form.clear_key,
         };
         if (form.api_key.trim()) body.api_key = form.api_key.trim();
-        onChange(await updateModel(editing.alias, body));
+        onChange(await updateModel(dialog.alias, body));
         flash("保存成功");
       }
       closeForm();
@@ -534,9 +529,9 @@ export function ModelPicker({
       </Modal>
 
       <Modal
-        open={mode !== null}
+        open={dialog !== null}
         onClose={closeForm}
-        title={mode === "add" ? "添加模型" : "编辑模型"}
+        title={dialog?.kind === "add" ? "添加模型" : "编辑模型"}
         variant="model-form-modal"
         actions={
           <>
@@ -544,7 +539,7 @@ export function ModelPicker({
               取消
             </button>
             <button type="button" className="primary" onClick={submitForm} disabled={busy}>
-              {busy ? "…" : mode === "add" ? "添加" : "保存"}
+              {busy ? "…" : dialog?.kind === "add" ? "添加" : "保存"}
             </button>
           </>
         }
@@ -566,7 +561,7 @@ export function ModelPicker({
             {errors.alias && !form.alias.trim() && (
               <small className="modal-field-error">{errors.alias}</small>
             )}
-            {mode === "add" && models.models[form.alias.trim()] && (
+            {dialog?.kind === "add" && models.models[form.alias.trim()] && (
               <small className="modal-field-error">
                 「{form.alias.trim()}」已存在，添加会覆盖它原有的配置和凭据。
               </small>
@@ -620,7 +615,7 @@ export function ModelPicker({
                 <input
                   type={revealKey ? "text" : "password"}
                   value={form.api_key}
-                  placeholder={mode === "edit" ? "留空则沿用已有密钥" : "输入该模型专用 API Key"}
+                  placeholder={dialog?.kind === "edit" ? "留空则沿用已有密钥" : "输入该模型专用 API Key"}
                   onChange={(e) => setForm({ ...form, api_key: e.target.value, clear_key: false })}
                 />
                 <button
@@ -637,21 +632,23 @@ export function ModelPicker({
                 </button>
               </span>
             </label>
-            {mode === "edit" && (
+            {dialog?.kind === "edit" && (
               <small>
-                {editing?.hasKey
-                  ? `已有密钥${editing.keyTail ? `（尾号 ${editing.keyTail}）` : ""}，留空保存不会改动它。`
+                {dialog.hasKey
+                  ? `已有密钥${dialog.keyTail ? `（尾号 ${dialog.keyTail}）` : ""}，留空保存不会改动它。`
                   : "尚未配置密钥。"}
               </small>
             )}
-            {form.api_key.trim() && mode === "edit" && <small>保存后替换为新输入的密钥。</small>}
+            {form.api_key.trim() && dialog?.kind === "edit" && (
+              <small>保存后替换为新输入的密钥。</small>
+            )}
           </div>
-          {mode === "edit" && (
+          {dialog?.kind === "edit" && (
             <div className="modal-inline-actions">
               <button
                 type="button"
                 className="clear-key"
-                disabled={busy || (!editing?.hasKey && !form.base_url)}
+                disabled={busy || (!dialog.hasKey && !form.base_url)}
                 onClick={() => setForm({ ...form, api_key: "", clear_key: true })}
               >
                 清除连接凭据
