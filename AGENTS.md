@@ -22,24 +22,24 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 | 跨模块功能、架构调整、会话格式或权限变化 | 记录问题、方案、其他可行选择、验收标准和风险，按依赖拆成可独立验证的阶段。 |
 
 - 较大功能先形成从输入到输出的完整可运行流程，再补充能力和边界处理。可以使用模拟数据或服务，但必须标明尚未真实接入的部分。
-- 每轮围绕一个可验收目标。涉及已有数据、接口或扩展的变化，先查明使用者，再决定兼容、迁移或明确不兼容的处理方式。
+- 每轮围绕一个可验收目标。涉及已有数据、接口或扩展的变化，先查明使用者，再决定兼容、迁移或明确不兼容的处理方式。已经说定要做的简化或性能改动直接做完，不因为「看起来收益很小」跳过——该不该做早在定方案时就定了。
+- 以收益为理由的性能改动先测量再决定，并用同一套口径记录改前改后（复现脚本放 `/tmp` 下，不入库）。测出来接近噪声就按原样放弃并在交付说明里写清数字与结论，不为了让改动「有理由」而保留它；已按计划实施、审查发现的问题仍然要修，测量不替代审查。
 - 优先复用已有代码和维护中的依赖。新增模块、抽象、配置或依赖要有当前需求支撑，并解释它减少了什么复杂度或提供了什么必要能力。
-- 保持改动边界清楚，便于独立审查和回退；用户要求提交时，按有意义且已验证的阶段组织提交。
+- 保持改动边界清楚，便于独立审查和回退。用户要求提交时，按有意义且已验证的阶段组织提交，并逐个提交单独检出跑一遍静态检查与构建：「审查与验证」一节里的三类检查都要真跑，别只跑测试——vitest 只转译不做类型检查，阶段之间缺文件或漏改配置时它照样全绿，只有 `npm --prefix frontend run build`（`tsc -b`）和 `pytest` 会失败。
 
 ## 当前代码导航
 
 | 位置 | 职责 |
 | --- | --- |
-| `src/easycode/cli.py`、`src/easycode/agentfactory.py` | CLI 入口、配置与 Agent 装配。 |
-| `src/easycode/agent/` | 执行循环、上下文预算与压缩、提示词、内置工具（委派、Skill、任务清单）。 |
-| `src/easycode/tools/`、`src/easycode/models/` | 文件与 Shell 工具、模型适配。 |
-| `src/easycode/policy.py`、`src/easycode/approval.py`、`src/easycode/sandbox/` | 权限策略、审批和执行沙箱。 |
-| `src/easycode/web/` | FastAPI 应用与路由（chat、models、sessions、workspaces、files、mcp）、会话存储、SSE 事件桥接，以及面板读取的文件工具记录 `artifacts.py` 与工作区 Git 状态 `git.py`。 |
-| `src/easycode/mcp.py`、`mcp_config.py`、`mcp_auth.py` | MCP 连接、三层作用域配置与凭据存取（约定见下）。 |
-| `src/easycode/skills.py`、`skill_import.py`、`web/routes_skills.py` | Skill 加载与资源基准、文件夹导入（校验/复制/原子发布）、管理 API。 |
-| `frontend/src/` | React 界面；`useChatStream.ts` 按会话管理流生命周期，`chatStream.ts` 转换消息状态，`ExtensionsSettings.tsx` 是扩展弹窗，`McpSettings.tsx`/`SkillsSettings.tsx` 是它的两个面板。 |
-| `frontend/src/components/`、`lib/` | `layout/` 标签栏、右侧面板与输入框，`primitives/` 消息流组件，`lib/` 纯函数。 |
-| `frontend/src/styles.css`、`styles/` | 样式入口；`tokens.css` 存令牌、基础规则与 keyframes，`primitives.css` 存组件样式。 |
+| `src/`、`pyproject.toml` | 源码直接放在 `src/` 下，导入名仍是 `easycode`（setuptools 的 `package-dir` 映射，新增子包要同时加进 `packages`）；`cli.py` 是 CLI 入口，`agent/factory.py` 装配 Agent。 |
+| `src/agent/` | 执行循环 `loop.py`、事件 `events.py`、回合记录 `turns.py`、上下文预算与压缩、提示词、内置工具（委派、Skill、任务清单）。 |
+| `src/tools/`、`src/models/` | 文件与 Shell 工具（`files.py`、`reading.py`、`search.py`、`shell.py`）、模型适配与凭据。 |
+| `src/permissions/` | `policy.py` 权限策略、`approval.py` 审批、`boundary.py` 路径边界与硬保护、`reviewer.py`、`sandbox/` 执行沙箱。 |
+| `src/web/` | FastAPI 应用与 `routes/`（chat、files、mcp、models、sessions、skills、workspaces）、会话存储（`session.py`、`store.py`、`persistence.py`、`locks.py`）、SSE 事件桥接 `bridge.py`、面板读取的文件工具记录 `artifacts.py`、工作区 Git 状态 `git.py`、项目绑定 `projects.py`、`/` 菜单输入 `chat_input.py`。 |
+| `src/extensions/` | 从 markdown 或配置发现的扩展：Skill 与模板（`skills.py`、`skill_import.py`、`commands.py`）、子 Agent 规格 `subagents.py`，以及 `mcp/` 下的配置、凭据、连接与会话管理。 |
+| `frontend/src/app/` | 界面外壳：`App.tsx` 组合 hook 并布局，`useSessionLifecycle.ts` 管会话的打开/关闭/删除，另有标签页、会话列表、权限、抽屉、项目动作、消息动作、回合派生与会话状态各自的 hook。 |
+| `frontend/src/features/`、`components/`、`lib/` | 按功能分目录：`chat/` 消息流与流状态、`composer/` 输入框与草稿及两个菜单、`pane/` 右侧面板、`sidebar/`、`models/`（`ModelPicker` 菜单与 `ModelDialog` 表单）、`extensions/`（扩展弹窗、MCP 表单与 Skills 面板）；`components/`、`lib/` 放跨功能组件、纯函数与共享 hook。 |
+| `frontend/src/styles.css`、`styles/` | 入口只留 `@import`（顺序即级联顺序）；`tokens.css` 存令牌与基础规则，其余每份对应一个区域（layout、tabs、pane、sidebar、models、permission、messages、markdown、composer、menus、modal、extensions、toast、mobile）。 |
 | `tests/`、`frontend/src/__tests__/` | 后端和前端测试。 |
 | `examples/task-list/` | 浏览器验收用的零依赖示例（原生 HTML/CSS/JS）与其数据行为检查脚本。 |
 
@@ -57,17 +57,18 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 - 空白会话（`started === false`）的主目录仍可更改：目录卡片调用 `POST /api/sessions/{id}/workspace`，服务端在配置锁与会话锁内复核空白状态、校验新旧目录，改完继承目标项目已配置的次目录并重建扩展与提示词；已开始的会话返回 409（记录、预览和工作区改动都只描述一个目录），前端只在确认后更新，失败保留原目录。
 - 会话保存文件工具的结果记录（`web/artifacts.py`，随会话 JSON 持久化，为空不写）：面板的上下文与变更以它为准，再按调用 id 补上视图里尚未记录的调用。同一次调用**记录优先于消息历史**，因为历史里的结果可能已被压缩裁剪成桩；记录本身必须保持有界（摘录、命中行数、diff 各有上限），旧会话在加载时从现存历史尽量补齐。
 - 会话 JSON 新增字段须给出缺省值，旧文件仍能恢复（如 `todos` 缺省为空列表、未置顶会话不写 `pinned`），恢复失败不能静默吞掉。清单等跨层状态只保留一份权威副本：`Agent.todos` 是唯一可写状态，`Session.todos`、JSON 和接口都是它的读取方；`Agent.model_alias` 同理，`SessionStore` 在构造与恢复 agent 时写入它请求的别名，模型变更只经 `bind_agent`/`defer_binding` 落到 Agent 上。
-- 修改上下文处理时，计入系统提示词和工具定义；压缩后仍超出预算应明确报告，避免发送无法容纳的请求。
+- 修改上下文处理时，计入系统提示词和工具定义；压缩后仍超出预算应明确报告，避免发送无法容纳的请求。预算判断只在入口做一次：执行循环走 `Compactor.prepare()`（判断超预算 → `_shrink` 收拢 → `check_budget` 把关），`condense()` 是同一件事的薄入口、保留「未超预算什么都不做」的语义，判断逻辑不在这两处复制；`_shrink` 之内只在修剪后复查一次。
 - 文件用唯一目标标识：相对路径只用于展示，引用、预览和跨工具传递都使用后端规范化的绝对路径（`/api/files` 的 `absolute_path`、文件工具结果的同名字段、搜索命中记录的 `root`）；新增文件相关结果字段时同时考虑展示与目标。写入类工具的结果同样带目标，否则视图在回合进行中无法把读过的和写过的同名文件认成同一个。
-- `/` 菜单的命令来自所有已登记项目与个人目录，同名的按来源分别列出：选中项发送稳定标识 `<来源>:<项目目录>:<名称>`，服务端重新发现列表后校验并展开，仍按当前会话的目录与权限执行；直接输入 `/名称` 只按当前项目与个人命令解析。菜单在加载、无匹配、无命令和加载失败时都要保持可见，不因结果为空整块消失。
-- 文件、Shell、子任务和外部工具的变化须沿实际执行路径检查权限边界，不能仅依赖界面或模型提示中的限制。Web 的只读接口同样复用会话 `PathContext`：文件列举与预览（`/api/files`、`/api/files/content`）的越界与硬保护路径由服务端拒绝、沿用工具的忽略规则与读取上限（列举始终只覆盖工作区与次目录；完全访问下预览与其工具一致地放行宿主机绝对路径，面板也据此决定是否给出预览入口，见 `lib/pane.ts`），工作区 Git 状态（`web/git.py`）只读取会话 roots 所在的仓库，都不需要审批。
-- 变更面板默认收起，只显示当前工作区相对各仓库 `HEAD` 的增删统计（目录不在 Git 仓库时回退到会话自己的 diff 统计，避免已有记录凭空消失），展开后按文件列出统计与 diff，两组来源（会话操作记录、工作区未提交改动）不合并。Git 统计含已暂存、未暂存与未跟踪文件；二进制、已删除和超出上限的 diff 保留文件状态与行数，只是不下发无法使用的预览内容。
+- 工具读取与面板预览共用 `tools/reading.py` 的 `read_window`（按块扫描、单条超长行也受字节预算约束），`read_file` 截断行长后仍受同一份总预算限制；改行窗口或读取上限时两条路径一起核对，`web/routes/files.py` 只做路由与截断，不再自己实现扫描。
+- `/` 菜单里 Skill 与模板来自所有已登记项目与个人目录，同名的按来源分别列出：选中项发送稳定标识 `<来源>:<项目目录>:<名称>`，服务端重新发现列表后校验并展开，仍按当前会话的目录与权限执行；直接输入 `/名称` 只按当前项目与个人命令解析。MCP 服务是另一种条目（见下），只列当前项目的生效服务，id 形状也不同。菜单在加载、无匹配、无命令和加载失败时都要保持可见，不因结果为空整块消失。
+- 文件、Shell、子任务和外部工具的变化须沿实际执行路径检查权限边界，不能仅依赖界面或模型提示中的限制。Web 的只读接口同样复用会话 `PathContext`：文件列举与预览（`/api/files`、`/api/files/content`）的越界与硬保护路径由服务端拒绝、沿用工具的忽略规则与读取上限（列举始终只覆盖工作区与次目录；完全访问下预览与其工具一致地放行宿主机绝对路径，面板也据此决定是否给出预览入口，见 `features/pane/pane.ts`），工作区 Git 状态（`web/git.py`）只读取会话 roots 所在的仓库，都不需要审批。
+- 变更面板默认收起，只显示当前工作区相对各仓库 `HEAD` 的增删统计（目录不在 Git 仓库时回退到会话自己的 diff 统计，避免已有记录凭空消失），展开后按文件列出统计与 diff，两组来源（会话操作记录、工作区未提交改动）不合并。Git 统计含已暂存、未暂存与未跟踪文件；二进制、已删除和超出上限的 diff 保留文件状态与行数，只是不下发无法使用的预览内容。统计与内容是两条读路径：`GET /changes` 默认 `?diffs=0`、不生成任何逐文件 diff，某个文件的 diff 由 `GET /changes/diff?repo=&path=` 按需取（服务端按会话 roots 与仓库当前 status 校验，越界与不在状态里的路径 404），`diffs=1` 仍可用但只给显式要求的调用方；`diff_note`（二进制/已删除）在两种模式下都保留，否则没有可展开内容的行说不清为什么没有预览。前端展开行按需取 diff：统计重新读取后展开行按同一份快照重取，并用每行的请求序号丢弃迟到的旧回复。
 - 设置表单是平面控件：`.modal` 的文本类字段用 `var(--field)`、`1px solid var(--line)`、`box-shadow: none`、36px 高，规则显式排除 checkbox/radio/file；原生 select 一律包在 `.modal-select-wrap` 里（`appearance: none` + CSS 画的箭头）。不要在这里加回内阴影或平台箭头。
 - 文本字段的焦点状态由**字段自己**承担（`--accent` 边框 + 贴边的 `--accent-tint` 光圈），不要用基础规则那圈带 offset 的外轮廓：文本类控件无论怎样获得焦点都会命中 `:focus-visible`（包括弹窗打开时给首个字段的程序化聚焦），外轮廓会在已经显示焦点的字段外面再画一个方框，每个弹窗一打开就带一圈蓝框。checkbox/radio 仍保留外轮廓——它们只由键盘到达，那是唯一的焦点提示。改焦点样式时同时看弹窗首字段（程序化聚焦）与键盘 Tab 两条路径。
 - 前端样式以 `styles/tokens.css` 的令牌为准，不在组件规则里散落硬编码色值；`styles.css` 的类名与 TSX 标记一一对应，改名时两边同步。
 - 输入框是受控组件，中文输入法组词期间由输入法持有序选区、回车和候选：组词中只同步文本值，不动光标状态、不驱动 `@`/`/` 菜单，上屏后（compositionend）同步一次光标与菜单；改输入框、菜单触发或光标恢复逻辑时覆盖这条路径。
-- 发送消息只有一个出口：回车与发送按钮都走同一个函数，由它按当前草稿决定是普通发送还是编辑重发。编辑态下另开一条直接调 `send()` 的路径，会把「替换这条消息之后的对话」变成「在末尾追加一个回合」，而用户要改的那条原样留在会话里——界面看起来却是成功的。改发送、编辑入口或输入框键盘处理时，同时覆盖「编辑中回车」与「编辑中点击发送」两条路径。
-- 布局按可用宽度决定形态：聊天区窄于 560px 时右侧面板改为覆盖式抽屉（不自行展开，提供关闭、Escape 和焦点返回），阈值同时写在 CSS 容器查询和 App 常量里，改动需同步；消息流的直接子元素不参与 flex 收缩，否则长历史会把带 `overflow: hidden` 的卡片压成 0 高度。
+- 发送消息只有一个出口：回车与发送按钮都走同一个函数，由它按当前草稿决定是普通发送还是编辑重发。编辑态下另开一条直接调 `send()` 的路径，会把「替换这条消息之后的对话」变成「在末尾追加一个回合」，而用户要改的那条原样留在会话里——界面看起来却是成功的。改发送、编辑入口或输入框键盘处理时，同时覆盖「编辑中回车」与「编辑中点击发送」两条路径。发送同时关闭 `/` 菜单：手输 `/mcp:服务名 任务` 时菜单匹配为空、回车走发送分支，菜单留在原地时它那层 scrim 会挡住聊天区直到用户按 Escape。
+- 布局按可用宽度决定形态：聊天区窄于 950px（面板占 380px，聊天区因此得到 560px 可读宽度）时右侧面板改为覆盖式抽屉（不自行展开，提供关闭、Escape 和焦点返回），阈值同时写在 CSS 容器查询和 App 常量里，改动需同步；消息流的直接子元素不参与 flex 收缩，否则长历史会把带 `overflow: hidden` 的卡片压成 0 高度。
 - 扩展入口只有一个：侧栏品牌区下方的「扩展」按钮，打开单个 `role="dialog"`，内含 Skills / MCP 两个页签；项目菜单的「扩展…」用**被点击项目**的 root 打开同一个弹窗。两个面板始终挂载、非当前页签设 `hidden`（未提交的表单要跨页签保留），`Modal` 的初始焦点与 Tab 循环跳过 `[hidden]`/`[inert]` 子树；面板自己的操作按钮经 `footerRef` + `createPortal` 放进 `.modal-actions`，父组件不复制子面板的表单与 busy 状态。打开时冻结目标项目，只有当前会话主目录与目标一致才带 `sessionId`（连接状态属于那一个会话）。
 - Skill 是**复制进来的包**，不是引用：导入要求文件夹根下直接有 `SKILL.md`，整包复制（内部符号链接解引用、拒绝越界链接/环/特殊文件、条目与体积有上限），临时目录建在安装根的同级并在同一文件系统上以不覆盖的方式 rename 发布——同名冲突报错，绝不覆盖。安装根只有 `<项目>/.easycode/skills` 与 `~/.easycode/skills`，路径由服务端计算，不取自请求。加载路径共用 `skill_context()`（名称 + SKILL.md 路径 + 资源目录 + 正文），`/名称` 与 `use_skill` 对它不可能分叉；正文没有占位符时 `/名称 任务` 把任务追加成一段，有占位符时按模板规则替换且不重复追加。
 - MCP 命令 `/mcp:<服务名> <任务>` 是 Web 专用语法：菜单只列**当前项目**生效且已启用的服务，id 为 `mcp:<percent-encoded-root>:<percent-encoded-service>`（root 参与 id，跨项目选择必然不匹配），读路径用不展开凭据的 `resolve()`。选择服务是「优先用它的工具」的意图，不是强制调用或禁用其他工具；指定的服务不可用时以 `mcp_unavailable` 结束这一轮且不调用模型，其他坏服务仍按原样降级。`/mcp:` 前缀保留给服务命令，同名 Skill/模板不进入菜单并在 `errors` 里提示改名。
@@ -77,13 +78,14 @@ EasyCode 是一个本地 Coding Agent，使用 Python 实现模型与工具之�
 - 模型切换当前会更新全局默认值并重绑定已有会话；`api_format` 决定模型调用路由，`provider` 只用于展示分组。修改模型表单、切换或删除时核对凭据及旧会话后续发送；当前“清除连接凭据”会同时删除 API Key 和 Base URL。
 - 进入 `完全访问`（关闭沙箱与审批）必须显式确认，确认状态由服务端持有：Web 权限选择器选中它先弹风险确认，确认后带 `confirm_full_access` 调用 `POST /api/sessions/{id}/permission`；取消、Escape 不发请求，已是该模式不再重复确认，草稿会话只改本地值。建会话、切权限、`/api/chat` 都带该字段，未确认一律 422；配置里的 `permission: allow-all` 是用户自己的长期设置，会话继承它即算已确认，CLI 启动时这条设置同样要过一次启动确认。`full_access_confirmed` 是会话字段，缺失即未确认，切回其他模式清掉确认、再次进入要重新确认，旧 `allow-all` 会话恢复时降级为 `ask` 并落盘；权限写入统一走 `Session.set_permission_mode`，模式与确认标记同生共死，不直接改 `agent.permission_mode`。新增权限入口（CLI 的 `--confirm-full-access`）时保留这道确认，并覆盖「取消不改变权限」「确认后才发请求」「降级后显示请求批准」几条路径。
 - 审批处理器只返回批准或拒绝；审批原因和 `ToolGrant` 由执行循环按实际执行 Agent 的路径上下文计算。修改委派或审批时，覆盖父子 Agent 权限不同的场景。
-- 路径权限须区分可审批放行与硬保护，审批不能解除硬保护；修改文件工具或 Shell 沙箱时，核对项目配置、凭据、用户数据目录和工作树例外，具体边界见 `workspace.py` 及权限决策记录。硬保护目标在展示审批之前就被拒绝，不提供注定失败的批准选项；审批卡片只陈述决定（批准/拒绝），调用是否成功由工具结果回答，模型可见的工具结果用 `approved_by_user` 补上审批事实，因为 `in_allowed` 只说明目标是否在工作区内。`danger-full-access`（完全访问）按 Codex 语义是另一套边界：文件工具、Shell、MCP 与预览都不再拦截 `.git`/`.easycode`/项目配置/凭据/应用数据和工作区外路径，Seatbelt 不再包装，`is_protected*`、`is_model_state`、`grant_for_toolcall` 都按沙箱模式返回，搜索的跳过目录也只在沙箱模式包含 `.git`（`node_modules`/`.venv` 这类性能目录两种模式都跳过）；`permission_rules` 的 `deny`、工作区根目录校验和 `child_env` 的密钥清洗仍然保留。改任一侧时同时覆盖 `workspace-write` 与 `danger-full-access` 两种模式。
+- 路径权限须区分可审批放行与硬保护，审批不能解除硬保护；修改文件工具或 Shell 沙箱时，核对项目配置、凭据、用户数据目录和工作树例外，具体边界见 `permissions/boundary.py` 及权限决策记录。硬保护目标在展示审批之前就被拒绝，不提供注定失败的批准选项；审批卡片只陈述决定（批准/拒绝），调用是否成功由工具结果回答，模型可见的工具结果用 `approved_by_user` 补上审批事实，因为 `in_allowed` 只说明目标是否在工作区内。`danger-full-access`（完全访问）按 Codex 语义是另一套边界：文件工具、Shell、MCP 与预览都不再拦截 `.git`/`.easycode`/项目配置/凭据/应用数据和工作区外路径，Seatbelt 不再包装，`is_protected*`、`is_model_state`、`grant_for_toolcall` 都按沙箱模式返回，搜索的跳过目录也只在沙箱模式包含 `.git`（`node_modules`/`.venv` 这类性能目录两种模式都跳过）；`permission_rules` 的 `deny`、工作区根目录校验和 `child_env` 的密钥清洗仍然保留。改任一侧时同时覆盖 `workspace-write` 与 `danger-full-access` 两种模式。
 - Web 历史会话不能因模型凭据缺失而被隐藏：恢复时允许延迟绑定模型，发送前解析失败返回明确的 422；新建会话仍严格校验。修改恢复或模型绑定时同时验证会话可见性和发送失败路径。
 - 模型/项目配置变更、新建会话与回合准备共用 `SessionStore.config_change()` 协调，锁顺序固定为配置锁 → 会话锁；服务层只处理路由在锁内确定的会话集合，不重新枚举 store。删除会话在会话锁内完成文件删除与 store 分离，删除失败必须上报而不是吞掉。
 - MCP 服务由三层作用域按项目合并：个人文件、应用启动配置、当前项目的 `easycode.config.json`。高层**整项替换**低层的同名条目，不做字段级拼接，所以「项目里 `enabled: false`」就是屏蔽个人服务的手段，`overrides` 记录被遮住的下层。生效列表只对**一个项目**成立（会话主目录取项目作用域，次目录不参与），改合并规则时同时覆盖「项目停用个人服务」「另一项目不受影响」两条路径。
-- MCP 配置只记**密钥从哪来**（`secret_env`/`secret_headers`/`bearer_credential` 存名字），值放在 `~/.easycode/mcp-credentials.json`（0600、原子替换、随 `secret_paths()` 硬保护）。因此设置接口的读路径用 `resolve()` 而**不是** `effective_servers()`——后者会把值填进 env/headers，直接把 token 发给浏览器。凭据归属含项目根与 URL：根一律取**解析后的项目目录**（省略 root 表示默认项目，会话里带的也是这个路径，不能用请求里的写法），指向新主机的服务不会拿到旧主机的 token。删除服务注册要一并删除它的凭据。
+- MCP 配置只记**密钥从哪来**（`secret_env`/`secret_headers`/`bearer_credential` 存名字），值放在 `~/.easycode/mcp-credentials.json`（0600、原子替换、随 `secret_paths()` 硬保护）。因此设置接口的读路径用 `resolve()` 而**不是** `effective_servers()`——后者会把值填进 env/headers，直接把 token 发给浏览器。凭据归属含项目根与 URL：根一律取**解析后的项目目录**（省略 root 表示默认项目，会话里带的也是这个路径，不能用请求里的写法），指向新主机的服务不会拿到旧主机的 token。删除服务注册要一并删除它的凭据。「这个服务用哪条凭据」只有 `matching_credential()` 一份实现，连接、设置面板与连接指纹都走它，规则分叉会让同一个服务在一处被填上凭据、在另一处被判成没有。
 - MCP 写接口的作用域由服务端决定，项目根必须是已登记项目，路径绝不取自请求。应用启动配置在正常启动时**就是**当前项目的那个文件，此时面板只列一次（按项目作用域），否则同一个条目会被显示成不存在的两层合并。写入走 `config_change()` → `idle_sessions()`，结束后对受影响会话调 `invalidate_mcp_if_context_changed()`。
-- MCP 进程的沙箱上下文或配置指纹变化统一由 `Agent.invalidate_mcp_if_context_changed()` 判断并回收；修改权限、目录、设置编辑或子 Agent 借用逻辑时，覆盖父子上下文相同与不同两种路径。连接走官方 `mcp` SDK：它的客户端传输是必须在同一个任务里进出的 anyio 上下文管理器，而 easycode 会在另一个任务里释放连接，所以每条连接由 `MCPConnection` 自己的任务持有并只对外暴露 session；改生命周期时不要把上下文管理挪回调用方任务。`startup_timeout_sec` 必须覆盖「连接 + initialize + 列出工具」整段——只包进程启动的话，卡在 initialize 的服务会绕过超时并在放弃后留下子进程；工具超时用 `asyncio.timeout` 包住整次调用（不只是等响应），并把整段起点定在启动时，绝不依赖 SDK 的读超时。stdio 服务只有在配置里显式开启 `network_enabled` 才拿到网络授权，包管理器（npx/uvx 等）另给一个 easycode 自己的缓存目录写权限——缓存目录必须在数据目录**之外**，否则沙箱的写拒绝会让它永远写不进去。
+- MCP 进程的沙箱上下文或配置指纹变化统一由 `Agent.invalidate_mcp_if_context_changed()` 判断并回收；修改权限、目录、设置编辑或子 Agent 借用逻辑时，覆盖父子上下文相同与不同两种路径。连接指纹里的凭据部分只纳入**本会话服务实际会用到的**记录（按作用域、服务名与解析后的 root 匹配，个人作用域不按项目 root 过滤），别的项目轮换它自己的 token 不该让本会话重连。连接走官方 `mcp` SDK：它的客户端传输是必须在同一个任务里进出的 anyio 上下文管理器，而 easycode 会在另一个任务里释放连接，所以每条连接由 `MCPConnection` 自己的任务持有并只对外暴露 session；改生命周期时不要把上下文管理挪回调用方任务。`startup_timeout_sec` 必须覆盖「连接 + initialize + 列出工具」整段——只包进程启动的话，卡在 initialize 的服务会绕过超时并在放弃后留下子进程；工具超时用 `asyncio.timeout` 包住整次调用（不只是等响应），并把整段起点定在启动时，绝不依赖 SDK 的读超时。stdio 服务只有在配置里显式开启 `network_enabled` 才拿到网络授权，包管理器（npx/uvx 等）另给一个 easycode 自己的缓存目录写权限——缓存目录必须在数据目录**之外**，否则沙箱的写拒绝会让它永远写不进去。
+- 删除一个会话会释放它的全部前端缓存（流条目、artifact 记录、面板分区与预览、滚动位置），并中止在途请求、丢弃此后到达的事件：三条删除成功路径（单个删除、关闭空白标签、项目移除含归档会话）都走 `forgetSession()`，删除失败、关闭标签、切换会话与归档都不调用。新增按会话存放的前端状态时同时接上这条释放路径，否则删掉的会话会一直留在内存里，迟到的流事件还能把它的视图填回来。
 - 不提交或输出模型密钥、凭据及私人会话内容。验证优先使用临时目录和模拟数据，不改写用户真实会话来制造测试条件。
 
 ## 环境与常用命令
@@ -115,7 +117,7 @@ npm --prefix frontend run dev
 - 审查意见说明触发条件、影响和证据；先核实再修复，不把不确定的判断当成事实。
 - 按本次影响选择最小但有效的检查。共享接口或跨模块流程变化时扩大范围；不强制每次跑全量测试，也不重复运行结果仍然有效的检查。
 - 修复 bug 时优先增加能发现原问题的回归检查，必要时确认该检查在未修复代码上会失败；不要只按实现细节编写永远通过的断言。测试夹具要还原生产的沙箱形态：沙箱的临时目录与数据目录不能把工作区 fixture 包在里面，否则权限缺陷会被夹具掩盖成预期行为（`tests/conftest.py` 因此把沙箱临时目录移进 `tmp_path`）。同理，面板记录与消息历史一致性的改动要用「历史已被压缩裁剪成桩」的数据验证：完整历史里两者都全，合并方向写反也看不出来。
-- 涉及启动、配置、工具执行、流式交互、会话恢复或停止时，从对应的 CLI、Web、API 或实际子进程入口验证。测试全绿和高覆盖率不能替代真实使用路径；布局、面板、输入框及浮层改动还需在浏览器里实际走一遍，检查短窗口和窄屏下的裁剪、滚动与操作入口可达性；改侧栏滚动容器时还要在 macOS 核对悬浮滚动条是否遮挡会话行和目录卡片。浏览器验收前必须先构建前端（`npm --prefix frontend run build`，或直接用 `scripts/restart-web.sh`，它会先构建、构建失败就不启动），否则验收的是上一份 `frontend/dist`；`examples/task-list/` 是零依赖的浏览器验收示例，它自带的 `node tests/dom-check.mjs` 与 `node tests/mutation-check.mjs` 只证明数据行为，不能替代真实浏览器的布局与兼容性检查。
+- 涉及启动、配置、工具执行、流式交互、会话恢复或停止时，从对应的 CLI、Web、API 或实际子进程入口验证。测试全绿和高覆盖率不能替代真实使用路径；布局、面板、输入框及浮层改动还需在浏览器里实际走一遍，检查短窗口和窄屏下的裁剪、滚动与操作入口可达性；改侧栏滚动容器时还要在 macOS 核对悬浮滚动条是否遮挡会话行和目录卡片。浏览器验收前必须先构建前端（`npm --prefix frontend run build`，或直接用 `scripts/restart-web.sh`，它会先构建、构建失败就不启动），否则验收的是上一份 `frontend/dist`；需要隔离验收（临时 `HOME`、脚本化模型、真实 MCP 子进程）时在**独立端口**另起一份 `create_app`，不要用 `restart-web.sh`——它会先把真实 8000 端口的服务停掉；`examples/task-list/` 是零依赖的浏览器验收示例，它自带的 `node tests/dom-check.mjs` 与 `node tests/mutation-check.mjs` 只证明数据行为，不能替代真实浏览器的布局与兼容性检查。
 - 模拟模型用于稳定验证程序流程；真实模型接入或效果需要相应的实际验证。缺少凭据或环境时明确记录未验证项，不宣称已经通过。
 - 纯文档修改检查事实、路径、命令和差异即可，不因此新增业务测试或运行全部测试。
 

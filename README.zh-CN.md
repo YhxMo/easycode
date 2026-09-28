@@ -145,12 +145,16 @@ Shell 沙箱把数据目录 `~/.easycode/` 也当作可写根（只有 `sessions
 
 ## 代码结构
 
+Python 源码本身就是 `easycode` 包，直接放在 `src/` 下（`pyproject.toml` 里的 `package-dir` 映射
+给出这个导入名）。
+
 | 路径 | 内容 |
 | --- | --- |
-| `src/easycode/agent/` | 执行循环、上下文预算与压缩、提示词、内置工具 |
-| `src/easycode/tools/` | 文件与 Shell 工具 |
-| `src/easycode/policy.py`、`approval.py`、`sandbox/` | 权限模式、审批、macOS 沙箱 |
-| `src/easycode/web/`、`frontend/` | FastAPI 应用与 React 界面 |
+| `src/agent/` | 执行循环、回合记录、上下文预算与压缩、提示词、内置工具 |
+| `src/tools/`、`src/models/` | 文件与 Shell 工具、模型适配与凭据 |
+| `src/permissions/` | 权限模式、审批、路径边界、macOS 沙箱 |
+| `src/extensions/` | Skill、命令与子 Agent 规格，以及 MCP 配置与连接 |
+| `src/web/`、`frontend/` | FastAPI 应用与路由；React 界面 |
 | `tests/`、`frontend/src/__tests__/` | 后端与前端测试 |
 | `examples/` | 示例 Agent、Skill、命令，以及一个零依赖的演示项目 |
 

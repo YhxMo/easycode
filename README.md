@@ -171,12 +171,16 @@ workspace mode; paths outside the workspace are still refused.
 
 ## Project layout
 
+The Python sources *are* the `easycode` package and live directly in `src/` (a `package-dir` mapping
+in `pyproject.toml` gives them that import name).
+
 | Path | What is there |
 | --- | --- |
-| `src/easycode/agent/` | The execution loop, context budget and compaction, prompts, built-in tools |
-| `src/easycode/tools/` | File and shell tools |
-| `src/easycode/policy.py`, `approval.py`, `sandbox/` | Permission modes, approvals, macOS sandbox |
-| `src/easycode/web/`, `frontend/` | FastAPI application and the React UI |
+| `src/agent/` | The execution loop, turn records, context budget and compaction, prompts, built-in tools |
+| `src/tools/`, `src/models/` | File and shell tools, model adapters and credentials |
+| `src/permissions/` | Permission modes, approvals, the path boundary, the macOS sandbox |
+| `src/extensions/` | Skills, commands and subagent specs, and the MCP configuration and connections |
+| `src/web/`, `frontend/` | FastAPI application and routes; the React UI |
 | `tests/`, `frontend/src/__tests__/` | Backend and frontend tests |
 | `examples/` | Example agent, skill and command, plus a zero-dependency demo project |
 
