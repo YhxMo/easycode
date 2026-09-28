@@ -13,7 +13,6 @@ import {
   pinSession,
   pinProject,
   revealInFinder,
-  saveProject,
   setSessionArchived,
   submitApproval,
 } from "../api";
@@ -38,7 +37,7 @@ import { PaneBody } from "../features/pane/PaneBody";
 import { usePane } from "../features/pane/usePane";
 import { EmptyState } from "../features/chat/EmptyState";
 import { LoadingState } from "../components/primitives/LoadingState";
-import { TabBar, type OpenTab } from "../features/sidebar/TabBar";
+import type { OpenTab } from "../features/sidebar/TabBar";
 import { SelectionActions } from "../features/chat/SelectionActions";
 import { groupSessions } from "../features/sidebar/sessionGroups";
 import { usePersistedFlags } from "../lib/usePersistedFlags";
@@ -47,7 +46,6 @@ import { useStickToBottom } from "../lib/useStickToBottom";
 import type { StickToBottom } from "../lib/useStickToBottom";
 import type { ProjectAction } from "../features/sidebar/ProjectMenu";
 import { basename, DEFAULT_PROJECT } from "../lib/paths";
-import { SecondaryEditor } from "../features/sidebar/SecondaryEditor";
 import {
   CONTINUE_PROMPT,
   CURRENT_TAB_KEY,
@@ -57,7 +55,9 @@ import {
 } from "./constants";
 import { useSessionList } from "./useSessionList";
 import { useTabs } from "./useTabs";
+import { ChatHeader } from "./ChatHeader";
 import { ConfirmDialogs } from "./ConfirmDialogs";
+import { ProjectEditDialog } from "./ProjectEditDialog";
 import { useSessionLifecycle } from "./useSessionLifecycle";
 import { usePermission } from "./usePermission";
 import { useToast } from "./useToast";
@@ -793,52 +793,22 @@ export default function App() {
       )}
       <main className="chat" ref={chatRef}>
         <div className="chat-card">
-          <div className="chat-top">
-            <TabBar
-              tabs={tabs}
-              currentId={currentId}
-              activity={activity}
-              onSelect={selectTab}
-              onClose={closeTab}
-              onNew={newSession}
-            />
-            <div className="chat-actions">
-              <button
-                type="button"
-                className="sidebar-toggle"
-                aria-label="打开侧栏"
-                aria-controls="sidebar"
-                aria-expanded={sidebarOpen}
-                title="打开侧栏"
-                onClick={() => setSidebarOpen(true)}
-              >
-                <span aria-hidden="true">☰</span>
-              </button>
-              <span
-                className={`connection-state ${busy ? "working" : ""} ${pendingApproval ? "clickable" : ""}`}
-                role={pendingApproval ? "button" : undefined}
-                title={pendingApproval ? "查看待批准的操作" : undefined}
-                onClick={pendingApproval ? revealApproval : undefined}
-              >
-                <span aria-hidden="true" />
-                {busy ? (pendingApproval ? "等待批准" : "正在工作") : "就绪"}
-              </span>
-              <button
-                type="button"
-                className={`icon-btn${pane.open ? " on" : ""}`}
-                aria-label={pane.open ? "收起面板" : "展开面板"}
-                aria-pressed={pane.open}
-                title={pane.open ? "收起面板" : "展开面板"}
-                ref={paneToggleRef}
-                onClick={() => (pane.open ? pane.close() : pane.setOpen(true))}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
-                  <path d="M14.5 4.5v15" />
-                </svg>
-              </button>
-            </div>
-          </div>
+          <ChatHeader
+            tabs={tabs}
+            currentId={currentId}
+            activity={activity}
+            onSelectTab={selectTab}
+            onCloseTab={closeTab}
+            onNewTab={newSession}
+            sidebarOpen={sidebarOpen}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            busy={busy}
+            pendingApproval={pendingApproval}
+            onRevealApproval={revealApproval}
+            paneOpen={pane.open}
+            onTogglePane={() => (pane.open ? pane.close() : pane.setOpen(true))}
+            paneToggleRef={paneToggleRef}
+          />
           <div
             className={`chat-main${isEmptyStage ? "" : " docked"}`}
             ref={mainRef}
@@ -949,60 +919,17 @@ export default function App() {
           />
         )}
         {editTarget && (
-          <Modal
-            open={Boolean(editTarget)}
+          <ProjectEditDialog
+            key={editTarget.root ?? ""}
+            target={editTarget}
+            secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
+            viewTokenRef={openSeqRef}
             onClose={() => setEditTarget(null)}
-            title="编辑项目"
-            variant="project-edit-modal"
-            actions={
-              <>
-                <button type="button" className="modal-cancel" onClick={() => setEditTarget(null)}>
-                  取消
-                </button>
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={async () => {
-                    try {
-                      const r = await saveProject(
-                        editTarget.root,
-                        projectMeta.get(editTarget.root)?.secondary ?? [],
-                        undefined,
-                        editTarget.name,
-                      );
-                      setProjects(r.projects);
-                      refreshSessions();
-                      showToast("ok", "已保存项目设置");
-                    } catch (e) {
-                      showToast("err", e instanceof Error ? e.message : String(e));
-                    }
-                    setEditTarget(null);
-                  }}
-                >
-                  保存
-                </button>
-              </>
-            }
-          >
-            <label className="modal-field">
-              <span>项目名称</span>
-              <input
-                type="text"
-                value={editTarget.name}
-                onChange={(e) => setEditTarget({ ...editTarget, name: e.target.value })}
-                autoFocus
-              />
-            </label>
-            <SecondaryEditor
-              root={editTarget.root}
-              secondary={projectMeta.get(editTarget.root)?.secondary ?? []}
-              disabled={false}
-              viewToken={openSeqRef}
-              onSecondary={() => {}}
-              onProjects={setProjects}
-              onError={(msg) => showToast("err", msg)}
-            />
-          </Modal>
+            onProjects={setProjects}
+            onSaved={() => showToast("ok", "已保存项目设置")}
+            onError={(msg) => showToast("err", msg)}
+            onSessionsChanged={refreshSessions}
+          />
         )}
         {lifecycle.deleteTarget && (
           <Modal
