@@ -21,7 +21,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from easycode.permissions.boundary import PathContext, root_error
-from easycode.tools.files import MAX_READ_BYTES, _iter_files, _read_window
+from easycode.tools.reading import MAX_READ_BYTES, read_window
+from easycode.tools.search import iter_files
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 1000
@@ -76,7 +77,7 @@ def register_files(app: FastAPI, cfg, store) -> None:
         found: list[dict] = []
         seen: set[Path] = set()
         for root in roots:
-            for path in _iter_files(root):
+            for path in iter_files(root):
                 target = path.resolve()
                 # Overlapping roots offer one file twice; the first root that
                 # reaches it — the primary — is what names it.
@@ -147,7 +148,7 @@ def register_files(app: FastAPI, cfg, store) -> None:
 
         start = max(0, offset - 1)
         try:
-            reader = _read_window(target, start, limit)
+            reader = read_window(target, start, limit)
         except FileNotFoundError as exc:
             # Removed between the check above and the read.
             raise HTTPException(404, "not a file") from exc

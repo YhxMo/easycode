@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.tools import build_registry
-from easycode.tools.files import CHUNK_BYTES, MAX_READ_BYTES, _LineWindow, _read_window
+from easycode.tools.reading import CHUNK_BYTES, MAX_READ_BYTES, _LineWindow, read_window
 from easycode.web.main import create_app
 from easycode.web.session import SessionStore
 from tests.conftest import FakeProvider
@@ -421,7 +421,7 @@ def test_preview_reads_a_large_file_in_bounded_chunks(tmp_path, monkeypatch):
             return self._handle.__exit__(*exc)
 
     monkeypatch.setattr(Path, "open", lambda self, *a, **kw: Spy(real_open(self, *a, **kw)))
-    window = _read_window(huge, 0, 0)
+    window = read_window(huge, 0, 0)
 
     # every line is counted, but once the byte budget is spent the text stops
     # being kept — the trailing "end" line is deliberately not retained

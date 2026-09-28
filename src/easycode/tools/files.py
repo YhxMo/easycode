@@ -1,4 +1,4 @@
-"""File tools: read_file, write_file, edit_file, grep, glob.
+"""File tools: read_file, write_file, edit_file.
 
 All tools resolve paths against the sandbox :class:`PathContext` (primary +
 secondary roots). Reads are allowed anywhere; writes/edits outside the safe
@@ -8,150 +8,17 @@ approval layer can decide.
 
 from __future__ import annotations
 
-import codecs
 import difflib
-import fnmatch
-import os
-import re
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, Field
 
 from easycode.permissions.boundary import PathContext, ToolGrant
+from easycode.tools.reading import MAX_READ_BYTES, read_window
 from easycode.tools.registry import json_out, tool_scope
 
-#: Dependency, cache and build directories: skipped in every mode, because
-#: descending into them is cost without content.
-SKIP_DIRS = {".venv", "__pycache__", "node_modules", ".pytest_cache", "venv"}
-#: The repository database is skipped as well while the sandbox is on — it is
-#: protected metadata there. Under full access it is simply a readable path.
-GIT_DIR = ".git"
 MAX_LINE_LEN = 2000
-MAX_READ_BYTES = 50 * 1024
-#: Files larger than this are left out of listings and searches entirely.
-MAX_FILE_BYTES = 2 * 1024 * 1024
 DEFAULT_READ_LIMIT = 2000
-#: Large enough to avoid per-chunk overhead, small enough to bound one read.
-CHUNK_BYTES = 64 * 1024
-#: Everything ``str.splitlines`` treats as a line break.
-_TEXT_BREAK = re.compile("[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
-
-
-class _LineWindow:
-    """A streaming ``str.splitlines`` that keeps only part of its input.
-
-    File reads need an exact line count and a bounded window of line text.
-    Every line is counted, including those beyond the window. A long line
-    inside the window is buffered only up to the byte and optional character
-    limits, plus one character to detect overflow.
-    """
-
-    def __init__(
-        self, start: int, limit: int, max_bytes: int, *, line_chars: int | None = None
-    ) -> None:
-        self.start = start
-        self.limit = limit
-        self.max_bytes = max_bytes
-        self.line_chars = line_chars
-        self.total = 0
-        self.lines: list[str] = []
-        self.bytes = 0
-        self._buf: list[str] = []
-        self._pending = 0
-        #: An unterminated final line is still a line, even when not buffered.
-        self._open = False
-        #: A bare CR at a chunk boundary may pair with the next chunk's LF.
-        self._cr = False
-
-    def _wanted(self, index: int) -> bool:
-        if index < self.start:
-            return False
-        if self.limit > 0 and index >= self.start + self.limit:
-            return False
-        return self.bytes <= self.max_bytes
-
-    def _keep(self, text: str) -> None:
-        """Keep at most the remaining budget plus one overflow character."""
-        room = self.max_bytes - self.bytes + 1 - self._pending
-        if self.line_chars is not None:
-            room = min(room, self.line_chars - self._pending)
-        if room > 0:
-            piece = text[:room]
-            self._buf.append(piece)
-            self._pending += len(piece)
-
-    def feed(self, chunk: str) -> None:
-        if self._cr:
-            self._cr = False
-            if chunk.startswith("\n"):
-                # The CR already ended this line; skip its LF partner.
-                chunk = chunk[1:]
-        pos = 0
-        for match in _TEXT_BREAK.finditer(chunk):
-            if match.start() < pos:
-                # The LF of a CRLF pair was already consumed with the CR.
-                continue
-            index = self.total
-            if self._wanted(index):
-                self._keep(chunk[pos : match.start()])
-                line = "".join(self._buf)
-                self.lines.append(line)
-                self.bytes += len(line.encode("utf-8", errors="replace")) + 1
-            self._buf.clear()
-            self._pending = 0
-            self.total = index + 1
-            self._open = False
-            pos = match.end()
-            if match.group() == "\r":
-                if pos < len(chunk):
-                    if chunk[pos] == "\n":
-                        pos += 1
-                else:
-                    self._cr = True
-        if pos < len(chunk):
-            self._open = True
-            if self._wanted(self.total):
-                self._keep(chunk[pos:])
-
-    def finish(self) -> None:
-        """Close the last line when the text did not end on a line break."""
-        if not self._open:
-            return
-        index = self.total
-        if self._wanted(index):
-            self.lines.append("".join(self._buf))
-        self._buf.clear()
-        self._pending = 0
-        self.total = index + 1
-        self._open = False
-
-
-def _read_window(
-    target: Path,
-    start: int,
-    limit: int,
-    max_bytes: int = MAX_READ_BYTES,
-    *,
-    line_chars: int | None = None,
-) -> _LineWindow:
-    """Read one file window in chunks, decoding across chunk boundaries."""
-    window = _LineWindow(start, limit, max_bytes, line_chars=line_chars)
-    decoder = codecs.getincrementaldecoder("utf-8")("replace")
-    with target.open("rb") as handle:
-        while True:
-            chunk = handle.read(CHUNK_BYTES)
-            if not chunk:
-                break
-            text = decoder.decode(chunk)
-            if text:
-                window.feed(text)
-    tail = decoder.decode(b"", final=True)
-    if tail:
-        window.feed(tail)
-    window.finish()
-    return window
-
 
 def _write_denied(scope: PathContext, p: Path, raw: str, grant: ToolGrant | None) -> str | None:
     """Error JSON when a file write target is denied, else ``None``.
@@ -226,7 +93,7 @@ def read_file(
         )
     if not p.is_file():
         return json_out("error", {"message": f"not a file: {args.path}"})
-    window = _read_window(
+    window = read_window(
         p, args.offset - 1, args.limit, MAX_READ_BYTES, line_chars=MAX_LINE_LEN + 1
     )
     total = window.total
@@ -449,129 +316,3 @@ def make_diff(filename: str, before: str, after: str) -> str:
         tofile=filename,
     )
     return "".join(diff)
-
-
-class GrepArgs(BaseModel):
-    pattern: str = Field(description="regular expression (Python re) to search file contents")
-    include: str | None = Field(None, description="only files matching this glob, e.g. '*.py'")
-    max_matches: int = Field(200, description="max matching lines to return", ge=1, le=5000)
-
-
-def grep(
-    args: GrepArgs, *, root: Path, ctx: PathContext | None = None, grant: ToolGrant | None = None
-) -> str:
-    try:
-        rx = re.compile(args.pattern)
-    except re.error as exc:
-        return json_out("error", {"message": f"invalid regex: {exc}"})
-    scope = tool_scope(root, ctx)
-    matches: list[dict] = []
-    for r in scope.roots:
-        for p in _iter_files(r, include=args.include, skip_dirs=_search_skip_dirs(scope)):
-            if scope.is_protected(p):
-                continue
-            try:
-                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                continue
-            for lineno, line in enumerate(lines, 1):
-                if rx.search(line):
-                    match: dict = {"file": scope.display(p), "line": lineno, "text": line[:300]}
-                    if not p.is_relative_to(scope.primary.resolve()):
-                        match["root"] = str(r)
-                    matches.append(match)
-                    if len(matches) >= args.max_matches:
-                        return json_out("ok", {"matches": matches, "truncated": True})
-    return json_out("ok", {"matches": matches, "truncated": False})
-
-
-class GlobArgs(BaseModel):
-    pattern: str = Field(description="glob pattern relative to a workspace root; '**' recurses")
-    max_results: int = Field(500, description="max file paths to return", ge=1, le=5000)
-
-
-def glob(
-    args: GlobArgs, *, root: Path, ctx: PathContext | None = None, grant: ToolGrant | None = None
-) -> str:
-    scope = tool_scope(root, ctx)
-    results: set[tuple[str, str | None]] = set()
-
-    def record(p: Path, r: Path) -> None:
-        rel = scope.display(p)
-        tag: str | None = None
-        if not p.is_relative_to(scope.primary.resolve()):
-            tag = str(r)
-        results.add((rel, tag))
-
-    skip_dirs = _search_skip_dirs(scope)
-    for r in scope.roots:
-        for pat in (args.pattern, f"**/{args.pattern}"):
-            for p in r.glob(pat):
-                if (
-                    p.is_file()
-                    and not _is_skipped(p, r, skip_dirs)
-                    and not scope.is_protected(p)
-                ):
-                    record(p, r)
-    ordered = sorted(results, key=lambda x: x[0])[: args.max_results]
-    out: list[Any] = []
-    for rel, tag in ordered:
-        out.append(rel if tag is None else {"path": rel, "root": tag})
-    return json_out(
-        "ok", {"matches": out, "count": len(out), "truncated": len(results) > args.max_results}
-    )
-
-
-#: What a listing skips unless the caller says otherwise: the performance
-#: ignores plus the repository database.
-DEFAULT_SKIP_DIRS = SKIP_DIRS | {GIT_DIR}
-
-
-def _search_skip_dirs(scope: PathContext) -> set[str]:
-    """Directories a search under ``scope`` never descends into.
-
-    Dependency and cache directories are a cost question, not a boundary, so
-    they stay skipped in every mode; ``.git`` is skipped only while the sandbox
-    is on — under full access it is an ordinary readable path.
-    """
-    return SKIP_DIRS if scope.full_access else DEFAULT_SKIP_DIRS
-
-
-def _iter_files(
-    root: Path, include: str | None = None, skip_dirs: set[str] = DEFAULT_SKIP_DIRS
-) -> list[Path]:
-    """Every file under ``root`` the tools may read, in a stable path order.
-
-    Walks directory by directory so ignored directories are pruned before they
-    are entered: ``rglob`` visited every file of ``node_modules`` only to throw
-    it away, which is what made a large tree expensive. The result keeps the
-    previous order (full path, lexicographic), so callers that stop at the
-    first N matches still see the same set.
-    """
-    files: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(name for name in dirnames if name not in skip_dirs)
-        for name in filenames:
-            if name.startswith("._") or name == ".DS_Store":
-                continue
-            p = Path(dirpath) / name
-            if include and not fnmatch.fnmatch(name, include) and not fnmatch.fnmatch(
-                p.relative_to(root).as_posix(), include
-            ):
-                continue
-            try:
-                if p.stat().st_size > MAX_FILE_BYTES:
-                    continue
-            except OSError:
-                continue
-            files.append(p)
-    files.sort()
-    return files
-
-
-def _is_skipped(p: Path, root: Path, skip_dirs: set[str]) -> bool:
-    return any(part in skip_dirs for part in p.relative_to(root).parts) or _is_meta(p)
-
-
-def _is_meta(p: Path) -> bool:
-    return p.name.startswith("._") or p.name == ".DS_Store"

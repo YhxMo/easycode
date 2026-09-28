@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from easycode.tools import build_registry
-from easycode.tools.files import MAX_LINE_LEN, MAX_READ_BYTES, ReadFileArgs, read_file
+from easycode.tools.files import MAX_LINE_LEN, ReadFileArgs, read_file
+from easycode.tools.reading import MAX_READ_BYTES
 
 
 @pytest.fixture
@@ -328,16 +329,16 @@ def test_listing_does_not_enter_ignored_directories(tmp_path, monkeypatch):
         return real_scandir(path)
 
     monkeypatch.setattr(os, "scandir", spy)
-    from easycode.tools.files import _iter_files
+    from easycode.tools.search import iter_files
 
-    assert [p.name for p in _iter_files(tmp_path)] == ["app.py"]
+    assert [p.name for p in iter_files(tmp_path)] == ["app.py"]
     for ignored in ("node_modules", ".git", "__pycache__"):
         assert not [p for p in scanned if ignored in p], scanned
 
 
 def test_listing_keeps_its_path_order(tmp_path):
     """Callers stop at the first N results, so the order is part of the contract."""
-    from easycode.tools.files import _iter_files
+    from easycode.tools.search import iter_files
 
     (tmp_path / "b").mkdir()
     (tmp_path / "a").mkdir()
@@ -345,5 +346,5 @@ def test_listing_keeps_its_path_order(tmp_path):
     (tmp_path / "a" / "y.py").write_text("x\n", encoding="utf-8")
     (tmp_path / "m.py").write_text("x\n", encoding="utf-8")
 
-    rel = [p.relative_to(tmp_path).as_posix() for p in _iter_files(tmp_path)]
+    rel = [p.relative_to(tmp_path).as_posix() for p in iter_files(tmp_path)]
     assert rel == sorted(rel) == ["a/y.py", "b/z.py", "m.py"]
