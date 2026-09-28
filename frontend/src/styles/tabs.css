@@ -223,3 +223,46 @@
   stroke-linejoin: round;
 }
 
+/* The chat header's own controls, from the same region as the tab strip:
+   the drawer handle (off-canvas sidebar) and the connection state. */
+/* the drawer handle only appears once the sidebar is off-canvas */
+.sidebar-toggle {
+  display: none;
+}
+
+.connection-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.connection-state > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-tint);
+}
+
+.connection-state.working > span {
+  background: var(--orange);
+  box-shadow: 0 0 0 3px var(--orange-tint);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.connection-state.clickable {
+  cursor: pointer;
+}
+
+.connection-state.clickable:hover {
+  color: var(--ink-2);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
