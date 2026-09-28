@@ -5,8 +5,13 @@ Three permission modes (config global / CLI flag / Web session):
 - ``ask`` (default): workspace/temp actions run automatically; editing
   external files, the data-home state dirs (~/.easycode/{sessions,agents,
   skills,commands}), and network-ish shell commands ask the user first.
-- ``auto-review``: everything runs; changes are summarized afterwards.
-- ``allow-all``: everything runs; no tracking at all.
+- ``auto-review``: the same calls are flagged, but the model decides instead of
+  the user, and each decision plus a summary of the changes is reported through
+  ``review`` events (see ``Agent._auto_review``).
+- ``allow-all``: nothing is flagged and nothing is reported.
+
+Only ``ask`` can reach ``approval_handler``: the caller that supplies one — the
+Web bridge — has already checked that the session's reviewer is the user.
 """
 
 from __future__ import annotations

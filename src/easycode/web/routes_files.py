@@ -7,9 +7,10 @@ read-only listing inside the workspace, and credential / write-boundary paths
 are excluded outright (a full-access session has neither boundary, and its
 previews may reach any host path its tools could).
 
-POST rather than GET for the same reason as ``/api/commands``: the query has to
-distinguish "no secondary roots given, inherit the project binding" from
-"explicitly no secondary roots", which a query string cannot express.
+POST rather than GET because the body has to distinguish "no secondary roots
+given, inherit the project binding" from "explicitly no secondary roots" — an
+absent query parameter and an empty one read the same, and the difference
+decides what this session's scope actually is.
 """
 
 from __future__ import annotations
