@@ -42,8 +42,8 @@ class _LineWindow:
     count, and the text of one window of lines. It does not need the rest of
     the file, so text is kept only while it can still land in the window and
     only up to the byte budget; every line is still counted to the end. Once
-    the window is closed, the partial line is dropped as well — one extremely
-    long line must not be buffered either.
+    the window is closed, the partial line is dropped as well. A long line
+    inside the window is only buffered up to the byte budget.
     """
 
     def __init__(self, start: int, limit: int, max_bytes: int) -> None:
@@ -56,6 +56,7 @@ class _LineWindow:
         self.lines: list[str] = []
         self.bytes = 0
         self._buf: list[str] = []
+        self._pending = 0
         #: text seen since the last line break (an unterminated final line)
         self._open = False
         #: the previous chunk ended on a bare ``\r``, which may pair with ``\n``
@@ -67,6 +68,14 @@ class _LineWindow:
         if self.limit > 0 and index >= self.start + self.limit:
             return False
         return self.bytes <= self.max_bytes
+
+    def _keep(self, text: str) -> None:
+        """Keep at most the remaining budget plus one overflow character."""
+        room = self.max_bytes - self.bytes + 1 - self._pending
+        if room > 0:
+            piece = text[:room]
+            self._buf.append(piece)
+            self._pending += len(piece)
 
     def feed(self, chunk: str) -> None:
         if self._cr:
@@ -81,11 +90,12 @@ class _LineWindow:
                 continue
             index = self.total
             if self._wanted(index):
-                self._buf.append(chunk[pos : match.start()])
+                self._keep(chunk[pos : match.start()])
                 line = "".join(self._buf)
                 self.lines.append(line)
                 self.bytes += len(line.encode("utf-8", errors="replace")) + 1
             self._buf.clear()
+            self._pending = 0
             self.total = index + 1
             self._open = False
             pos = match.end()
@@ -98,7 +108,7 @@ class _LineWindow:
         if pos < len(chunk):
             self._open = True
             if self._wanted(self.total):
-                self._buf.append(chunk[pos:])
+                self._keep(chunk[pos:])
 
     def finish(self) -> None:
         """Close the last line when the text did not end on a line break."""
@@ -108,6 +118,7 @@ class _LineWindow:
         if self._wanted(index):
             self.lines.append("".join(self._buf))
         self._buf.clear()
+        self._pending = 0
         self.total = index + 1
         self._open = False
 

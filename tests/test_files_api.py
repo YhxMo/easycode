@@ -367,6 +367,8 @@ TRICKY_FILES = {
     "crlf.txt": "a\r\nb\r\nc",
     "lone-cr.txt": "a\rb",
     "cr-crlf.txt": "a\r\r\nb",
+    "crlf-boundary.txt": "a" * (64 * 1024 - 1) + "\r\nb",
+    "trailing-cr.txt": "a\r",
     "unicode-break.txt": "a b c",
     "big-line.txt": "x" * (MAX_READ_BYTES + 5000) + "\ntail\n",
     "multi-chunk.txt": "中" * 40000 + "\n尾",
@@ -426,7 +428,7 @@ def test_preview_reads_a_large_file_in_bounded_chunks(tmp_path, monkeypatch):
     # every line is counted, but once the byte budget is spent the text stops
     # being kept — the trailing "end" line is deliberately not retained
     assert window.total == 2
-    assert window.lines == ["x" * (routes.CHUNK_BYTES * 3 + 10)]
+    assert window.lines == ["x" * (MAX_READ_BYTES + 1)]
     assert sizes and all(0 < size <= routes.CHUNK_BYTES for size in sizes)
     assert len(sizes) > 1
 
@@ -467,3 +469,43 @@ def test_full_access_previews_any_host_path(tmp_path):
         paths = _paths(listing)
         assert ("easycode.config.json" in paths) is expected
         assert str(outside) not in [f["absolute_path"] for f in listing["files"]]
+
+
+def test_line_window_bounds_an_unterminated_line():
+    from easycode.web.routes_files import _LineWindow
+
+    window = _LineWindow(0, 0, 50 * 1024)
+    for _ in range(128):
+        window.feed("a" * 64 * 1024)
+    assert sum(len(part) for part in window._buf) <= 50 * 1024 + 1
+    window.finish()
+    assert window.total == 1
+
+
+def test_preview_bounds_long_lines_without_changing_the_response(tmp_path):
+    _workspace(tmp_path)
+    (tmp_path / "one.txt").write_text("a" * (60 * 1024), encoding="utf-8")
+    (tmp_path / "wide.txt").write_text("a\nb\n" + "中" * (100 * 1024), encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("a" * (1024 * 1024) + "\nsecond\n", encoding="utf-8")
+    client = make_app(tmp_path)
+    session = client.app.state.store.create(root=str(tmp_path))
+
+    one = client.get("/api/files/content", params={"session_id": session.id, "path": "one.txt"})
+    assert one.status_code == 200
+    assert one.json()["text"] == "a" * MAX_READ_BYTES
+    assert one.json()["truncated"] is True
+    assert one.json()["total_lines"] == 1
+
+    wide = client.get("/api/files/content", params={"session_id": session.id, "path": "wide.txt"})
+    assert wide.status_code == 200
+    assert len(wide.json()["text"].encode("utf-8")) <= MAX_READ_BYTES
+    assert wide.json()["text"][-1] == "中"
+    assert wide.json()["total_lines"] == 3
+
+    outside = client.get(
+        "/api/files/content",
+        params={"session_id": session.id, "path": "outside.txt", "offset": 2},
+    )
+    assert outside.status_code == 200
+    assert outside.json()["text"] == "second"
+    assert outside.json()["total_lines"] == 2
