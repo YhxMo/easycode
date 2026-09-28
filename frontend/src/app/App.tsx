@@ -182,6 +182,13 @@ export default function App() {
     stickyRef.current = sticky;
   }, [sticky]);
 
+  // The drafts store changes identity on every edit, so the session lifecycle
+  // reads it through this ref instead of depending on it.
+  const draftsRef = useRef(drafts);
+  useEffect(() => {
+    draftsRef.current = drafts;
+  }, [drafts]);
+
   useEffect(() => {
     refreshSessions();
     fetchModels().then(setModels).catch(() => {});
@@ -329,22 +336,29 @@ export default function App() {
   });
 
   const lifecycle = useSessionLifecycle({
-    stream: { forgetEntry, dropEntry, loadHistory, isStreaming },
-    pane,
-    sticky,
-    drafts,
-    tabs: tabList,
-    list: {
-      sessions,
-      archived,
-      setArchived,
-      sessionById,
-      setProjects,
-      refresh: refreshSessions,
-      refreshArchived,
-    },
-    permission,
-    composer: { closeCmdMenu, dismissMention },
+    forgetEntry,
+    dropEntry,
+    loadHistory,
+    isStreaming,
+    forgetPane: pane.forget,
+    forgetScroll: sticky.forget,
+    draftsRef,
+    openTabs,
+    setOpenTabs: tabList.setOpen,
+    registerTab,
+    rememberedTab: tabList.remembered,
+    sessions,
+    archived,
+    setArchived,
+    sessionById,
+    setProjects,
+    refreshSessions,
+    refreshArchived,
+    permissionMode: permission.mode,
+    resetPermission: permission.reset,
+    clearPermissionPending: permission.clearPending,
+    closeCmdMenu,
+    dismissMention,
     toast: showToast,
     viewTokenRef: openSeqRef,
     currentId,

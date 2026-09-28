@@ -16,36 +16,37 @@ import type { DraftStore } from "../features/composer/useDrafts";
 export type SessionLoad = { status: "loading" } | { status: "error"; message: string };
 
 export interface SessionLifecycleInputs {
-  stream: {
-    forgetEntry: (id: string) => void;
-    dropEntry: (id: string) => void;
-    loadHistory: (key: string, items: Item[]) => void;
-    isStreaming: (key: string) => boolean;
-  };
-  pane: { forget: (id: string) => void };
-  sticky: { forget: (id: string) => void };
-  drafts: DraftStore;
-  tabs: {
-    open: string[];
-    setOpen: (update: (prev: string[]) => string[]) => void;
-    register: (id: string) => void;
-    remembered: string | null;
-  };
-  list: {
-    sessions: SessionSummary[];
-    archived: SessionSummary[];
-    setArchived: (update: (prev: SessionSummary[]) => SessionSummary[]) => void;
-    sessionById: Map<string, SessionSummary>;
-    setProjects: (projects: WorkspaceProject[]) => void;
-    refresh: () => void;
-    refreshArchived: () => void;
-  };
-  permission: {
-    mode: string;
-    reset: (mode: string) => void;
-    clearPending: () => void;
-  };
-  composer: { closeCmdMenu: () => void; dismissMention: () => void };
+  // Named functions rather than the hooks' own objects: those objects are
+  // rebuilt on every render, so depending on one would rebuild every callback
+  // below with it. Each of these is a stable `useCallback` from its hook.
+  forgetEntry: (id: string) => void;
+  dropEntry: (id: string) => void;
+  loadHistory: (key: string, items: Item[]) => void;
+  isStreaming: (key: string) => boolean;
+  forgetPane: (id: string) => void;
+  forgetScroll: (id: string) => void;
+  /**
+   * The drafts store, read at call time rather than depended on: its `get`
+   * closes over the current map, so the store is a new object after every
+   * keystroke and depending on it would rebuild every callback below.
+   */
+  draftsRef: React.RefObject<DraftStore>;
+  openTabs: string[];
+  setOpenTabs: (update: (prev: string[]) => string[]) => void;
+  registerTab: (id: string) => void;
+  rememberedTab: string | null;
+  sessions: SessionSummary[];
+  archived: SessionSummary[];
+  setArchived: (update: (prev: SessionSummary[]) => SessionSummary[]) => void;
+  sessionById: Map<string, SessionSummary>;
+  setProjects: (projects: WorkspaceProject[]) => void;
+  refreshSessions: () => void;
+  refreshArchived: () => void;
+  permissionMode: string;
+  resetPermission: (mode: string) => void;
+  clearPermissionPending: () => void;
+  closeCmdMenu: () => void;
+  dismissMention: () => void;
   toast: (kind: "ok" | "err", text: string) => void;
   /** The view token: a reply from a superseded view is discarded. */
   viewTokenRef: React.RefObject<number>;
@@ -73,14 +74,29 @@ export interface SessionLifecycleInputs {
  */
 export function useSessionLifecycle(input: SessionLifecycleInputs) {
   const {
-    stream,
-    pane,
-    sticky,
-    drafts,
-    tabs,
-    list,
-    permission,
-    composer,
+    forgetEntry,
+    dropEntry,
+    loadHistory,
+    isStreaming,
+    forgetPane,
+    forgetScroll,
+    draftsRef,
+    openTabs,
+    setOpenTabs,
+    registerTab,
+    rememberedTab,
+    sessions,
+    archived,
+    setArchived,
+    sessionById,
+    setProjects,
+    refreshSessions,
+    refreshArchived,
+    permissionMode,
+    resetPermission,
+    clearPermissionPending,
+    closeCmdMenu,
+    dismissMention,
     toast,
     viewTokenRef,
     currentId,
@@ -99,7 +115,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
   const [removeTarget, setRemoveTarget] = useState<{ root: string | null; count: number } | null>(
     null,
   );
-  const currentSession = currentId === null ? undefined : list.sessionById.get(currentId);
+  const currentSession = currentId === null ? undefined : sessionById.get(currentId);
 
   /**
    * Release every per-conversation cache this page holds for a deleted session.
@@ -109,17 +125,17 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
    */
   const forgetSession = useCallback(
     (id: string) => {
-      stream.forgetEntry(id);
+      forgetEntry(id);
       setArtifactRecords((prev) => {
         if (!(id in prev)) return prev;
         const next = { ...prev };
         delete next[id];
         return next;
       });
-      pane.forget(id);
-      sticky.forget(id);
+      forgetPane(id);
+      forgetScroll(id);
     },
-    [stream, setArtifactRecords, pane, sticky],
+    [forgetEntry, setArtifactRecords, forgetPane, forgetScroll],
   );
 
   const openSession = useCallback(
@@ -137,12 +153,12 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
       setCurrentId(id);
       setSidebarOpen(false);
       // An unconfirmed permission change belongs to the view that started it.
-      permission.clearPending();
+      clearPermissionPending();
       // Menus belong to the composer's text, which is about to change: a
       // dismissed state keeps them closed until the user types again.
-      composer.closeCmdMenu();
-      composer.dismissMention();
-      if (id) tabs.register(id);
+      closeCmdMenu();
+      dismissMention();
+      if (id) registerTab(id);
       if (id) {
         setSessionLoad({ status: "loading" });
         try {
@@ -152,7 +168,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
           if (viewTokenRef.current !== token) return;
           // A live turn owns its conversation's items: the disk snapshot lags
           // behind it and would drop the streamed reply and its pending approval.
-          if (!stream.isStreaming(id)) {
+          if (!isStreaming(id)) {
             const restored = historyToItems(
               detail.messages,
               detail.approvals,
@@ -162,15 +178,15 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
             // The task list is session state, not a message: it rides at the end
             // of the stream so a reopened session still shows it.
             if (detail.todos?.length) restored.push({ kind: "todo", todos: detail.todos });
-            stream.loadHistory(id, restored);
+            loadHistory(id, restored);
           }
           // An edit draft is only meaningful while the turn it names is still in
           // the conversation: after a reload it may have been replaced here or in
           // another tab. The text the user typed stays; the target does not
           // silently become a different turn.
-          drafts.revalidateEdit(id, (detail.turns ?? []).map((t) => t.id), detail.revision);
+          draftsRef.current.revalidateEdit(id, (detail.turns ?? []).map((t) => t.id), detail.revision);
           setSecondary(detail.secondary_roots ?? []);
-          permission.reset(detail.permission_mode ?? "ask");
+          resetPermission(detail.permission_mode ?? "ask");
           // Records describe the whole conversation, not one turn, so they are
           // adopted even while a turn runs: the live items fill in whatever the
           // server had not recorded when this reply was sent.
@@ -183,7 +199,7 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
           if (viewTokenRef.current !== token) return;
           // A failed detail fetch must not blank a conversation that is still
           // streaming into the view.
-          if (stream.isStreaming(id)) {
+          if (isStreaming(id)) {
             setSessionLoad(null);
             return;
           }
@@ -192,10 +208,10 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
           toast("err", `打开会话失败: ${message}`);
         }
       } else {
-        stream.dropEntry(DRAFT_KEY);
+        dropEntry(DRAFT_KEY);
         setSessionLoad(null);
         setSecondary([]);
-        permission.reset("ask");
+        resetPermission("ask");
       }
     },
     [
@@ -205,14 +221,18 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
       setSidebarOpen,
       setCurrentId,
       viewTokenRef,
-      permission,
-      composer,
-      tabs,
+      clearPermissionPending,
+      closeCmdMenu,
+      dismissMention,
+      registerTab,
       setSessionLoad,
-      stream,
-      drafts,
+      loadHistory,
+      isStreaming,
       setSecondary,
       setArtifactRecords,
+      resetPermission,
+      dropEntry,
+      draftsRef,
       toast,
     ],
   );
@@ -226,13 +246,13 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
   useEffect(() => {
     if (restoredTabRef.current) return;
     restoredTabRef.current = true;
-    if (!tabs.remembered) return;
+    if (!rememberedTab) return;
     fetchSessions()
       .then((rows) => {
-        if (rows.some((s) => s.id === tabs.remembered)) void openSession(tabs.remembered);
+        if (rows.some((s) => s.id === rememberedTab)) void openSession(rememberedTab);
       })
       .catch(() => {});
-  }, [tabs, openSession]);
+  }, [rememberedTab, openSession]);
 
   /**
    * Create the conversation the user just asked for, before anything is sent:
@@ -243,18 +263,18 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
     async (root: string | null) => {
       setSidebarOpen(false);
       try {
-        const created = await createSession(root, permission.mode);
+        const created = await createSession(root, permissionMode);
         // Text typed on the start page was meant for the conversation the user
         // just asked for, so it comes along instead of being parked on a page
         // they have left.
-        if (currentId === null) drafts.move(DRAFT_KEY, created.id);
-        list.refresh();
+        if (currentId === null) draftsRef.current.move(DRAFT_KEY, created.id);
+        refreshSessions();
         void openSession(created.id);
       } catch (e) {
         toast("err", `新建会话失败: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
-    [currentId, drafts, openSession, permission, list, setSidebarOpen, toast],
+    [currentId, openSession, permissionMode, refreshSessions, setSidebarOpen, toast, draftsRef],
   );
 
   const newSession = useCallback(() => {
@@ -274,16 +294,16 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
 
   const closeTab = useCallback(
     async (id: string) => {
-      const index = tabs.open.indexOf(id);
-      const remaining = tabs.open.filter((t) => t !== id);
-      const target = list.sessionById.get(id);
+      const index = openTabs.indexOf(id);
+      const remaining = openTabs.filter((t) => t !== id);
+      const target = sessionById.get(id);
       // A conversation the server reports as never started is not worth
       // keeping: ask it to remove the session — it re-checks under its own lock,
       // so a turn that began in the meantime keeps it — and only then drop the
       // tab. Anything else keeps its slot, so a turn's output is never lost and
       // the tab can be reopened; an unknown "started" is treated as started,
       // because only an explicit blank is safe to delete.
-      if (target && target.started === false && !stream.isStreaming(id)) {
+      if (target && target.started === false && !isStreaming(id)) {
         try {
           await deleteSession(id, true);
         } catch (e) {
@@ -292,19 +312,31 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
           toast("err", `关闭会话失败: ${e instanceof Error ? e.message : String(e)}`);
           return;
         }
-        drafts.clear(id);
+        draftsRef.current.clear(id);
         forgetSession(id);
-        list.refresh();
+        refreshSessions();
       }
-      tabs.setOpen(() => remaining);
+      setOpenTabs(() => remaining);
       // Dropping an idle conversation makes reopening it reload from disk; a
       // running turn keeps its slot (and its draft) so its output is not lost.
-      stream.dropEntry(id);
+      dropEntry(id);
       if (id !== currentId) return;
       const neighbour = remaining[index] ?? remaining[index - 1] ?? null;
       void openSession(neighbour);
     },
-    [tabs, list, currentId, drafts, forgetSession, stream, toast, openSession],
+    [
+      openTabs,
+      sessionById,
+      currentId,
+      forgetSession,
+      isStreaming,
+      draftsRef,
+      refreshSessions,
+      setOpenTabs,
+      dropEntry,
+      toast,
+      openSession,
+    ],
   );
 
   const confirmDeleteSession = useCallback(async () => {
@@ -322,18 +354,30 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
       setDeleteTarget(null);
       return;
     }
-    list.setArchived((prev) => prev.filter((x) => x.id !== target.id));
+    setArchived((prev) => prev.filter((x) => x.id !== target.id));
     // Only a successful delete drops the tab (and the draft it holds).
-    tabs.setOpen((prev) => prev.filter((t) => t !== target.id));
-    drafts.clear(target.id);
+    setOpenTabs((prev) => prev.filter((t) => t !== target.id));
+    draftsRef.current.clear(target.id);
     forgetSession(target.id);
     // Clear the view only when it is still the one the delete targeted: a
     // switch during the delete must not blank the new view.
     if (isCurrent && viewTokenRef.current === token) void openSession(null);
     setDeleteTarget(null);
-    list.refresh();
-    list.refreshArchived();
-  }, [deleteTarget, currentId, viewTokenRef, toast, list, tabs, drafts, forgetSession, openSession]);
+    refreshSessions();
+    refreshArchived();
+  }, [
+    deleteTarget,
+    currentId,
+    viewTokenRef,
+    toast,
+    setArchived,
+    setOpenTabs,
+    forgetSession,
+    draftsRef,
+    refreshSessions,
+    refreshArchived,
+    openSession,
+  ]);
 
   const confirmRemoveProject = useCallback(async () => {
     if (!removeTarget) return;
@@ -341,25 +385,25 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
     const token = viewTokenRef.current;
     // Sessions of this project, captured now: a failed removal leaves every
     // tab where it was.
-    const removed = list.sessions.filter((s) => (s.root ?? null) === removedRoot).map((s) => s.id);
+    const removed = sessions.filter((s) => (s.root ?? null) === removedRoot).map((s) => s.id);
     // Archived conversations of that project are removed as well, so their
     // caches have to go too — the sidebar just was not showing them.
     const removedAll = [
       ...new Set([
         ...removed,
-        ...list.archived.filter((s) => (s.root ?? null) === removedRoot).map((s) => s.id),
+        ...archived.filter((s) => (s.root ?? null) === removedRoot).map((s) => s.id),
       ]),
     ];
     try {
       const r = await removeProject(removedRoot);
-      list.setProjects(r.projects);
-      tabs.setOpen((prev) => prev.filter((id) => !removedAll.includes(id)));
+      setProjects(r.projects);
+      setOpenTabs((prev) => prev.filter((id) => !removedAll.includes(id)));
       for (const id of removedAll) {
-        drafts.clear(id);
+        draftsRef.current.clear(id);
         forgetSession(id);
       }
-      list.refresh();
-      list.refreshArchived();
+      refreshSessions();
+      refreshArchived();
       if (viewTokenRef.current === token) {
         if (currentId !== null && (currentSession?.root ?? null) === removedRoot) {
           void openSession(null);
@@ -376,10 +420,14 @@ export function useSessionLifecycle(input: SessionLifecycleInputs) {
   }, [
     removeTarget,
     viewTokenRef,
-    list,
-    tabs,
-    drafts,
+    sessions,
+    archived,
+    setProjects,
+    setOpenTabs,
     forgetSession,
+    draftsRef,
+    refreshSessions,
+    refreshArchived,
     currentId,
     currentSession,
     chosenRoot,

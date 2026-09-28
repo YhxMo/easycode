@@ -8,6 +8,21 @@ import { composerField, detail, primeApiMock, session, sessionRow, sidebarRow } 
 // S1 regression set: which conversation owns a tab, a draft and a pane choice.
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
+// The header is recorded and then drawn by the real one: the props each render
+// hands it are the subject, not what it looks like.
+type HeaderProps = Parameters<typeof import("../app/ChatHeader").ChatHeader>[0];
+const headerProps = vi.hoisted(() => [] as Array<{ onSelectTab: (id: string | null) => void }>);
+vi.mock("../app/ChatHeader", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../app/ChatHeader")>();
+  return {
+    ...actual,
+    ChatHeader: (props: HeaderProps) => {
+      headerProps.push(props);
+      return actual.ChatHeader(props);
+    },
+  };
+});
+
 const m = vi.mocked(api);
 
 /** Captures every started stream so a test can drive them independently. */
@@ -68,6 +83,7 @@ async function produceContext(stream: { onEvent: (e: api.ChatEvent) => void }, p
 
 beforeEach(() => {
   window.localStorage.clear();
+  headerProps.length = 0;
   primeApiMock(m);
   m.fetchSessions.mockResolvedValue([session("A", "会话A"), session("B", "会话B")]);
   m.fetchModels.mockResolvedValue({
@@ -82,6 +98,21 @@ beforeEach(() => {
 });
 
 describe("App · 标签生命周期", () => {
+  it("输入文字不会重建传给标签栏的 selectTab", async () => {
+    // The lifecycle callbacks are handed down as props and put in effects, so a
+    // keystroke must not build new ones. This one used to change on every render
+    // because the hook depended on objects the App rebuilds each time.
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("会话A");
+    await user.click(sidebarRow("会话A"));
+    await act(async () => {});
+
+    const before = headerProps.at(-1)!.onSelectTab;
+    await user.type(composerField(), "abc");
+    expect(headerProps.at(-1)!.onSelectTab).toBe(before);
+  });
+
   it("A→B→A 都保留标签，刷新后从存储恢复", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<App />);
