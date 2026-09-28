@@ -298,9 +298,9 @@ export function useComposer({
   // conversation it was spoken into.
   const voiceKeyRef = useRef(key);
   const voice = useVoiceInput((text) => appendToDraft(voiceKeyRef.current, text));
+  // The button's toggle is the wrapper, never `voice.toggle`: only it pins the
+  // dictation to the draft it started in.
   const toggleVoice = useCallback(() => {
-    // Remember where this dictation belongs: a transcript that arrives after
-    // the user switched away must not append to the new conversation.
     if (!voice.listening) voiceKeyRef.current = key;
     voice.toggle();
   }, [voice, key]);
@@ -425,7 +425,6 @@ export function useComposer({
     pickMention,
     dismissMention,
     retryMention,
-    toggleVoice,
-    voice,
+    voice: { supported: voice.supported, listening: voice.listening, toggle: toggleVoice },
   };
 }
