@@ -8,14 +8,12 @@ import type {
 import { fetchModels } from "../api";
 import { DRAFT_KEY, useChatStream } from "../features/chat/useChatStream";
 import { useComposer } from "../features/composer/useComposer";
-import { MENTION_LIST_ID, MENTION_OPTION_PREFIX, MentionMenu } from "../features/composer/MentionMenu";
 import { ExtensionsSettings } from "../features/extensions/ExtensionsSettings";
 import { ModelPicker } from "../features/models/ModelPicker";
-import { COMMAND_LIST_ID, CommandMenu } from "../features/composer/CommandMenu";
 import { activeCommandId } from "../features/composer/commands";
 import { ChatMessages } from "../features/chat/ChatMessages";
 import { Sidebar } from "../features/sidebar/Sidebar";
-import { ComposerBar } from "../features/composer/ComposerBar";
+import { Composer } from "../features/composer/Composer";
 import { RightPane } from "../features/pane/RightPane";
 import { PaneBody } from "../features/pane/PaneBody";
 import { usePane } from "../features/pane/usePane";
@@ -352,80 +350,34 @@ export default function App() {
   // something to show; a load in progress is never masked by it.
   const isEmptyStage = items.length === 0 && sessionLoad === null;
 
-  // One composer, two placements: the centred first-run card, or docked over
-  // the message stream. Only one of them is mounted at a time.
+  // The model picker sits in the composer, whichever placement is on screen.
+  const modelPicker = (
+    <ModelPicker
+      models={models}
+      current={models.default}
+      sessionAlias={currentId ? (currentSession?.model_alias ?? null) : null}
+      switchingBlocked={anyBusy}
+      onChange={(next) => {
+        setModels(next);
+        // Switching rebinds every live session, so the reply meta rows and
+        // the sidebar must be re-read rather than assume the old binding.
+        refreshSessions();
+      }}
+      onError={(msg) => showToast("err", msg)}
+    />
+  );
   const renderComposer = (variant: "tall" | "docked") => (
-    <ComposerBar
+    <Composer
       variant={variant}
-      value={composer.input}
-      placeholder="向 Easy code 提问，使用 / 运行命令…"
-      ariaLabel="给 Easy code 发送消息"
+      composer={composer}
+      fieldRef={fieldRef}
       busy={busy}
       sendBlocked={sendBlocked}
       permission={permission.mode}
-      permissionDisabled={busy || sendBlocked}
       onPermission={permission.request}
-      onChange={composer.handleChange}
-      onKeyDown={composer.onKeyDown}
-      onSelectionChange={composer.setCaret}
-      onComposingChange={composer.handleComposingChange}
-      onCompositionEnd={(v, nextCaret) => composer.syncComposer(v, nextCaret)}
-      fieldRef={fieldRef}
-      menuOpen={composer.mentionOpen || composer.cmdOpen}
-      menuId={composer.mentionOpen ? MENTION_LIST_ID : COMMAND_LIST_ID}
-      activeOptionId={
-        composer.mentionOpen
-          ? composer.mentionMatches.length
-            ? `${MENTION_OPTION_PREFIX}${Math.min(composer.mentionIndex, composer.mentionMatches.length - 1)}`
-            : undefined
-          : undefined
-      }
-      onSend={composer.submit}
-      editing={
-        composer.editingDraft
-          ? { text: composer.editingDraft.text, onCancel: cancelEdit }
-          : undefined
-      }
+      onCancelEdit={cancelEdit}
       onStop={stop}
-      hint="Enter 发送 · Shift + Enter 换行"
-      model={
-        <ModelPicker
-          models={models}
-          current={models.default}
-          sessionAlias={currentId ? (currentSession?.model_alias ?? null) : null}
-          switchingBlocked={anyBusy}
-          onChange={(next) => {
-            setModels(next);
-            // Switching rebinds every live session, so the reply meta rows and
-            // the sidebar must be re-read rather than assume the old binding.
-            refreshSessions();
-          }}
-          onError={(msg) => showToast("err", msg)}
-        />
-      }
-      voice={composer.voice}
-      menu={
-        composer.mentionOpen ? (
-          <MentionMenu
-            state={composer.mentionCurrent}
-            query={composer.mentionInfo?.query ?? ""}
-            index={composer.mentionIndex}
-            onPick={composer.pickMention}
-            onClose={composer.dismissMention}
-            onRetry={composer.retryMention}
-          />
-        ) : (
-          <CommandMenu
-            state={composer.commandState}
-            open={composer.cmdOpen}
-            query={composer.input}
-            index={composer.cmdIndex}
-            onPick={composer.pickCommand}
-            onRetry={composer.retryCommands}
-            onClose={composer.closeCmdMenu}
-          />
-        )
-      }
+      model={modelPicker}
     />
   );
 
