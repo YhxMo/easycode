@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Trace, TraceStep } from "./trace";
-import { parseResult, str } from "./toolResult";
+import { parseResult, str } from "../../lib/toolResult";
 import { DiffView } from "../../components/primitives/DiffView";
 import { ToolChips } from "./ToolChips";
 

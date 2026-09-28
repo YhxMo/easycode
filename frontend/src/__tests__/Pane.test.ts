@@ -15,12 +15,12 @@ import fixtures from "./fixtures/toolResults.json";
 // ``paneData`` runs on every render of the activity pane, so it must not pay
 // for a JSON parse on results it has no card for. Counting the parse is the
 // only way to see that from the outside — the cards themselves look identical.
-vi.mock("../features/chat/toolResult", async (orig) => {
-  const mod = await orig<typeof import("../features/chat/toolResult")>();
+vi.mock("../lib/toolResult", async (orig) => {
+  const mod = await orig<typeof import("../lib/toolResult")>();
   return { ...mod, parseResult: vi.fn(mod.parseResult) };
 });
 const parseCounter = async () =>
-  (await import("../features/chat/toolResult")).parseResult as unknown as ReturnType<typeof vi.fn>;
+  (await import("../lib/toolResult")).parseResult as unknown as ReturnType<typeof vi.fn>;
 
 // The samples come from the real Python tools; tests/test_tool_result_contract.py
 // regenerates them and fails when the shapes drift, so these cards assert

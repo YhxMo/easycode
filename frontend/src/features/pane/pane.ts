@@ -8,7 +8,7 @@ import type { GitFileState } from "../../api";
 import type { Item, ToolItem } from "../../types";
 import { basename } from "../../lib/paths";
 import { diffStats } from "../../lib/diff";
-import { num, parseResult, resultStatus, str } from "../chat/toolResult";
+import { num, parseResult, resultStatus, str } from "../../lib/toolResult";
 
 /** Search hits offered as preview links before the rest are summarised. */
 export const MAX_HITS = 5;

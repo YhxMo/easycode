@@ -1,6 +1,6 @@
 // Aggregate a turn's tool calls into an expandable trace.
 import type { Item } from "../../types";
-import { parseResult, resultStatus } from "./toolResult";
+import { parseResult, resultStatus } from "../../lib/toolResult";
 
 export type StepStatus = "running" | "done" | "error";
 
