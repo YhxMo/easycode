@@ -29,7 +29,8 @@ import { useDrafts, type Draft } from "../features/composer/useDrafts";
 import { useStickToBottom } from "../lib/useStickToBottom";
 import type { StickToBottom } from "../lib/useStickToBottom";
 import { basename, DEFAULT_PROJECT } from "../lib/paths";
-import { EMPTY_MODELS, NARROW_CHAT_PX, PANE_SECTIONS } from "./constants";
+import { EMPTY_MODELS, PANE_SECTIONS } from "./constants";
+import { useChatLayout } from "./useChatLayout";
 import { useSessionList } from "./useSessionList";
 import { useTabs } from "./useTabs";
 import { ChatHeader } from "./ChatHeader";
@@ -101,9 +102,6 @@ export default function App() {
   const { open: sidebarOpen, setOpen: setSidebarOpen, close: closeSidebar } = useSidebarDrawer();
   const mainRef = useRef<HTMLDivElement>(null);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
-  // Height of the floating composer: the message stream reserves exactly that
-  // much room at its bottom, so a grown input never hides the last reply.
-  const [composerHeight, setComposerHeight] = useState(0);
   const permission = usePermission({
     sessionId: currentId,
     sessionBlocked: sessionLoad !== null,
@@ -230,17 +228,6 @@ export default function App() {
   const [collapsedProjects, toggleProjectCollapsed] = usePersistedFlags("easycode:collapsed_projects");
   const [collapsedSections, toggleSection] = usePersistedFlags("easycode:collapsed_sections");
 
-  // The composer is laid out over the stream: publish its height so the stream
-  // can keep exactly that much room clear at the bottom.
-  const attachComposer = useCallback((el: HTMLDivElement | null) => {
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const publish = () => setComposerHeight(el.offsetHeight);
-    const observer = new ResizeObserver(publish);
-    observer.observe(el);
-    publish();
-    return () => observer.disconnect();
-  }, []);
-
   const projectMeta = useMemo(() => {
     const map = new Map<string | null, WorkspaceProject>();
     for (const p of workspaces.projects ?? []) map.set(p.root ?? null, p);
@@ -295,21 +282,10 @@ export default function App() {
   const draftContext = projectLabel(chosenRoot);
   const transcript = useTranscriptView(items, activity);
   const { exploration, activeTool, anyBusy, turn, turnNo, pendingApproval } = transcript;
-  // The pane covers the stream once the chat area gets narrow. Measured from
-  // the element the CSS container query measures, so the two agree; a narrow
-  // pane must not open on its own, since it would hide the reply it describes.
-  const chatRef = useRef<HTMLElement>(null);
+  // The pane covers the stream once the chat area gets narrow; a narrow pane
+  // must not open on its own, since it would hide the reply it describes.
+  const { chatRef, narrow: chatNarrow, composerHeight, attachComposer } = useChatLayout();
   const paneToggleRef = useRef<HTMLButtonElement>(null);
-  const [chatNarrow, setChatNarrow] = useState(false);
-  useEffect(() => {
-    const el = chatRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const measure = () => setChatNarrow(el.clientWidth < NARROW_CHAT_PX);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
 
   // The pane reads the whole conversation, not just the turn on screen: its
   // records outlive the message history, and the calls this view holds but the
