@@ -268,7 +268,6 @@ export function ModelDialog({
       </div>
 
       <div className="modal-section">
-        <div className="modal-section-title">列表分组（可选）</div>
         <div className="modal-field">
           <label>
             供应商
