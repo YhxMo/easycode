@@ -15,6 +15,7 @@ from typing import Any
 from easycode.agent.turns import full_messages, now_iso, repair_interrupted, split_legacy
 from easycode.permissions.policy import PERM_ALLOW_ALL, PERM_ASK
 from easycode.web.artifacts import records_from_messages
+from easycode.web.locks import project_key
 from easycode.web.session import AgentFactory, Session
 
 
@@ -25,7 +26,10 @@ def restore(data: dict, *, cfg: Any, agent_factory: AgentFactory) -> tuple[Sessi
     gate: it comes back asking, and the caller writes the downgrade out so the
     user is asked exactly once.
     """
-    root = data.get("root")
+    # History can contain aliases such as /var instead of /private/var. Use the
+    # same identity as project bindings and removal requests, including in the
+    # session summary the browser uses to group and release its cached views.
+    root = project_key(data.get("root")) or None
     secondary = list(data.get("secondary_roots") or [])
     agent_kwargs: dict = {}
     if root:

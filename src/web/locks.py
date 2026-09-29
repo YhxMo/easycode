@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -59,4 +60,6 @@ async def run_mutation(func: Callable, *args, **kwargs):
 
 def project_key(root: str | None) -> str:
     """Canonical map key for a project root (default project → "")."""
-    return root or ""
+    if not root or root in ("-", "default"):
+        return ""
+    return str(Path(root).expanduser().resolve())

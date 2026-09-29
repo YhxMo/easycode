@@ -75,6 +75,66 @@ def test_default_project_session_loads(tmp_path):
     assert "root" not in s.summary
 
 
+def test_session_create_canonicalises_project_root(tmp_path):
+    from easycode.web.store import SessionStore
+
+    project = tmp_path / "project"
+    project.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    cfg = load_config(tmp_path)
+    store = SessionStore(cfg, tmp_path, agent_factory(tmp_path))
+    sess = store.create(root=str(alias))
+    assert sess.root == str(project)
+    assert sess.summary["root"] == str(project)
+    assert json.loads(store._path(sess.id).read_text())["root"] == str(project)
+
+
+@pytest.mark.parametrize("use_alias", [False, True])
+def test_remove_project_with_restored_symlink_roots(tmp_path, use_alias):
+    """Old /var vs /private/var roots must identify the same project everywhere."""
+    project = tmp_path / "project"
+    project.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    cfg = load_config(tmp_path, data={
+        "models": {"fake-a": "fake/a"},
+        "workspace": {"projects": [{"root": str(alias), "name": "Alias project"}]},
+    })
+    client, store = web_app(cfg, agent_factory(tmp_path))
+    for sid, root, archived in [
+        ("old-visible", alias, False), ("old-archived", alias, True),
+        ("canonical", project, False), ("unrelated", tmp_path, False),
+    ]:
+        store._path(sid).write_text(json.dumps({
+            "id": sid, "root": str(root), "archived": archived, "messages": [],
+        }))
+    store.load_all()
+    with client:
+        # The browser must see one project with matching session roots, so its
+        # confirmation count, tabs and cache cleanup target all members.
+        for sid in ("old-visible", "old-archived", "canonical"):
+            assert client.get(f"/api/sessions/{sid}").json()["root"] == str(project)
+        projects = client.get("/api/workspaces").json()["projects"]
+        assert [p for p in projects if p["root"] in (str(alias), str(project))] == [
+            {"root": str(project), "secondary": [], "name": "Alias project"},
+        ]
+        response = client.post("/api/workspaces/projects/remove", json={
+            "root": str(alias if use_alias else project),
+        })
+        assert response.status_code == 200
+        assert response.json()["deleted_sessions"] == 3
+        assert response.json()["projects"] == [{"root": str(tmp_path), "secondary": []}]
+        assert client.get("/api/workspaces").json()["projects"] == response.json()["projects"]
+        assert [s["id"] for s in client.get("/api/sessions").json()] == ["unrelated"]
+        assert client.get("/api/sessions?archived=1").json() == []
+        assert sorted(p.stem for p in store.dir.glob("*.json")) == ["unrelated"]
+    # A fresh server reads the saved config and history without reviving it.
+    restarted, _ = web_app(Config.load(start=tmp_path), agent_factory(tmp_path))
+    with restarted:
+        assert restarted.get("/api/workspaces").json()["projects"] == response.json()["projects"]
+
+
 def test_workspaces_endpoints(tmp_path):
     from easycode.web.store import SessionStore
 

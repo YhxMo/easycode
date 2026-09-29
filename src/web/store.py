@@ -70,6 +70,7 @@ class SessionStore:
         permission_mode: str | None = None,
         **agent_kwargs: Any,
     ) -> Session:
+        root = project_key(root) or None
         sid = uuid.uuid4().hex[:12]
         alias = model_alias or self.cfg.default_model
         # The primary root must satisfy the same rules as any other root:

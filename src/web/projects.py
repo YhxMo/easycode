@@ -22,9 +22,7 @@ from easycode.web.store import SessionStore
 
 def normalise_root(root: str | None) -> str | None:
     """Resolve a project root string; empty/'-' mean default project."""
-    if not root or root in ("-", "default"):
-        return None
-    return str(Path(root).expanduser().resolve())
+    return project_key(root) or None
 
 
 def session_primary(sess: Session) -> str | None:
