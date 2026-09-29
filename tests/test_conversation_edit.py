@@ -14,27 +14,17 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from easycode.agent.loop import Agent
 from easycode.config import Config
-from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
-from tests.helpers_web import GateProvider, wait_until
+from tests.helpers_web import GateProvider, agent_factory, load_config, wait_until, web_app
 
 
 def make_store(tmp_path: Path, provider) -> tuple[TestClient, SessionStore]:
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str, **agent_kwargs):
-        root = agent_kwargs.get("root") or tmp_path
-        return Agent(provider=provider, registry=build_registry(8000), root=Path(root))
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(tmp_path, provider=lambda: provider), tmp_path)
     return client, store
 
 
@@ -760,14 +750,10 @@ def test_a_stopped_turn_can_be_edited(tmp_path):
     gate = asyncio.Event()
     gate.set()
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=GateProvider(gate=gate, script=[{"text": "never arrives"}, {"text": "redone"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
+    script = [{"text": "never arrives"}, {"text": "redone"}]
+    store = SessionStore(
+        cfg, tmp_path, agent_factory(tmp_path, provider=lambda: GateProvider(gate, script))
+    )
 
     async def scenario() -> None:
         import httpx

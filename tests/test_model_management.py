@@ -17,6 +17,8 @@ from easycode.models.credentials import (
     save_credential,
 )
 from easycode.web.main import create_app
+from tests.conftest import fake_agent
+from tests.helpers_web import agent_factory, load_config, web_app, web_client
 
 
 def test_credentials_read_write_delete_and_metadata(tmp_path):
@@ -103,28 +105,6 @@ def test_model_spec_passthrough_and_display():
     assert "key: x" in cfg.models["k"].to_display()
 
 
-def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(
-        json.dumps(config_patch or {"models": {"fake-a": "fake/a", "fake-b": "fake/b"}}),
-        encoding="utf-8",
-    )
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-
-    def factory(alias: str, **_):
-        from easycode.agent.loop import Agent
-        from easycode.tools import build_registry
-        from tests.conftest import FakeProvider
-
-        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path)
-
-    from easycode.web.store import SessionStore
-
-    store = SessionStore(cfg, tmp_path, factory)
-    return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
-
-
 def add_model_body(alias="gpt-local", model="gpt-4o", key="sk-lives-here"):
     return {
         "alias": alias,
@@ -142,7 +122,7 @@ def model_key_id(client: TestClient, alias: str) -> str:
 
 
 def test_add_model_with_key_stores_credential_and_masks(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/models/add", json=add_model_body())
     assert r.status_code == 200
     data = r.json()
@@ -164,7 +144,7 @@ def test_add_model_with_key_stores_credential_and_masks(tmp_path):
 
 
 def test_models_group_by_supplier_not_api_format(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     body = add_model_body(alias="hosted-gpt", model="gpt-4o")
     body["provider"] = "rightcode"
     body["api_format"] = "anthropic"
@@ -178,7 +158,7 @@ def test_models_group_by_supplier_not_api_format(tmp_path):
 
 def test_each_added_model_gets_its_own_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     first = add_model_body(alias="first", model="model-a", key="sk-first")
     second = add_model_body(alias="second", model="model-b", key="sk-second")
     first["api_format"] = "openai_compatible"
@@ -207,7 +187,7 @@ def test_each_added_model_gets_its_own_credential(tmp_path, monkeypatch):
 
 
 def test_add_model_without_key_still_gets_independent_profile(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/models/add", json={"alias": "plain", "model": "deepseek/deepseek-chat"})
     assert r.status_code == 200
     entry = r.json()["models"]["plain"]
@@ -218,12 +198,12 @@ def test_add_model_without_key_still_gets_independent_profile(tmp_path):
 
 
 def test_add_model_validation(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     assert client.post("/api/models/add", json={"alias": " ", "model": "x"}).status_code == 422
 
 
 def test_get_model_detail_returns_editable_credential(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     r = client.get("/api/models/gpt-local")
     assert r.status_code == 200
@@ -243,7 +223,7 @@ def test_get_model_detail_returns_editable_credential(tmp_path):
 def test_get_model_detail_does_not_use_environment_credentials(tmp_path, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
     monkeypatch.setenv("DEEPSEEK_API_BASE", "https://api.deepseek.test")
-    client = make_app(
+    client = web_client(
         tmp_path,
         {"models": {"ds": "deepseek/deepseek-chat", "oa": "openai/gpt-4o", "odd": "weird-model"}},
     )
@@ -269,7 +249,7 @@ def test_get_model_detail_does_not_use_environment_credentials(tmp_path, monkeyp
 def test_get_model_detail_derives_api_format(tmp_path, monkeypatch):
     for var in ("ANTHROPIC_API_KEY", "BEDROCK_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    client = make_app(
+    client = web_client(
         tmp_path,
         {
             "models": {
@@ -287,7 +267,7 @@ def test_get_model_detail_derives_api_format(tmp_path, monkeypatch):
 
 
 def test_add_model_stores_and_returns_api_format(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     body = add_model_body(alias="resp", model="gpt-5")
     body["api_format"] = "openai_responses"
     r = client.post("/api/models/add", json=body)
@@ -300,7 +280,7 @@ def test_add_model_stores_and_returns_api_format(tmp_path):
 
 
 def test_add_model_without_key_persists_api_format(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post(
         "/api/models/add",
         json={"alias": "plain", "model": "gpt-5", "api_format": "openai_responses"},
@@ -315,7 +295,7 @@ def test_add_model_without_key_persists_api_format(tmp_path):
 
 
 def test_update_model_without_credential_persists_api_format(tmp_path):
-    client = make_app(tmp_path, {"models": {"plain": "gpt-5"}})
+    client = web_client(tmp_path, {"models": {"plain": "gpt-5"}})
     r = client.put("/api/models/plain", json={"model": "gpt-5", "api_format": "openai_responses"})
     assert r.status_code == 200
     assert client.get("/api/models/plain").json()["api_format"] == "openai_responses"
@@ -351,7 +331,7 @@ def test_provider_kwargs_uses_config_api_format(tmp_path, monkeypatch):
 
 
 def test_update_model_updates_api_format_keeps_key(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     r = client.put("/api/models/gpt-local", json={"model": "claude-4", "api_format": "anthropic"})
     assert r.status_code == 200
@@ -368,7 +348,7 @@ def test_update_model_updates_api_format_keeps_key(tmp_path):
 
 
 def test_update_model_renames_alias_migrates_key_and_sessions(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     with client:
         session = client.app.state.store.create("gpt-local")
@@ -397,7 +377,7 @@ def test_update_model_renames_alias_migrates_key_and_sessions(tmp_path):
 
 
 def test_update_model_keeps_key_and_updates_meta(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     r = client.put(
         "/api/models/gpt-local",
@@ -412,7 +392,7 @@ def test_update_model_keeps_key_and_updates_meta(tmp_path):
 
 
 def test_update_model_model_only_keeps_credential_meta(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     r = client.put("/api/models/gpt-local", json={"model": "gpt-4.1"})
     assert r.status_code == 200
@@ -425,7 +405,7 @@ def test_update_model_model_only_keeps_credential_meta(tmp_path):
 
 
 def test_update_model_clears_owned_key(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     r = client.put(
         "/api/models/gpt-local",
@@ -438,14 +418,14 @@ def test_update_model_clears_owned_key(tmp_path):
 
 
 def test_update_model_rejects_alias_conflict(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     r = client.put("/api/models/gpt-local", json={"model": "gpt-4o", "new_alias": "fake-a"})
     assert r.status_code == 409
 
 
 def test_delete_model_removes_web_credential(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.post("/api/models/add", json=add_model_body())
     r = client.delete("/api/models/gpt-local")
     assert r.status_code == 200
@@ -455,7 +435,7 @@ def test_delete_model_removes_web_credential(tmp_path):
 
 
 def test_delete_default_model_falls_back(tmp_path):
-    client = make_app(tmp_path, {"models": {"only": "fake/only"}, "default_model": "only"})
+    client = web_client(tmp_path, {"models": {"only": "fake/only"}, "default_model": "only"})
     r = client.delete("/api/models/only")
     assert r.status_code == 200
     assert r.json()["default"] != "only"
@@ -469,7 +449,7 @@ def test_switch_model_rebuilds_provider_with_credentials(tmp_path):
         Credential(key_id="web-keyed", api_key="sk-k"),
         path=tmp_path / ".easycode" / "credentials.json",
     )
-    client = make_app(
+    client = web_client(
         tmp_path,
         {"models": {"keyed": {"model": "gpt-4o", "key_id": "web-keyed"}}, "default_model": "keyed"},
     )
@@ -485,8 +465,6 @@ def test_model_mutations_409_while_session_busy(tmp_path):
 
     import httpx
 
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
     from tests.helpers_web import GateProvider, wait_until
 
@@ -501,13 +479,7 @@ def test_model_mutations_409_while_session_busy(tmp_path):
     cfg.root = tmp_path
     gate = asyncio.Event()
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=GateProvider(gate=gate, script=[{"text": "done"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
+    factory = agent_factory(tmp_path, provider=lambda: GateProvider(gate, [{"text": "done"}]))
     store = SessionStore(cfg, tmp_path, factory)
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
 
@@ -537,7 +509,7 @@ def test_model_mutations_409_while_session_busy(tmp_path):
             assert "renamed" not in cfg.models
             assert sess.model_alias == "fake-a"
             assert sess.agent.provider is provider_before
-            disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+            disk = json.loads((tmp_path / "easycode.config.json").read_text(encoding="utf-8"))
             assert disk["default_model"] == "fake-a"
             assert disk["models"]["fake-a"] == "fake/a"
 
@@ -550,11 +522,8 @@ def test_model_mutations_409_while_session_busy(tmp_path):
 def test_update_model_rebinds_only_given_sessions(tmp_path):
     """The service rebinds exactly the sessions the route locked: a session
     created after the snapshot must not be rebound without its lock."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web import model_admin as services
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     cfg_file = tmp_path / "easycode.config.json"
     cfg_file.write_text(
@@ -564,12 +533,7 @@ def test_update_model_rebinds_only_given_sessions(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
+    store = SessionStore(cfg, tmp_path, agent_factory(tmp_path))
     locked = store.create("fake-a")
     late = store.create("fake-a")
     late_provider = late.agent.provider
@@ -602,9 +566,7 @@ def test_model_edit_does_not_rebind_concurrent_running_session(tmp_path):
 
     import httpx
 
-    from easycode.agent.loop import Agent
     from easycode.models.base import DeferredProvider
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
     from tests.helpers_web import GateProvider, wait_until
 
@@ -617,13 +579,7 @@ def test_model_edit_does_not_rebind_concurrent_running_session(tmp_path):
     cfg.root = tmp_path
     gate = asyncio.Event()
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=GateProvider(gate=gate, script=[{"text": "done"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
+    factory = agent_factory(tmp_path, provider=lambda: GateProvider(gate, [{"text": "done"}]))
     store = SessionStore(cfg, tmp_path, factory)
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
 
@@ -690,26 +646,15 @@ def test_secondary_change_409_while_session_busy(tmp_path):
 
     import httpx
 
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
     from tests.helpers_web import GateProvider, wait_until
 
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
     extra = tmp_path / "extra"
     extra.mkdir()
     gate = asyncio.Event()
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=GateProvider(gate=gate, script=[{"text": "done"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
+    factory = agent_factory(tmp_path, provider=lambda: GateProvider(gate, [{"text": "done"}]))
     store = SessionStore(cfg, tmp_path, factory)
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
 
@@ -729,7 +674,7 @@ def test_secondary_change_409_while_session_busy(tmp_path):
             )
             assert r.status_code == 409, r.text
             assert sess.secondary_roots == []
-            disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+            disk = json.loads((tmp_path / "easycode.config.json").read_text(encoding="utf-8"))
             assert not disk.get("workspace_projects")
 
             gate.set()
@@ -749,13 +694,10 @@ def test_rename_clear_key_keeps_session_viewable_and_recovers(tmp_path):
     """A rename + key removal updates the session alias and defers the binding:
     the session stays visible, sending fails with 422, and restoring the key
     binds in place; the persisted alias survives a restart."""
-    from easycode.agent.loop import Agent
     from easycode.models.base import DeferredProvider
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
-    client = make_app(tmp_path, {"models": {"fake-a": "fake/a"}})
+    client = web_client(tmp_path, {"models": {"fake-a": "fake/a"}})
     client.post("/api/models/add", json=add_model_body(alias="gpt-local"))
     with client:
         store = client.app.state.store
@@ -795,9 +737,7 @@ def test_rename_clear_key_keeps_session_viewable_and_recovers(tmp_path):
     store2 = SessionStore(
         cfg2,
         tmp_path,
-        lambda alias, **_: Agent(
-            provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path
-        ),
+        lambda alias, **_: fake_agent(tmp_path),
     )
     store2.load_all()
     restored = store2.get(sid)
@@ -851,7 +791,7 @@ def test_delete_model_invalidates_live_session_binding(tmp_path):
     422 instead of silently calling the removed alias."""
     from easycode.models.base import DeferredProvider
 
-    client = make_app(tmp_path, {"models": {"fake-a": "fake/a"}})
+    client = web_client(tmp_path, {"models": {"fake-a": "fake/a"}})
     client.post("/api/models/add", json=add_model_body(alias="gpt-local"))
     with client:
         store = client.app.state.store
@@ -992,9 +932,6 @@ def test_config_workspace_fields(tmp_path, monkeypatch):
 def test_web_session_with_secondary_roots(tmp_path):
     """Chat creating a session with secondary_roots wires them into the agent."""
     from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     secondary = tmp_path / "s"
@@ -1002,24 +939,19 @@ def test_web_session_with_secondary_roots(tmp_path):
     secondary.mkdir()
     (secondary / "lib.txt").write_text("lib content", encoding="utf-8")
 
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
     created: list[Agent] = []
 
     def factory(alias: str, **kw):
-        agent = Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
+        agent = fake_agent(
+            primary,
+            [{"text": "ok"}],
             secondary_roots=kw.get("secondary_roots") or [str(secondary)],
         )
         created.append(agent)
         return agent
 
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, factory, primary)[0]
     with client:
         r = client.post(
             "/api/chat",
@@ -1202,10 +1134,7 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
         },
         {"text": "ok"},
     ]
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
     class AutoBroker(ApprovalBroker):
         def add(self, approval_id: str):
@@ -1222,18 +1151,10 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
             asyncio.ensure_future(resolve())
             return fut
 
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
-    def factory(alias: str, **_):
-        return Agent(
-            provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
+    store = SessionStore(cfg, tmp_path, agent_factory(tmp_path, script=script))
     client = TestClient(
         create_app(
             cfg=cfg,
@@ -1260,32 +1181,17 @@ async def test_web_approval_broker_auto_resolve(tmp_path):
 
 
 async def test_web_approval_endpoint_unknown_id(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.main import create_app
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str, **_):
-        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=tmp_path)
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(tmp_path), tmp_path)[0]
     r = client.post("/api/approval/nope", json={"approve": True})
     assert r.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_web_approval_timeout_rejects(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.bridge import ApprovalBroker, stream_chat_with_approval
-    from tests.conftest import FakeProvider
 
     script = [
         {
@@ -1296,9 +1202,7 @@ async def test_web_approval_timeout_rejects(tmp_path):
         },
         {"text": "ok"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path
-    )
+    agent = fake_agent(tmp_path, list(script))
     broker = ApprovalBroker(timeout=0.05)
     approvals = []
     results = []
@@ -1466,7 +1370,7 @@ def test_provider_kwargs_format_overrides_prefixed_model(tmp_path, monkeypatch):
 
 def test_delete_builtin_alias_stays_deleted(tmp_path):
     """DEC-C3: built-in aliases seed a fresh config; deletions must persist."""
-    client = make_app(tmp_path, {"default_model": "deepseek-v4flash"})
+    client = web_client(tmp_path, {"default_model": "deepseek-v4flash"})
     assert "claude-opus5" in client.get("/api/models").json()["models"]
 
     assert client.delete("/api/models/claude-opus5").status_code == 200
@@ -1476,7 +1380,7 @@ def test_delete_builtin_alias_stays_deleted(tmp_path):
 
 def test_get_models_uses_in_memory_config(tmp_path):
     """DEC-C4: the models endpoint never re-reads the config file mid-run."""
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     (tmp_path / "easycode.config.json").write_text(
         json.dumps({"models": {"external": "x/y"}}), encoding="utf-8"
     )
@@ -1497,7 +1401,7 @@ async def test_cancelled_model_edit_finishes_before_next_chat(tmp_path, monkeypa
     from easycode.web import model_admin as services
     from tests.helpers_web import wait_until
 
-    app = make_app(tmp_path).app
+    app = web_client(tmp_path).app
     sess = app.state.store.create("fake-a")
     entered, release = threading.Event(), threading.Event()
     original = services.update_model

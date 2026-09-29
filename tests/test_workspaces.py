@@ -10,61 +10,38 @@ from fastapi.testclient import TestClient
 
 from easycode.config import Config
 from easycode.web.main import create_app
+from tests.helpers_web import agent_factory, load_config, web_app
 
 
 def test_session_create_with_root_uses_session_root(tmp_path):
     from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
     primary.mkdir()
     project.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
-    agent_roots: list[str] = []
+    cfg = load_config(tmp_path, primary)
+    created: list[Agent] = []
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        agent_roots.append(str(root))
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary, created=created))
     s = store.create(root=str(project))
     assert s.root == str(project)
-    assert agent_roots[-1] == str(project)
+    assert created[-1].root == project
     assert s.summary["root"] == str(project)
 
 
 def test_session_root_persistence_roundtrip(tmp_path):
-    import json as _json
 
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
     primary.mkdir()
     project.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(_json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root
-        )
-
+    factory = agent_factory(primary)
     store1 = SessionStore(cfg, primary, factory)
     s = store1.create(root=str(project))
     store2 = SessionStore(cfg, primary, factory)
@@ -76,24 +53,14 @@ def test_session_root_persistence_roundtrip(tmp_path):
 
 
 def test_default_project_session_loads(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     import uuid
 
     sid = uuid.uuid4().hex[:12]
@@ -109,27 +76,15 @@ def test_default_project_session_loads(tmp_path):
 
 
 def test_workspaces_endpoints(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
     primary.mkdir()
     project.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=root
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     store.create(root=str(project))
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
     with client:
@@ -147,32 +102,15 @@ def test_workspaces_endpoints(tmp_path):
 def test_chat_root_creates_session_in_project(tmp_path):
     """First message with root creates a session bound to that project."""
     from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
     primary.mkdir()
     project.mkdir()
     agents: list[Agent] = []
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        root = str(Path(kw.get("root")).resolve()) if kw.get("root") else str(primary)
-        agent = Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=Path(root),
-        )
-        agents.append(agent)
-        return agent
-
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(primary, created=agents), primary)
     with client:
         r = client.post("/api/chat", json={"message": "hello", "root": str(project)})
         assert r.status_code == 200
@@ -185,9 +123,7 @@ def test_chat_root_creates_session_in_project(tmp_path):
 
 def test_session_secondary_roots_persist(tmp_path):
     from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
@@ -195,24 +131,10 @@ def test_session_secondary_roots_persist(tmp_path):
     primary.mkdir()
     project.mkdir()
     sec_a.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
     built: list[Agent] = []
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        sec = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
-        agent = Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=sec,
-        )
-        built.append(agent)
-        return agent
-
+    factory = agent_factory(primary, created=built)
     store1 = SessionStore(cfg, primary, factory)
     s = store1.create(root=str(project), secondary_roots=[str(sec_a)])
     assert s.secondary_roots == [str(sec_a.resolve())]
@@ -231,9 +153,6 @@ def test_session_secondary_roots_persist(tmp_path):
 
 def test_chat_root_with_secondary_roots(tmp_path):
     from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     project = tmp_path / "proj"
@@ -242,25 +161,9 @@ def test_chat_root_with_secondary_roots(tmp_path):
     project.mkdir()
     sec_a.mkdir()
     agents: list[Agent] = []
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        sec = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
-        agent = Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=sec,
-        )
-        agents.append(agent)
-        return agent
-
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(primary, created=agents), primary)
     with client:
         r = client.post(
             "/api/chat",
@@ -281,27 +184,12 @@ def test_choose_workspaces_endpoint(tmp_path, monkeypatch):
         "choose_folders_via_finder",
         lambda multiple=False, prompt="选择目录": ["/tmp/a", "/tmp/b"] if multiple else ["/tmp/a"],
     )
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
-        )
-
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(primary), primary)[0]
     with client:
         r = client.post("/api/workspaces/choose", json={"multiple": False})
         assert r.status_code == 200
@@ -318,25 +206,13 @@ def test_choose_unsupported_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(
         m, "choose_folders_via_finder", lambda multiple=False, prompt="选择目录": []
     )
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
-        )
-
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(primary), primary)[0]
     r = client.post("/api/workspaces/choose", json={"multiple": False})
     assert r.status_code == 200
     data = r.json()
@@ -346,10 +222,7 @@ def test_choose_unsupported_returns_empty(tmp_path, monkeypatch):
 
 def test_workspaces_projects_from_sessions_and_save(tmp_path):
     """GET merges config + session bindings; POST /projects persists per-root."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     proj = tmp_path / "proj"
@@ -357,22 +230,9 @@ def test_workspaces_projects_from_sessions_and_save(tmp_path):
     primary.mkdir()
     proj.mkdir()
     sec.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=secs,
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     # config 预置绑定（default project 挂 sec）
     cfg.workspace_projects = [{"root": None, "secondary": [str(sec)]}]
     # 会话历史推断 (proj → sec)
@@ -407,7 +267,7 @@ def test_workspaces_projects_from_sessions_and_save(tmp_path):
         assert r4.json()["secondary"] == [str(proj)]
 
     # config 落盘包含 projects
-    raw = json.loads(cfg_file.read_text(encoding="utf-8"))
+    raw = json.loads((tmp_path / "easycode.config.json").read_text(encoding="utf-8"))
     assert "projects" in raw.get("workspace", {})
     projs = raw["workspace"]["projects"]
     assert any(p.get("root") == str(proj) for p in projs)
@@ -416,24 +276,14 @@ def test_workspaces_projects_from_sessions_and_save(tmp_path):
 
 def test_spa_fallback_no_405_on_api_posts(tmp_path):
     """Production static serving must not turn unknown /api POSTs into 405s."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("<html>app</html>", encoding="utf-8")
@@ -453,10 +303,7 @@ def test_spa_fallback_no_405_on_api_posts(tmp_path):
 
 def test_save_project_with_session_id_updates_session(tmp_path):
     """Editing secondary roots on a locked session updates its agent + disk state."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     proj = tmp_path / "proj"
@@ -466,22 +313,9 @@ def test_save_project_with_session_id_updates_session(tmp_path):
     proj.mkdir()
     sec_a.mkdir()
     sec_b.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=secs,
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     s = store.create(root=str(proj), secondary_roots=[str(sec_a)])
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
     with client:
@@ -565,12 +399,9 @@ def test_shell_grant_root_keeps_sensitive_children_protected(tmp_path):
 
 def test_primary_root_validated_like_other_roots(tmp_path):
     """DEC-T5: the primary root must pass root_error; worktrees stay exempt."""
-    from easycode.agent.loop import Agent
     from easycode.paths import data_home
     from easycode.permissions.boundary import root_error
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -578,10 +409,7 @@ def test_primary_root_validated_like_other_roots(tmp_path):
     cfg = Config.load(start=proj)
     cfg.root = proj
 
-    def factory(alias: str, **kw):
-        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
-
-    store = SessionStore(cfg, proj, factory)
+    store = SessionStore(cfg, proj, agent_factory(proj))
 
     assert root_error(proj / ".git") is not None
     with pytest.raises(ValueError, match="sensitive directory"):
@@ -604,32 +432,14 @@ def _project_app(tmp_path, projects=None, script=None):
     persists them, so a session created for one of them inherits its binding the
     way a real project does.
     """
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "primary"
     primary.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
     if projects:
         cfg.workspace_projects = projects
 
-    def factory(alias: str, **kw):
-        root = Path(kw.get("root")).resolve() if kw.get("root") else primary
-        secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
-        return Agent(
-            provider=FakeProvider(script=list(script or [])),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=secs,
-        )
-
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(primary, script=script), primary)
     return client, store
 
 
@@ -806,10 +616,7 @@ def test_merge_projects_union_metadata_and_pinning():
 
 def _worktree_client(tmp_path):
     """An app whose default project is the throwaway root."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     (tmp_path / "easycode.config.json").write_text(
         json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8"
@@ -817,15 +624,7 @@ def _worktree_client(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = tmp_path
 
-    def factory(alias: str, **kw):
-        root = Path(kw["root"]).resolve() if kw.get("root") else tmp_path
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
+    store = SessionStore(cfg, tmp_path, agent_factory(tmp_path))
     return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
 
 

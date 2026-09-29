@@ -6,10 +6,8 @@ import json
 
 import pytest
 
-from easycode.agent.loop import Agent
 from easycode.extensions.skills import SkillRegistry
-from easycode.tools import build_registry
-from tests.conftest import FakeProvider
+from tests.conftest import fake_agent
 from tests.helpers_history import assert_valid_tool_protocol
 
 
@@ -87,12 +85,7 @@ Special instructions to follow
         {"text": "Skill applied."},
     ]
 
-    agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        skills=reg,
-    )
+    agent = fake_agent(tmp_path, script, skills=reg)
 
     # Before use_skill, skill body is not in history
     assert not any("Special instructions to follow" in str(m.get("content")) for m in agent.history.messages)
@@ -144,12 +137,7 @@ Safety instructions
         },
         {"text": "done"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        skills=reg,
-    )
+    agent = fake_agent(tmp_path, script, skills=reg)
 
     events = [ev async for ev in agent.respond("load skill and list files")]
     assert events[-1].kind == "done"
@@ -190,12 +178,7 @@ Known body
         },
         {"text": "done"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        skills=reg,
-    )
+    agent = fake_agent(tmp_path, script, skills=reg)
 
     events = [ev async for ev in agent.respond("use nonexistent")]
     results = [e.tool_result for e in events if e.kind == "tool_result"]

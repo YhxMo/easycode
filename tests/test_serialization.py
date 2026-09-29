@@ -4,29 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import httpx
 
-from easycode.agent.loop import Agent
-from easycode.config import Config
-from easycode.models.base import Provider
-from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.store import SessionStore
-from tests.helpers_web import GateProvider, wait_until
-
-
-def _make_cfg(tmp_path: Path) -> Config:
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-    return cfg
-
-
-def _agent(tmp_path: Path, provider: Provider, root: Path | None = None) -> Agent:
-    return Agent(provider=provider, registry=build_registry(8000), root=root or tmp_path)
+from tests.helpers_web import GateProvider, agent_factory, load_config, wait_until
 
 
 def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
@@ -34,23 +17,16 @@ def test_concurrent_chat_second_409_and_history_valid(tmp_path) -> None:
     be rejected with 409 (busy) instead of interleaving history; after the first
     turn the history is one complete, decomposable tool-calling turn."""
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
-    cfg = _make_cfg(tmp_path)
+    cfg = load_config(tmp_path)
 
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a", **_):
-            return _agent(
-                tmp_path,
-                GateProvider(
-                    gate=gate,
-                    script=[
-                        {"tool_calls": [("c1", "glob", {"pattern": "*.py"})], "text": ""},
-                        {"text": "searching"},
-                    ],
-                ),
-            )
-
+        script = [
+            {"tool_calls": [("c1", "glob", {"pattern": "*.py"})], "text": ""},
+            {"text": "searching"},
+        ]
+        factory = agent_factory(tmp_path, provider=lambda: GateProvider(gate, script))
         store = SessionStore(cfg, tmp_path, factory)
         app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
         async with httpx.AsyncClient(
@@ -90,14 +66,12 @@ def test_inflight_chat_permission_archive_409(tmp_path) -> None:
     """While a chat stream is in flight, permission/archive
     and a second chat must be rejected with 409; once the turn completes the
     history is a single clean turn with user_times aligned."""
-    cfg = _make_cfg(tmp_path)
+    cfg = load_config(tmp_path)
 
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a", **_):
-            return _agent(tmp_path, GateProvider(gate=gate, script=[{"text": "done"}]))
-
+        factory = agent_factory(tmp_path, provider=lambda: GateProvider(gate, [{"text": "done"}]))
         store = SessionStore(cfg, tmp_path, factory)
         app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
         async with httpx.AsyncClient(
@@ -141,14 +115,9 @@ def test_prune_does_not_mutate_recorded_snapshot(tmp_path) -> None:
     history, so pruning must replace message objects, not edit them in place."""
     from easycode.agent.compaction import PRUNED_OUTPUT
 
-    cfg = _make_cfg(tmp_path)
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str = "fake-a", **_):
-        from tests.conftest import FakeProvider
-
-        return _agent(tmp_path, FakeProvider(script=[]))
-
-    store = SessionStore(cfg, tmp_path, factory)
+    store = SessionStore(cfg, tmp_path, agent_factory(tmp_path))
     sess = store.create()
     h = sess.agent.history
     big = "x" * 200_000
@@ -182,14 +151,12 @@ def test_prune_does_not_mutate_recorded_snapshot(tmp_path) -> None:
 def test_cancel_during_inflight_not_gated(tmp_path) -> None:
     """A3: cancel is the deliberate exception — it does NOT grab the session lock
     and must be allowed while a chat is streaming (it just signals cancel_event)."""
-    cfg = _make_cfg(tmp_path)
+    cfg = load_config(tmp_path)
 
     async def scenario() -> None:
         gate = asyncio.Event()
 
-        def factory(alias: str = "fake-a", **_):
-            return _agent(tmp_path, GateProvider(gate=gate, script=[{"text": "late"}]))
-
+        factory = agent_factory(tmp_path, provider=lambda: GateProvider(gate, [{"text": "late"}]))
         store = SessionStore(cfg, tmp_path, factory)
         app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
         async with httpx.AsyncClient(
@@ -216,14 +183,9 @@ def test_flush_concurrent_unique_tmp_and_atomic(tmp_path) -> None:
     """A flush must never share a .tmp path (concurrent flushes write to
     distinct temp files), and concurrent flushes leave a complete, valid session
     file on disk."""
-    cfg = _make_cfg(tmp_path)
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str = "fake-a", **_):
-        from tests.conftest import FakeProvider
-
-        return _agent(tmp_path, FakeProvider(script=[{"text": "ok"}]))
-
-    store = SessionStore(cfg, tmp_path, factory)
+    store = SessionStore(cfg, tmp_path, agent_factory(tmp_path))
     s = store.create()
     sid = s.id
 

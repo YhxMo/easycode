@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from easycode.config import Config
 from easycode.web.chat_input import mcp_command_id
 from easycode.web.main import create_app
+from tests.helpers_web import agent_factory
 
 
 def demo_server(**extra):
@@ -26,10 +27,7 @@ def demo_server(**extra):
 
 def build(tmp_path, app_servers=None, project_servers=None):
     """An app with a default project A, a second project B, both registered."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     proj_a = tmp_path / "a"
     proj_b = tmp_path / "b"
@@ -47,16 +45,7 @@ def build(tmp_path, app_servers=None, project_servers=None):
     cfg.root = proj_a
     cfg.workspace_projects = [{"root": str(proj_b), "secondary": [], "name": "Project B"}]
 
-    def factory(alias: str = "fake-a", **kw):
-        root = Path(kw["root"]).resolve() if kw.get("root") else proj_a
-        return Agent(
-            provider=FakeProvider(script=[{"text": "done"}]),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=[Path(p) for p in kw.get("secondary_roots") or []],
-            mcp_servers=cfg.mcp_servers,
-        )
-
+    factory = agent_factory(proj_a, script=[{"text": "done"}], mcp_servers=cfg.mcp_servers)
     store = SessionStore(cfg, proj_a, factory)
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
     return app, cfg, store, {"a": proj_a, "b": proj_b}
@@ -504,11 +493,8 @@ def test_a_selected_service_with_no_tools_is_unavailable(tmp_path):
 @pytest.mark.skipif(sys.platform != "darwin", reason="MCP children run under the macOS sandbox")
 def test_a_selected_service_really_runs_its_tool(tmp_path):
     """End to end: the menu entry, the turn, the child process, its result."""
-    from easycode.agent.loop import Agent
     from easycode.extensions.mcp.manager import mcp_tool_name
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -520,20 +506,13 @@ def test_a_selected_service_really_runs_its_tool(tmp_path):
     cfg.root = proj
     tool = mcp_tool_name("demo", "add")
 
-    def factory(alias: str = "fake-a", **kw):
-        return Agent(
-            provider=FakeProvider(
-                script=[
-                    {"text": "", "tool_calls": [("t1", tool, {"a": 2, "b": 3})]},
-                    {"text": "结果是 5"},
-                ]
-            ),
-            registry=build_registry(8000),
-            root=proj,
-            mcp_servers=cfg.mcp_servers,
-            permission_mode="allow-all",
-        )
-
+    script = [
+        {"text": "", "tool_calls": [("t1", tool, {"a": 2, "b": 3})]},
+        {"text": "结果是 5"},
+    ]
+    factory = agent_factory(
+        proj, script=script, mcp_servers=cfg.mcp_servers, permission_mode="allow-all"
+    )
     store = SessionStore(cfg, proj, factory)
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
     # Created after the app: building it loads the sessions already on disk and

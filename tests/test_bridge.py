@@ -4,23 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 from easycode.agent.loop import Agent
 from easycode.models.base import StreamEvent
 from easycode.tools import build_registry
 from easycode.web.bridge import ApprovalBroker, event_to_sse, stream_chat_with_approval
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, fake_agent
 
 WORD = "found"
 BIG = "x" * 400
-
-
-def make_agent(tmp_path: Path, text: str) -> Agent:
-    # script yields a text turn; the provider emits one char per StreamEvent
-    # by returning text per token here (each char becomes a text event)
-    provider = FakeProvider(script=[{"text": text}])
-    return Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
 
 
 def parse_events(lines: list[str]) -> list[dict]:
@@ -38,7 +30,7 @@ async def run_chat(agent: Agent, msg: str, **kw) -> list[str]:
 
 
 async def test_short_text_emitted_as_single_event(tmp_path):
-    agent = make_agent(tmp_path, WORD)
+    agent = fake_agent(tmp_path, [{"text": WORD}])
     lines = await run_chat(agent, "hi", flush_chars=64)
     events = parse_events(lines)
     texts = [e["content"] for e in events if e["type"] == "text"]
@@ -47,7 +39,7 @@ async def test_short_text_emitted_as_single_event(tmp_path):
 
 
 async def test_long_text_coalesced_into_few_chunks(tmp_path):
-    agent = make_agent(tmp_path, BIG)
+    agent = fake_agent(tmp_path, [{"text": BIG}])
     lines = await run_chat(agent, "hi", flush_chars=64)
     events = parse_events(lines)
     texts = [e["content"] for e in events if e["type"] == "text"]

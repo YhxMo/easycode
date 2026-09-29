@@ -9,35 +9,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from easycode.agent.context import SUMMARY_PREFIX, History
-from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.models.credentials import Credential, save_credential
-from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.store import SessionStore
 from tests.conftest import FakeProvider
-
-
-def make_app(tmp_path: Path, config_patch: dict | None = None) -> TestClient:
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(
-        json.dumps(config_patch or {"models": {"fake-a": "fake/a", "fake-b": "fake/b"}}),
-        encoding="utf-8",
-    )
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-
-    def factory(alias: str, **agent_kwargs):
-        provider = FakeProvider(script=[])
-        root = agent_kwargs.get("root") or tmp_path
-        return Agent(provider=provider, registry=build_registry(8000), root=Path(root))
-
-    store = SessionStore(cfg, tmp_path, factory)
-    return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+from tests.helpers_web import agent_factory, load_config, web_app, web_client
 
 
 def test_get_models(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.get("/api/models")
     assert r.status_code == 200
     data = r.json()
@@ -56,7 +37,7 @@ def _credentialed_models() -> dict:
 def test_switch_model(tmp_path):
     save_credential(Credential(key_id="k-a", api_key="sk-test"))
     save_credential(Credential(key_id="k-b", api_key="sk-test"))
-    client = make_app(
+    client = web_client(
         tmp_path, {"models": _credentialed_models(), "default_model": "fake-b"}
     )
     r = client.post("/api/models", json={"alias": "fake-a"})
@@ -70,7 +51,7 @@ def test_switch_model_without_credential_rejected(tmp_path):
     """Switching to a model with no credential fails atomically (P1)."""
     models = _credentialed_models()
     models["nocred"] = {"model": "x/nocred", "api_format": "openai_compatible"}
-    client = make_app(tmp_path, {"models": models, "default_model": "fake-a"})
+    client = web_client(tmp_path, {"models": models, "default_model": "fake-a"})
     r = client.post("/api/models", json={"alias": "nocred"})
     assert r.status_code == 422
     assert "credential" in r.json()["detail"]
@@ -84,7 +65,7 @@ def test_switch_model_persists_session_alias(tmp_path):
     """Rebinding on switch is flushed per session (restart cannot revert it)."""
     save_credential(Credential(key_id="k-a", api_key="sk-test"))
     save_credential(Credential(key_id="k-b", api_key="sk-test"))
-    client = make_app(
+    client = web_client(
         tmp_path, {"models": _credentialed_models(), "default_model": "fake-b"}
     )
     with client:
@@ -124,7 +105,7 @@ def test_chat_new_session_without_credential_returns_422(tmp_path):
 
 
 def test_chat_sse_stream(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     with client:
         # create a session first (to later find its id)
         r = client.post("/api/chat", json={"message": "hello"})
@@ -144,17 +125,9 @@ def test_chat_with_tool_calls(tmp_path):
         {"text": "found"},
     ]
 
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str, **_) -> Agent:
-        provider = FakeProvider(script=list(script))
-        return Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(tmp_path, script=script), tmp_path)[0]
     with client:
         r = client.post("/api/chat", json={"message": "list files"})
         events = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data:")]
@@ -169,7 +142,7 @@ def test_chat_with_tool_calls(tmp_path):
 
 
 def test_sessions_list_and_delete(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     with client:
         client.post("/api/chat", json={"message": "session one"})
         r = client.get("/api/sessions")
@@ -188,7 +161,7 @@ def test_session_delete_reports_file_failure_and_can_retry(tmp_path, monkeypatch
     entry and the file (no resurrection on reload)."""
     import pathlib
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     with client:
         client.post("/api/chat", json={"message": "session one"})
         sid = client.get("/api/sessions").json()[0]["id"]
@@ -225,7 +198,7 @@ def test_create_blank_session_is_listed_and_blank_deletable(tmp_path):
     It is an ordinary empty session from that moment — listed, on disk, and
     still blank — and closing its tab deletes it for good.
     """
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     with client:
         r = client.post("/api/sessions", json={})
         assert r.status_code == 200, r.text
@@ -260,22 +233,10 @@ def test_create_blank_session_inherits_the_project_binding(tmp_path):
     sec = tmp_path / "sec"
     primary.mkdir()
     sec.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
     cfg.workspace_projects = [{"root": str(primary), "secondary": [str(sec)]}]
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[]),
-            registry=build_registry(8000),
-            root=Path(kw.get("root") or primary),
-            secondary_roots=[Path(p) for p in (kw.get("secondary_roots") or [])],
-        )
-
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(primary), primary)[0]
     with client:
         created = client.post("/api/sessions", json={"root": str(primary)}).json()
         assert created["root"] == str(primary)
@@ -284,7 +245,7 @@ def test_create_blank_session_inherits_the_project_binding(tmp_path):
 
 def test_create_blank_session_rejects_an_invalid_root(tmp_path):
     """A root the rules refuse is a 422 with no session left behind."""
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     with client:
         (tmp_path / ".git").mkdir()
         r = client.post("/api/sessions", json={"root": str(tmp_path / ".git")})
@@ -295,7 +256,7 @@ def test_create_blank_session_rejects_an_invalid_root(tmp_path):
 def test_blank_delete_keeps_a_session_that_started(tmp_path):
     """The blank delete is decided by the server: a session whose turn has begun
     stays exactly where it is, so only the view closes."""
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     with client:
         client.post("/api/chat", json={"message": "session one"})
         sid = client.get("/api/sessions").json()[0]["id"]
@@ -318,7 +279,7 @@ async def test_blank_delete_leaves_a_running_turn_alone(tmp_path):
     must not cancel that turn to find out."""
     import httpx
 
-    app = make_app(tmp_path).app
+    app = web_client(tmp_path).app
     store = app.state.store
     sess = store.create()
     async with httpx.AsyncClient(
@@ -333,25 +294,16 @@ async def test_blank_delete_leaves_a_running_turn_alone(tmp_path):
 
 
 def test_empty_message_rejected(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/chat", json={"message": "   "})
     assert r.status_code == 422
 
-def test_session_persistence(tmp_path, monkeypatch):
+
+def test_session_persistence(tmp_path):
     """Session JSON survives store reload (browser refresh)."""
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str, **_) -> Agent:
-        return Agent(
-            provider=FakeProvider(script=[{"text": "reply"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    monkeypatch.setenv("HOME", str(tmp_path))
+    factory = agent_factory(tmp_path, script=[{"text": "reply"}])
     store1 = SessionStore(cfg, tmp_path, factory)
     s = store1.create()
     client = TestClient(create_app(cfg=cfg, session_store=store1, static_dir=tmp_path / "no-dist"))
@@ -367,8 +319,6 @@ def test_session_persistence(tmp_path, monkeypatch):
     assert any("persist me" in str(m.get("content")) for m in restored.messages)
 
 
-
-
 def test_load_all_preserves_condensed_summary(tmp_path):
     """A rolling-compaction summary must survive a reload.
 
@@ -376,20 +326,10 @@ def test_load_all_preserves_condensed_summary(tmp_path):
     belongs in ``history_base`` rather than in front of the transcript. Losing it
     would silently drop everything the earlier turns were condensed into.
     """
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str, **_) -> Agent:
-        return Agent(
-            provider=FakeProvider(script=[{"text": "reply"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    factory = agent_factory(tmp_path, script=[{"text": "reply"}])
+    client, store = web_app(cfg, factory, tmp_path)
     with client:
         sid = None
         for msg in ("one", "two", "three", "four"):
@@ -452,7 +392,7 @@ def _mk_repo(tmp_path: Path, name: str = "repo") -> Path:
 
 
 def test_pin_project_persists_and_orders(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo(tmp_path, "proj-a")
     r = client.post("/api/workspaces/pin", json={"root": str(repo), "pinned": True})
     assert r.status_code == 200
@@ -473,7 +413,7 @@ def test_reveal_unavailable_on_non_darwin(tmp_path, monkeypatch):
     import subprocess
     import sys
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo(tmp_path, "proj-r")
 
     # Intercept only the Finder launch so the test never pops a real window
@@ -500,7 +440,7 @@ def test_reveal_unavailable_on_non_darwin(tmp_path, monkeypatch):
 
 
 def test_archive_project_chats_hides_them(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo(tmp_path, "proj-a")
     # create a session under the project root
     r = client.post("/api/chat", json={"message": "hi", "root": str(repo)})
@@ -531,7 +471,7 @@ def test_archive_project_chats_hides_them(tmp_path):
 
 
 def test_remove_project_deletes_sessions(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo(tmp_path, "proj-r")
     r = client.post("/api/chat", json={"message": "hi", "root": str(repo)})
     sid = None
@@ -548,7 +488,7 @@ def test_remove_project_deletes_sessions(tmp_path):
 
 
 def test_create_worktree_registers_new_project(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo(tmp_path, "proj-wt")
     r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
     assert r.status_code == 200, r.text
@@ -568,7 +508,7 @@ def test_create_worktree_registers_new_project(tmp_path):
 
 
 def test_save_project_with_name(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo(tmp_path, "proj-n")
     r = client.post(
         "/api/workspaces/projects",
@@ -600,20 +540,9 @@ def test_user_times_follow_compaction(tmp_path):
     to the model, and condensing it is allowed to drop messages the user can
     still see and still edit.
     """
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str, **_) -> Agent:
-        return Agent(
-            provider=FakeProvider(script=[{"text": "reply"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(tmp_path, script=[{"text": "reply"}]), tmp_path)
     with client:
         sid = None
         for msg in ("one", "two", "three"):
@@ -651,23 +580,9 @@ def test_chat_cross_project_session_id_conflict(tmp_path):
     proj_a = tmp_path / "projA"
     proj_b = tmp_path / "projB"
     primary.mkdir(); proj_a.mkdir(); proj_b.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
 
-    def factory(alias: str, **kw):
-        root = kw.get("root") or primary
-        secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=Path(root),
-            secondary_roots=secs,
-        )
-
-    store = SessionStore(cfg, primary, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(primary), primary)
     with client:
         s = store.create(root=str(proj_a))
         # chat claiming a different project -> 409
@@ -694,23 +609,10 @@ def test_config_project_secondary_binds_into_new_session(tmp_path):
     primary = tmp_path / "p"
     sec = tmp_path / "sec"
     primary.mkdir(); sec.mkdir()
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = primary
+    cfg = load_config(tmp_path, primary)
     cfg.workspace_projects = [{"root": None, "secondary": [str(sec)]}]
 
-    def factory(alias: str, **kw):
-        root = kw.get("root") or primary
-        secs = [Path(p).resolve() for p in (kw.get("secondary_roots") or [])]
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=Path(root),
-            secondary_roots=secs,
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     s = store.create(model_alias="fake-a")  # no root/secondary -> default project binding
     assert s.secondary_roots == [str(sec.resolve())]
     assert sorted(str(p) for p in s.agent.secondary_roots) == [str(sec.resolve())]
@@ -807,7 +709,7 @@ def test_restored_session_with_sensitive_root_reports_422(tmp_path):
 async def test_project_archive_refuses_busy_session_before_any_write(tmp_path):
     import httpx
 
-    app = make_app(tmp_path).app
+    app = web_client(tmp_path).app
     store = app.state.store
     sessions = [store.create(), store.create()]
     async with httpx.AsyncClient(
@@ -830,7 +732,7 @@ async def test_project_archive_and_delete_do_not_resurrect_session(tmp_path, mon
 
     from tests.helpers_web import wait_until
 
-    app = make_app(tmp_path).app
+    app = web_client(tmp_path).app
     store = app.state.store
     sess = store.create()
     other_root = tmp_path / "other"
@@ -880,19 +782,9 @@ async def test_project_archive_and_delete_do_not_resurrect_session(tmp_path, mon
 
 
 def _app_with_provider(tmp_path: Path, provider) -> tuple[TestClient, SessionStore]:
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
-    def factory(alias: str, **agent_kwargs):
-        root = agent_kwargs.get("root") or tmp_path
-        return Agent(
-            provider=provider, registry=build_registry(8000), root=Path(root)
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(tmp_path, provider=lambda: provider), tmp_path)
     return client, store
 
 

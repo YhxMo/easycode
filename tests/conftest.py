@@ -8,7 +8,9 @@ from typing import Any
 
 import pytest
 
+from easycode.agent.loop import Agent
 from easycode.models.base import Provider, StreamEvent, ToolCall
+from easycode.tools import build_registry
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +81,11 @@ class FakeProvider(Provider):
             ]
             yield StreamEvent(kind="tool_calls", tool_calls=calls)
         yield StreamEvent(kind="done")
+
+
+def fake_agent(root, script: list[dict[str, Any]] | None = None, **kw: Any) -> Agent:
+    """An agent in ``root`` over a ``FakeProvider`` serving ``script``."""
+    return Agent(provider=FakeProvider(script=script), registry=build_registry(8000), root=root, **kw)
 
 
 @pytest.fixture

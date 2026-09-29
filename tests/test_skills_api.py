@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import easycode.web.routes.skills as routes_skills
 from easycode.config import Config
 from easycode.web.main import create_app
+from tests.helpers_web import agent_factory
 
 
 def make_skill(root: Path, name: str, description: str = "Test skill", body: str = "Do the thing"):
@@ -27,10 +28,7 @@ def make_skill(root: Path, name: str, description: str = "Test skill", body: str
 
 def build(tmp_path):
     """An app with a default project, a second project and a secondary root."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     default = tmp_path / "default"
     other = tmp_path / "other"
@@ -47,19 +45,7 @@ def build(tmp_path):
         {"root": str(default), "secondary": [str(attached)]},
     ]
 
-    def factory(alias: str = "fake-a", **kw):
-        root = Path(kw["root"]).resolve() if kw.get("root") else default
-        secondary = [Path(p) for p in kw.get("secondary_roots") or []]
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=secondary,
-            # The system prompt lists skills; these tests read them directly.
-            skills=None,
-        )
-
-    store = SessionStore(cfg, default, factory)
+    store = SessionStore(cfg, default, agent_factory(default, skills=None))
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
     return app, cfg, store, {"default": default, "other": other, "attached": attached}
 

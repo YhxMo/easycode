@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from easycode.config import Config
 from easycode.web.main import create_app
+from tests.conftest import fake_agent
+from tests.helpers_web import agent_factory
 
 
 def test_session_permission_persistence(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
@@ -25,13 +23,7 @@ def test_session_permission_persistence(tmp_path):
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=Path(kw.get("root") or primary),
-        )
-
+    factory = agent_factory(primary)
     store1 = SessionStore(cfg, primary, factory)
     s = store1.create(permission_mode="auto-review")
     assert s.permission_mode == "auto-review"
@@ -69,23 +61,14 @@ def test_legacy_allow_all_session_restores_as_asking(tmp_path):
     """A session file that records full access without a consent is a file from
     before the preset was gated: it comes back asking, and the downgrade is
     written back so the user is asked exactly once."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
-        )
-
+    factory = agent_factory(primary)
     store = SessionStore(cfg, primary, factory)
     legacy = store.dir / "legacy123.json"
     legacy.write_text(
@@ -140,24 +123,14 @@ def test_legacy_allow_all_session_restores_as_asking(tmp_path):
 
 
 def test_session_permission_endpoint(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     s = store.create()
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
     with client:
@@ -190,24 +163,14 @@ def test_session_permission_endpoint(tmp_path):
 
 
 def test_chat_with_permission_mode_on_existing_session(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     primary = tmp_path / "p"
     primary.mkdir()
     cfg = Config.load(start=tmp_path)
     cfg.root = primary
 
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=primary,
-        )
-
-    store = SessionStore(cfg, primary, factory)
+    store = SessionStore(cfg, primary, agent_factory(primary))
     s = store.create()
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
     with client:
@@ -248,20 +211,15 @@ def test_chat_with_permission_mode_on_existing_session(tmp_path):
 @pytest.mark.asyncio
 async def test_web_always_allow_matches_session_scope_no_prompt(tmp_path):
     """A pre-registered session always-allow scope skips the approval prompt."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.bridge import ApprovalBroker, stream_chat_with_approval
     from easycode.web.session import Session
-    from tests.conftest import FakeProvider
 
     outside = tmp_path.parent / "always-x.txt"
     script = [
         {"tool_calls": [("c1", "write_file", {"path": str(outside), "content": "x"})], "text": ""},
         {"text": "ok"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path
-    )
+    agent = fake_agent(tmp_path, list(script))
     broker = ApprovalBroker()
     agent.model_alias = "fake-a"  # the agent owns the alias; Session only reads it
     sess = Session(id="s1", title="t", created_at="now", agent=agent)
@@ -281,20 +239,15 @@ async def test_web_always_allow_matches_session_scope_no_prompt(tmp_path):
 @pytest.mark.asyncio
 async def test_web_approval_log_records_decision(tmp_path):
     """Resolved approvals are recorded on the session (approved / denied / expired)."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.bridge import ApprovalBroker, stream_chat_with_approval
     from easycode.web.session import Session
-    from tests.conftest import FakeProvider
 
     outside = tmp_path.parent / "log-y.txt"
     script = [
         {"tool_calls": [("c1", "write_file", {"path": str(outside), "content": "y"})], "text": ""},
         {"text": "ok"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=list(script)), registry=build_registry(8000), root=tmp_path
-    )
+    agent = fake_agent(tmp_path, list(script))
     broker = ApprovalBroker()
 
     class AutoBroker(ApprovalBroker):

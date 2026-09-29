@@ -8,10 +8,11 @@ from fastapi.testclient import TestClient
 
 from easycode.agent.loop import Agent
 from easycode.config import Config
-from easycode.models.base import Provider, StreamEvent
+from easycode.models.base import Provider, StreamEvent, ToolCall
 from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.store import SessionStore
+from tests.helpers_web import agent_factory, web_app
 
 
 @pytest.fixture
@@ -38,6 +39,38 @@ def _agent(repo: Path, provider) -> Agent:
     return Agent(provider=provider, registry=build_registry(8000), root=repo)
 
 
+class BetweenTools(Provider):
+    """Reads a file, then holds the next step (a write to ``target``) until ``gate``."""
+
+    def __init__(self, repo: Path, target: Path, gate: asyncio.Event) -> None:
+        super().__init__("fake/model")
+        self.repo, self.target, self.gate = repo, target, gate
+        self.step = 0
+
+    async def stream(self, messages, tools=None):
+        if self.step == 0:
+            self.step += 1
+            path = str(self.repo / "app.py")
+            yield StreamEvent(
+                kind="tool_calls",
+                tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": path})],
+            )
+            yield StreamEvent(kind="done")
+            return
+        await self.gate.wait()  # the "model" is still deciding the next step
+        yield StreamEvent(
+            kind="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="c2",
+                    name="write_file",
+                    arguments={"path": str(self.target), "content": "late"},
+                )
+            ],
+        )
+        yield StreamEvent(kind="done")
+
+
 def test_web_cancel_endpoint(repo: Path) -> None:
     """Cancel endpoint stops an in-flight chat; same event loop (ASGI transport)."""
     import httpx
@@ -47,12 +80,7 @@ def test_web_cancel_endpoint(repo: Path) -> None:
     cfg = Config.load()
     created: list[Agent] = []
 
-    def factory(alias: str = "fake", **kw):
-        agent = _agent(repo, SlowProvider())
-        created.append(agent)
-        return agent
-
-    store = SS(cfg, repo, factory)
+    store = SS(cfg, repo, agent_factory(repo, provider=SlowProvider, created=created))
     app = create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
 
     async def scenario() -> None:
@@ -93,12 +121,7 @@ def test_deleted_session_not_resurrected_by_stream(repo: Path) -> None:
     cfg = Config.load()
     created: list[Agent] = []
 
-    def factory(alias: str = "fake", **kw):
-        agent = _agent(repo, SlowProvider())
-        created.append(agent)
-        return agent
-
-    store = SS(cfg, repo, factory)
+    store = SS(cfg, repo, agent_factory(repo, provider=SlowProvider, created=created))
     app = create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
 
     async def scenario() -> None:
@@ -128,7 +151,6 @@ def test_delete_stops_followup_tools(repo: Path) -> None:
     follow-up tool may start after the delete (P1: a late write survived)."""
     import httpx
 
-    from easycode.models.base import Provider, StreamEvent, ToolCall
     from easycode.web.store import SessionStore as SS
     from tests.helpers_web import wait_until
 
@@ -136,43 +158,9 @@ def test_delete_stops_followup_tools(repo: Path) -> None:
     target = repo / "late-write.txt"
     gate = asyncio.Event()
 
-    class BetweenTools(Provider):
-        def __init__(self) -> None:
-            super().__init__("fake/model")
-            self.step = 0
-
-        async def stream(self, messages, tools=None):
-            if self.step == 0:
-                self.step += 1
-                yield StreamEvent(
-                    kind="tool_calls",
-                    tool_calls=[
-                        ToolCall(
-                            id="c1",
-                            name="read_file",
-                            arguments={"path": str(repo / "app.py")},
-                        )
-                    ],
-                )
-                yield StreamEvent(kind="done")
-                return
-            await gate.wait()  # the "model" is still deciding the next step
-            yield StreamEvent(
-                kind="tool_calls",
-                tool_calls=[
-                    ToolCall(
-                        id="c2",
-                        name="write_file",
-                        arguments={"path": str(target), "content": "late"},
-                    )
-                ],
-            )
-            yield StreamEvent(kind="done")
-
-    def factory(alias: str = "fake", **kw):
-        return Agent(provider=BetweenTools(), registry=build_registry(8000), root=repo)
-
-    store = SS(cfg, repo, factory)
+    store = SS(
+        cfg, repo, agent_factory(repo, provider=lambda: BetweenTools(repo, target, gate))
+    )
     app = create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
 
     async def scenario() -> None:
@@ -206,7 +194,6 @@ def test_project_delete_stops_followup_tools(repo: Path) -> None:
     """Project batch delete uses the same lifecycle: cancel, wait, then drop."""
     import httpx
 
-    from easycode.models.base import Provider, StreamEvent, ToolCall
     from easycode.web.store import SessionStore as SS
     from tests.helpers_web import wait_until
 
@@ -214,43 +201,9 @@ def test_project_delete_stops_followup_tools(repo: Path) -> None:
     target = repo / "project-late-write.txt"
     gate = asyncio.Event()
 
-    class BetweenTools(Provider):
-        def __init__(self) -> None:
-            super().__init__("fake/model")
-            self.step = 0
-
-        async def stream(self, messages, tools=None):
-            if self.step == 0:
-                self.step += 1
-                yield StreamEvent(
-                    kind="tool_calls",
-                    tool_calls=[
-                        ToolCall(
-                            id="c1",
-                            name="read_file",
-                            arguments={"path": str(repo / "app.py")},
-                        )
-                    ],
-                )
-                yield StreamEvent(kind="done")
-                return
-            await gate.wait()
-            yield StreamEvent(
-                kind="tool_calls",
-                tool_calls=[
-                    ToolCall(
-                        id="c2",
-                        name="write_file",
-                        arguments={"path": str(target), "content": "late"},
-                    )
-                ],
-            )
-            yield StreamEvent(kind="done")
-
-    def factory(alias: str = "fake", **kw):
-        return Agent(provider=BetweenTools(), registry=build_registry(8000), root=repo)
-
-    store = SS(cfg, repo, factory)
+    store = SS(
+        cfg, repo, agent_factory(repo, provider=lambda: BetweenTools(repo, target, gate))
+    )
     app = create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
 
     async def scenario() -> None:
@@ -306,10 +259,7 @@ def test_delete_session_leaves_other_session_running(repo: Path) -> None:
             yield StreamEvent(kind="text", content="done")
             yield StreamEvent(kind="done")
 
-    def factory(alias: str = "fake", **kw):
-        return Agent(provider=GatedProvider(), registry=build_registry(8000), root=repo)
-
-    store = SS(cfg, repo, factory)
+    store = SS(cfg, repo, agent_factory(repo, provider=GatedProvider))
     app = create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
 
     async def scenario() -> None:
@@ -343,16 +293,9 @@ def test_flush_failure_does_not_hold_session_lock(repo: Path) -> None:
     session lock, so the next turn (or a delete) is not blocked forever."""
     import httpx
 
-    from tests.conftest import FakeProvider
-
     cfg = Config.load()
 
-    def factory(alias: str = "fake", **kw):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]), registry=build_registry(8000), root=repo
-        )
-
-    store = SessionStore(cfg, repo, factory)
+    store = SessionStore(cfg, repo, agent_factory(repo))
     app = create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
 
     async def scenario() -> None:
@@ -377,22 +320,11 @@ def test_flush_failure_does_not_hold_session_lock(repo: Path) -> None:
 
 
 def test_first_chat_yields_session_event(repo: Path) -> None:
-    from tests.conftest import FakeProvider
 
     cfg = Config.load()
     created: list[Agent] = []
 
-    def factory(alias: str = "fake", **kw):
-        agent = Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=repo,
-        )
-        created.append(agent)
-        return agent
-
-    store = SessionStore(cfg, repo, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist"))
+    client = web_app(cfg, agent_factory(repo, created=created), repo)[0]
     with client:
         r = client.post("/api/chat", json={"message": "hi"})
         body = r.text
@@ -514,7 +446,7 @@ async def test_closing_stream_keeps_valid_tool_history(tmp_path):
 
 def test_removed_undo_routes_are_unavailable(repo):
     cfg = Config.load()
-    store = SessionStore(cfg, repo, lambda alias, **_: _agent(repo, SlowProvider()))
+    store = SessionStore(cfg, repo, agent_factory(repo, provider=SlowProvider))
     with TestClient(
         create_app(cfg=cfg, session_store=store, static_dir=repo / "no-dist")
     ) as client:

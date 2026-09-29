@@ -3,30 +3,18 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from easycode.agent.context import History
 from easycode.agent.loop import Agent
 from easycode.agent.system import find_agents_rules
-from easycode.tools import build_registry
-from tests.conftest import FakeProvider
-
-
-def make_agent(tmp_path: Path, script: list[dict] | None = None, **kw) -> Agent:
-    return Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        **kw,
-    )
-
+from tests.conftest import fake_agent
 
 # Project instructions
 
 
 async def test_agents_md_loaded_into_system_prompt(tmp_path):
     (tmp_path / "AGENTS.md").write_text("# Rules\nalways use tabs\n", encoding="utf-8")
-    agent = make_agent(tmp_path, [{"text": "ok"}])
+    agent = fake_agent(tmp_path, [{"text": "ok"}])
     payload = agent.history.payload()
     assert "Project rules" in payload[0]["content"]
     assert "always use tabs" in payload[0]["content"]
@@ -40,7 +28,7 @@ async def test_agents_md_found_upward(tmp_path):
 
 
 async def test_no_agents_md_no_rules_section(tmp_path):
-    agent = make_agent(tmp_path, [{"text": "ok"}])
+    agent = fake_agent(tmp_path, [{"text": "ok"}])
     assert "Project rules" not in agent.history.payload()[0]["content"]
 
 
@@ -74,7 +62,7 @@ async def test_agent_condenses_when_over_budget(tmp_path):
         calls.append(messages)
         return "COMPRESSED"
 
-    agent = make_agent(tmp_path, [{"text": "final"}], summarizer=fake_summarizer)
+    agent = fake_agent(tmp_path, [{"text": "final"}], summarizer=fake_summarizer)
     # tiny budgets force compression and keep only one recent turn verbatim
     agent.history.max_chars = 1_000
     agent.compaction["preserve_recent_tokens"] = 50
@@ -93,22 +81,14 @@ async def test_agent_condenses_when_over_budget(tmp_path):
 
 async def test_parallel_tasks_runs_subagents(tmp_path):
     (tmp_path / "a.py").write_text("x", encoding="utf-8")
-    sub_1 = Agent(
-        provider=FakeProvider(script=[{"text": "result-one"}]),
-        registry=build_registry(8000),
-        root=tmp_path,
-    )
-    sub_2 = Agent(
-        provider=FakeProvider(script=[{"text": "result-two"}]),
-        registry=build_registry(8000),
-        root=tmp_path,
-    )
+    sub_1 = fake_agent(tmp_path, [{"text": "result-one"}])
+    sub_2 = fake_agent(tmp_path, [{"text": "result-two"}])
     made = iter([sub_1, sub_2])
 
     def factory(model: str) -> Agent:
         return next(made)
 
-    main = make_agent(
+    main = fake_agent(
         tmp_path,
         [
             {
@@ -149,13 +129,13 @@ async def test_parallel_tasks_runs_subagents(tmp_path):
 
 
 async def test_parallel_tasks_in_main_schema(tmp_path):
-    agent = make_agent(tmp_path, [{"text": "x"}])
+    agent = fake_agent(tmp_path, [{"text": "x"}])
     names = [s["function"]["name"] for s in agent.tool_schemas()]
     assert "parallel_tasks" in names
 
 
 async def test_parallel_tasks_disabled_by_enabled_tools(tmp_path):
-    agent = make_agent(tmp_path, [{"text": "x"}], enabled_tools={"read_file", "glob"})
+    agent = fake_agent(tmp_path, [{"text": "x"}], enabled_tools={"read_file", "glob"})
     names = [s["function"]["name"] for s in agent.tool_schemas()]
     assert "parallel_tasks" not in names
 
@@ -185,12 +165,8 @@ def test_builtin_schemas_are_self_contained_and_bounded():
 
 
 async def test_parallel_tasks_subagent_error_reported(tmp_path):
-    fails = Agent(
-        provider=FakeProvider(script=[{"error": "boom"}]),
-        registry=build_registry(8000),
-        root=tmp_path,
-    )
-    main = make_agent(
+    fails = fake_agent(tmp_path, [{"error": "boom"}])
+    main = fake_agent(
         tmp_path,
         [
             {

@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import mcp_servers
+from tests.conftest import fake_agent, mcp_servers
+from tests.helpers_web import agent_factory, load_config
 
 
 def mcp_server_config(pidfile: Path | None = None):
@@ -266,11 +267,7 @@ async def test_subagent_task_keeps_borrowed_parent_mcp(tmp_path):
     ]
 
     def factory(_model: str) -> Agent:
-        return Agent(
-            provider=FakeProvider(script=sub_script),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
+        return fake_agent(tmp_path, sub_script)
 
     script = [
         {"tool_calls": [("t1", "task", {"agent": "coder", "prompt": "add"})], "text": ""},
@@ -344,9 +341,7 @@ async def test_subagent_with_different_sandbox_gets_own_mcp(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "darwin", reason="workspace shell sandbox is macOS-only")
 async def test_session_delete_closes_owned_mcp(tmp_path):
-    from easycode.agent.loop import Agent
     from easycode.config import Config
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
@@ -355,14 +350,11 @@ async def test_session_delete_closes_owned_mcp(tmp_path):
 
     pidfile = tmp_path / "mcp.pid"
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=FakeProvider(model="fake"),
-            registry=build_registry(8000),
-            root=tmp_path,
-            mcp_servers=mcp_server_config(pidfile),
-        )
-
+    factory = agent_factory(
+        tmp_path,
+        provider=lambda: FakeProvider(model="fake"),
+        mcp_servers=mcp_server_config(pidfile),
+    )
     store = SessionStore(cfg, tmp_path, factory)
     sess = store.create()
     await sess.agent.init_mcp()
@@ -381,18 +373,12 @@ def test_web_shutdown_closes_owned_mcp(tmp_path):
     """Leaving the FastAPI lifespan releases every session-owned MCP process."""
     from fastapi.testclient import TestClient
 
-    from easycode.agent.loop import Agent
-    from easycode.config import Config
     from easycode.extensions.mcp.manager import mcp_tool_name
-    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
     fname = mcp_tool_name("demo", "add")
     script = [
         {"tool_calls": [("c1", fname, {"a": 1, "b": 1})], "text": ""},
@@ -401,15 +387,12 @@ def test_web_shutdown_closes_owned_mcp(tmp_path):
 
     pidfile = tmp_path / "mcp.pid"
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=FakeProvider(model="fake", script=list(script)),
-            registry=build_registry(8000),
-            root=tmp_path,
-            mcp_servers=mcp_server_config(pidfile),
-            permission_mode="allow-all",
-        )
-
+    factory = agent_factory(
+        tmp_path,
+        provider=lambda: FakeProvider(model="fake", script=list(script)),
+        mcp_servers=mcp_server_config(pidfile),
+        permission_mode="allow-all",
+    )
     store = SessionStore(cfg, tmp_path, factory)
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
     client = TestClient(app)
@@ -439,28 +422,19 @@ async def test_chat_permission_change_drops_stale_mcp(tmp_path):
     the permission endpoint (regression: /api/chat switched the mode only)."""
     import httpx
 
-    from easycode.agent.loop import Agent
-    from easycode.config import Config
-    from easycode.tools import build_registry
     from easycode.web.main import create_app
     from easycode.web.store import SessionStore
     from tests.conftest import FakeProvider
 
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
 
     pidfile = tmp_path / "mcp.pid"
 
-    def factory(alias: str = "fake-a", **_):
-        return Agent(
-            provider=FakeProvider(model="fake", script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-            mcp_servers=mcp_server_config(pidfile),
-        )
-
+    factory = agent_factory(
+        tmp_path,
+        provider=lambda: FakeProvider(model="fake", script=[{"text": "ok"}]),
+        mcp_servers=mcp_server_config(pidfile),
+    )
     store = SessionStore(cfg, tmp_path, factory)
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
 
@@ -509,9 +483,7 @@ async def test_subagent_reuses_mcp_manager(tmp_path):
     assert agent.mcp_manager is None
     from easycode.agent.builtin_tools import make_subagent
 
-    agent.subagent_factory = lambda _model: Agent(
-        provider=FakeProvider(), registry=build_registry(8000), root=tmp_path
-    )
+    agent.subagent_factory = lambda _model: fake_agent(tmp_path)
     sub = make_subagent(agent)
     assert sub.mcp_servers == agent.mcp_servers
     assert sub.mcp_manager == agent.mcp_manager  # shares (lazily shared after connect)

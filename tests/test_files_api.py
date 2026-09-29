@@ -2,43 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from easycode.agent.loop import Agent
-from easycode.config import Config
-from easycode.tools import build_registry
 from easycode.tools.reading import CHUNK_BYTES, MAX_READ_BYTES, _LineWindow, read_window
-from easycode.web.main import create_app
-from easycode.web.store import SessionStore
-from tests.conftest import FakeProvider
-
-
-def make_app(tmp_path: Path) -> TestClient:
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(
-        json.dumps({"models": {"fake-a": "fake/a"}}),
-        encoding="utf-8",
-    )
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-
-    def factory(alias: str, **agent_kwargs):
-        # secondary roots must reach the agent: a factory that drops them would
-        # make every multi-root assertion below pass for the wrong reason.
-        root = agent_kwargs.get("root") or tmp_path
-        secondary = agent_kwargs.get("secondary_roots") or []
-        return Agent(
-            provider=FakeProvider(script=[]),
-            registry=build_registry(8000),
-            root=Path(root),
-            secondary_roots=[Path(p) for p in secondary],
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    return TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+from tests.helpers_web import web_client
 
 
 def _workspace(tmp_path: Path) -> None:
@@ -62,7 +31,7 @@ def _paths(payload: dict) -> list[str]:
 
 def test_lists_workspace_files_and_skips_ignored_paths(tmp_path):
     _workspace(tmp_path)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
 
     r = client.post("/api/files", json={"root": str(tmp_path)})
     assert r.status_code == 200
@@ -82,7 +51,7 @@ def test_lists_workspace_files_and_skips_ignored_paths(tmp_path):
 
 def test_entry_shape_carries_dir_and_name(tmp_path):
     _workspace(tmp_path)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
 
     entry = next(f for f in client.post("/api/files", json={"root": str(tmp_path)}).json()["files"] if f["path"] == "src/web/routes.py")
     assert entry["name"] == "routes.py"
@@ -94,7 +63,7 @@ def test_query_ranks_basename_hits_first(tmp_path):
     # a path match whose own name does not match
     (tmp_path / "readme").mkdir()
     (tmp_path / "readme" / "notes.txt").write_text("notes\n", encoding="utf-8")
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
 
     paths = _paths(client.post("/api/files", json={"root": str(tmp_path), "q": "readme"}).json())
     assert paths == ["README.md", "readme/notes.txt"]
@@ -102,7 +71,7 @@ def test_query_ranks_basename_hits_first(tmp_path):
 
 def test_limit_caps_the_listing(tmp_path):
     _workspace(tmp_path)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     payload = client.post("/api/files", json={"root": str(tmp_path), "limit": 2}).json()
     assert len(payload["files"]) == 2
     # total reports what matched, so the UI can say the list was cut short
@@ -111,7 +80,7 @@ def test_limit_caps_the_listing(tmp_path):
 
 def test_session_scope_uses_the_sessions_own_roots(tmp_path):
     _workspace(tmp_path)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     r = client.post("/api/files", json={"session_id": session.id})
@@ -120,12 +89,12 @@ def test_session_scope_uses_the_sessions_own_roots(tmp_path):
 
 
 def test_unknown_session_is_404(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     assert client.post("/api/files", json={"session_id": "nope"}).status_code == 404
 
 
 def test_sensitive_draft_root_is_422(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/files", json={"root": str(tmp_path / ".git")})
     assert r.status_code == 422
 
@@ -140,7 +109,7 @@ def test_explicit_empty_secondary_roots_do_not_inherit_the_project_binding(tmp_p
     extra.mkdir()
     (extra / "note.md").write_text("hi\n", encoding="utf-8")
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     client.app.state.store.cfg.workspace_projects = [
         {"root": str(workspace), "secondary": [str(extra)]}
     ]
@@ -162,7 +131,7 @@ def _content(client: TestClient, session_id: str, **params) -> dict:
 
 def test_content_returns_file_text_with_line_window(tmp_path):
     _workspace(tmp_path)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     whole = _content(client, session.id, path="src/app.ts")
@@ -183,7 +152,7 @@ def test_content_rejects_paths_outside_the_workspace(tmp_path):
     _workspace(tmp_path)
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("secret\n", encoding="utf-8")
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     r = client.get(
@@ -199,7 +168,7 @@ def test_content_rejects_paths_outside_the_workspace(tmp_path):
 
 def test_content_rejects_protected_paths(tmp_path):
     _workspace(tmp_path)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     for path in ("easycode.config.json", ".easycode/state.json"):
@@ -209,7 +178,7 @@ def test_content_rejects_protected_paths(tmp_path):
 
 def test_content_unknown_session_and_missing_file(tmp_path):
     _workspace(tmp_path)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     assert (
         client.get(
             "/api/files/content", params={"session_id": "nope", "path": "src/app.ts"}
@@ -227,7 +196,7 @@ def test_content_unknown_session_and_missing_file(tmp_path):
 
 def test_invalid_secondary_root_is_422_like_chat(tmp_path):
     """A bad draft root is a request error on both endpoints, never a 500."""
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     body = {"root": str(tmp_path), "secondary_roots": [str(tmp_path / "missing-dir")]}
 
     files = client.post("/api/files", json=body)
@@ -243,7 +212,7 @@ def test_unreadable_file_reports_a_real_error(tmp_path):
     locked = tmp_path / "locked.txt"
     locked.write_text("secret\n", encoding="utf-8")
     locked.chmod(0)
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     try:
@@ -258,7 +227,7 @@ def test_content_offset_and_limit_keep_their_tolerant_behaviour(tmp_path):
     _workspace(tmp_path)
     many = tmp_path / "many.txt"
     many.write_text("\n".join(f"line {i}" for i in range(1, 6)), encoding="utf-8")
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     # any integer is accepted; a non-positive limit means "to the end"
@@ -281,7 +250,7 @@ def test_same_name_in_two_roots_has_distinct_targets(tmp_path):
     (extra / "src").mkdir(parents=True)
     (extra / "src" / "same.txt").write_text("secondary\n", encoding="utf-8")
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(
         root=str(primary), secondary_roots=[str(extra)]
     )
@@ -309,7 +278,7 @@ def test_symlinks_that_the_preview_would_refuse_are_not_listed(tmp_path):
     (primary / ".easycode" / "state.json").write_text("{}", encoding="utf-8")
     (primary / "state.txt").symlink_to(primary / ".easycode" / "state.json")
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(primary))
 
     names = [e["name"] for e in client.post("/api/files", json={"session_id": session.id}).json()["files"]]
@@ -329,7 +298,7 @@ def test_overlapping_roots_list_a_file_once(tmp_path):
     inner.mkdir(parents=True)
     (inner / "mod.py").write_text("x = 1\n", encoding="utf-8")
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(primary), secondary_roots=[str(inner)])
 
     entries = client.post("/api/files", json={"session_id": session.id}).json()["files"]
@@ -382,7 +351,7 @@ def test_preview_matches_the_unbounded_read_for_tricky_files(tmp_path):
     _workspace(tmp_path)
     for name, text in TRICKY_FILES.items():
         (tmp_path / name).write_text(text, encoding="utf-8")
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     for name, text in TRICKY_FILES.items():
@@ -443,7 +412,7 @@ def test_full_access_previews_any_host_path(tmp_path):
     cred.parent.mkdir(parents=True, exist_ok=True)
     cred.write_text('{"api_key": "sk-preview-secret"}\n', encoding="utf-8")
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     sandboxed = client.app.state.store.create(root=str(tmp_path))
     full = client.app.state.store.create(root=str(tmp_path))
     full.set_permission_mode(PERM_ALLOW_ALL)
@@ -483,7 +452,7 @@ def test_preview_bounds_long_lines_without_changing_the_response(tmp_path):
     (tmp_path / "one.txt").write_text("a" * (60 * 1024), encoding="utf-8")
     (tmp_path / "wide.txt").write_text("a\nb\n" + "中" * (100 * 1024), encoding="utf-8")
     (tmp_path / "outside.txt").write_text("a" * (1024 * 1024) + "\nsecond\n", encoding="utf-8")
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     session = client.app.state.store.create(root=str(tmp_path))
 
     one = client.get("/api/files/content", params={"session_id": session.id, "path": "one.txt"})

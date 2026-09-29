@@ -8,20 +8,14 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-from easycode.agent.loop import Agent
-from easycode.config import Config
-from easycode.tools import build_registry
 from easycode.web.artifacts import (
     MAX_DIFF,
     MAX_EXCERPT,
     build_record,
     records_from_messages,
 )
-from easycode.web.main import create_app
-from easycode.web.store import SessionStore
-from tests.conftest import FakeProvider
+from tests.helpers_web import web_client
 
 READ_OK = json.dumps(
     {
@@ -34,24 +28,6 @@ READ_OK = json.dumps(
         "content": "1: 内容",
     }
 )
-
-
-def make_app(root: Path, session_dir: Path | None = None) -> TestClient:
-    cfg_file = root / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=root)
-    cfg.root = root
-
-    def factory(alias: str, **kw):
-        return Agent(
-            provider=FakeProvider(script=[]),
-            registry=build_registry(8000),
-            root=Path(kw.get("root") or root),
-            secondary_roots=[Path(p) for p in (kw.get("secondary_roots") or [])],
-        )
-
-    store = SessionStore(cfg, root, factory)
-    return TestClient(create_app(cfg=cfg, session_store=store, static_dir=root / "no-dist"))
 
 
 def git(path: Path, *args: str) -> None:
@@ -138,7 +114,7 @@ def test_chat_turn_records_file_tools_and_persists_them(tmp_path):
     root = tmp_path / "ws"
     root.mkdir()
     (root / "app.ts").write_text("hello\n", encoding="utf-8")
-    client = make_app(root)
+    client = web_client(root)
     with client:
         store = client.app.state.store
         sess = store.create()
@@ -159,7 +135,7 @@ def test_chat_turn_records_file_tools_and_persists_them(tmp_path):
         assert [a["id"] for a in saved["artifacts"]] == ["t1"]
 
     # A fresh store over the same directory restores them with the session.
-    client2 = make_app(root, session_dir=tmp_path / ".easycode" / "sessions")
+    client2 = web_client(root)
     with client2:
         detail = client2.get(f"/api/sessions/{sess.id}").json()
         assert [a["id"] for a in detail["artifacts"]] == ["t1"]
@@ -200,7 +176,7 @@ def test_old_session_file_is_backfilled_from_its_history(tmp_path):
         ),
         encoding="utf-8",
     )
-    client = make_app(root)
+    client = web_client(root)
     with client:
         detail = client.get("/api/sessions/legacy").json()
         assert [a["id"] for a in detail["artifacts"]] == ["t1"]
@@ -223,7 +199,7 @@ def test_changes_reports_the_working_tree_as_it_is(tmp_path):
     (root / "loose.txt").write_text("untracked\n", encoding="utf-8")
     (root / "gone.txt").unlink()
 
-    client = make_app(root)
+    client = web_client(root)
     with client:
         sess = client.app.state.store.create(root=str(root))
         data = client.get(f"/api/sessions/{sess.id}/changes").json()
@@ -268,7 +244,7 @@ def test_changes_count_lines_against_head_for_every_state(tmp_path):
     (root / "loose.txt").write_text("u1\nu2\nu3\n", encoding="utf-8")
     (root / "binary.dat").write_bytes(b"\x00\xff\x03")
 
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(root))
         data = client.get(f"/api/sessions/{sess.id}/changes").json()
@@ -310,7 +286,7 @@ def test_changes_sums_every_bound_repository(tmp_path):
     (primary / "a.txt").write_text("base\nmore\n", encoding="utf-8")
     (secondary / "b.txt").write_text("base\nmore\nand more\n", encoding="utf-8")
 
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(
             root=str(primary), secondary_roots=[str(secondary)]
@@ -338,7 +314,7 @@ def test_changes_keeps_a_diff_past_the_size_cap_out_of_the_response(tmp_path):
     git(root, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
     (root / "huge.txt").write_text("x" * (MAX_DIFF_CHARS + 100) + "\n", encoding="utf-8")
 
-    client = make_app(root)
+    client = web_client(root)
     with client:
         sess = client.app.state.store.create(root=str(root))
         data = client.get(f"/api/sessions/{sess.id}/changes").json()
@@ -364,7 +340,7 @@ def test_changes_diff_a_rename_against_its_old_path(tmp_path):
     git(root, "mv", "old.txt", "new.txt")
     (root / "new.txt").write_text("a\nB\nc\n", encoding="utf-8")
 
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(root))
         data = client.get(f"/api/sessions/{sess.id}/changes").json()
@@ -381,7 +357,7 @@ def test_changes_diff_a_rename_against_its_old_path(tmp_path):
 def test_changes_lists_nothing_for_a_directory_outside_git(tmp_path):
     root = tmp_path / "plain"
     root.mkdir()
-    client = make_app(root)
+    client = web_client(root)
     with client:
         sess = client.app.state.store.create(root=str(root))
         data = client.get(f"/api/sessions/{sess.id}/changes").json()
@@ -419,7 +395,7 @@ def test_changes_without_diffs_skips_every_git_diff(tmp_path, monkeypatch):
     import easycode.web.git as gitmod
 
     workspace = _repo_with_changes(tmp_path)
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(workspace / "repo"))
         with_diffs = client.get(f"/api/sessions/{sess.id}/changes").json()
@@ -451,7 +427,7 @@ def test_changes_without_diffs_skips_every_git_diff(tmp_path, monkeypatch):
 def test_changes_wrong_value_for_diffs_is_rejected(tmp_path):
     """The query flag is a number: anything else is a bad request, not a 500."""
     workspace = _repo_with_changes(tmp_path)
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(workspace / "repo"))
         assert client.get(f"/api/sessions/{sess.id}/changes?diffs=abc").status_code == 422
@@ -462,7 +438,7 @@ def test_one_file_diff_is_fetched_by_repo_and_path(tmp_path):
     """The row a reader opens gets its own file's diff, and nothing else."""
     workspace = _repo_with_changes(tmp_path)
     repo = workspace / "repo"
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(repo))
         tracked = client.get(
@@ -491,7 +467,7 @@ def test_one_file_diff_explains_what_it_cannot_show(tmp_path):
     """Binary and deleted files keep the reason instead of an empty preview."""
     workspace = _repo_with_changes(tmp_path)
     repo = workspace / "repo"
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(repo))
         binary = client.get(
@@ -516,7 +492,7 @@ def test_oversized_files_say_why_there_is_no_diff(tmp_path, monkeypatch):
     workspace = _repo_with_changes(tmp_path)
     repo = workspace / "repo"
     (repo / "loose.txt").write_text("x" * 50 + "\n", encoding="utf-8")
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(repo))
         base = f"/api/sessions/{sess.id}/changes/diff"
@@ -538,7 +514,7 @@ def test_one_file_diff_refuses_anything_outside_the_session(tmp_path):
     repo = workspace / "repo"
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(repo))
         other = client.app.state.store.create(root=str(elsewhere))
@@ -577,7 +553,7 @@ def test_one_file_diff_in_a_repository_without_a_commit(tmp_path):
     (root / "first.txt").write_text("hello\n", encoding="utf-8")
     git(root, "add", "first.txt")
 
-    client = make_app(workspace)
+    client = web_client(workspace)
     with client:
         sess = client.app.state.store.create(root=str(root))
         body = client.get(

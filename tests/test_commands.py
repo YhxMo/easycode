@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 
-from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.extensions.commands import Command, CommandRegistry
 from easycode.extensions.skills import Skill, SkillRegistry
-from easycode.tools import build_registry
 from easycode.web.main import create_app
 from easycode.web.store import SessionStore
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, fake_agent
+from tests.helpers_web import agent_factory, web_app
 
 
 def test_command_template_expansion():
@@ -112,11 +109,7 @@ Template $ARGUMENTS
     cfg = Config.load(start=proj)
     cfg.root = proj
 
-    def factory(alias: str, **kwargs):
-        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
-
-    store = SessionStore(cfg, proj, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(proj), proj)[0]
 
     r = client.get("/api/commands")
     assert r.status_code == 200
@@ -141,11 +134,7 @@ def test_unknown_command_does_not_create_session(tmp_path, monkeypatch):
     cfg = Config.load(start=proj)
     cfg.root = proj
 
-    def factory(alias: str, **kwargs):
-        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
-
-    store = SessionStore(cfg, proj, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(proj), proj)[0]
 
     with client:
         r = client.post("/api/chat", json={"message": "/nope"})
@@ -174,11 +163,7 @@ Expanded prompt: $ARGUMENTS
 
     provider = FakeProvider(script=[{"text": "reply"}])
 
-    def factory(alias: str, **kwargs):
-        return Agent(provider=provider, registry=build_registry(8000), root=proj)
-
-    store = SessionStore(cfg, proj, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(proj, provider=lambda: provider), proj)[0]
 
     with client:
         r = client.post("/api/chat", json={"message": "/ask how are you"})
@@ -200,7 +185,7 @@ async def test_handle_command_smoke_help_agents_model_list(tmp_path, monkeypatch
     proj = tmp_path / "proj"
     proj.mkdir()
     cfg = Config.load(start=proj)
-    agent = Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj)
+    agent = fake_agent(proj)
     commands = cli.build_commands(agent, [proj])
 
     assert await cli.handle_command("/help", cfg, agent, cfg.default_model, commands) is None
@@ -239,10 +224,7 @@ def test_commands_menu_lists_every_registered_scope(tmp_path, monkeypatch):
     cfg = Config.load(start=tmp_path)
     cfg.root = default
 
-    def factory(alias: str, **kwargs):
-        return Agent(provider=FakeProvider(script=[]), registry=build_registry(8000), root=proj_a)
-
-    store = SessionStore(cfg, tmp_path, factory)
+    store = SessionStore(cfg, tmp_path, agent_factory(default))
     store.create(root=str(proj_a))
     store.create(root=str(proj_b))
 
@@ -275,16 +257,7 @@ def test_picked_command_expands_from_the_project_it_came_from(tmp_path, monkeypa
     cfg.root = proj_a
     cfg.workspace_projects = [{"root": str(proj_b), "secondary": []}]
 
-    def factory(alias: str, **kwargs):
-        root = kwargs.get("root") or proj_a
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=Path(root),
-        )
-
-    store = SessionStore(cfg, proj_a, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(proj_a), proj_a)
     # Created after the app: create_app restores sessions from disk, which would
     # replace this in-memory one (and its provider) with a copy.
     sess = store.create(root=str(proj_a))
@@ -343,15 +316,7 @@ def test_typed_command_still_resolves_in_the_session_scope(tmp_path, monkeypatch
     cfg = Config.load(start=tmp_path)
     cfg.root = proj
 
-    def factory(alias: str, **kwargs):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=Path(kwargs.get("root") or proj),
-        )
-
-    store = SessionStore(cfg, proj, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(proj), proj)
     # Created after the app: create_app restores sessions from disk, which would
     # replace this in-memory one (and its provider) with a copy.
     sess = store.create(root=str(proj))
@@ -373,11 +338,6 @@ def test_secondary_change_refreshes_agent_skills_and_commands(tmp_path, monkeypa
     rebuilds the system prompt, so a typed command and the agent share one scope."""
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
-
     proj = tmp_path / "proj"
     proj.mkdir()
     sec = tmp_path / "sec"
@@ -395,15 +355,7 @@ def test_secondary_change_refreshes_agent_skills_and_commands(tmp_path, monkeypa
     cfg = Config.load(start=proj)
     cfg.root = proj
 
-    def factory(alias: str, **kwargs):
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=proj,
-        )
-
-    store = SessionStore(cfg, proj, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(proj), proj)
 
     with client:
         sess = store.create(root=str(proj), secondary_roots=[])
@@ -429,12 +381,6 @@ def test_secondary_roots_explicit_empty_vs_inherited(tmp_path, monkeypatch):
     """A draft chat: omitted secondary_roots inherits the project binding, an
     explicit empty list creates a session with no secondary roots."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    from pathlib import Path
-
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -444,18 +390,7 @@ def test_secondary_roots_explicit_empty_vs_inherited(tmp_path, monkeypatch):
     cfg.root = proj
     cfg.workspace_projects = [{"root": str(proj), "secondary": [str(sec)]}]
 
-    def factory(alias: str, **kwargs):
-        root = Path(kwargs.get("root") or proj)
-        secondaries = [Path(p) for p in (kwargs.get("secondary_roots") or [])]
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-            secondary_roots=secondaries,
-        )
-
-    store = SessionStore(cfg, proj, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client, store = web_app(cfg, agent_factory(proj), proj)
 
     with client:
         # Omitting the field inherits the project's secondary binding.

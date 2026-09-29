@@ -10,12 +10,12 @@ from easycode import cli
 from easycode.agent.loop import Agent
 from easycode.config import Config
 from easycode.tools import build_registry
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, fake_agent
 
 
 def test_main_runs_repl(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    agent = Agent(provider=FakeProvider(), registry=build_registry(8000), root=tmp_path)
+    agent = fake_agent(tmp_path)
     monkeypatch.setattr(cli, "make_agent", lambda *args, **kwargs: agent)
     calls = []
 
@@ -87,9 +87,7 @@ async def test_run_collects_real_changes_only(tmp_path, monkeypatch):
         },
         {"text": "done"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=script), registry=build_registry(8000), root=tmp_path
-    )
+    agent = fake_agent(tmp_path, script)
     captured: list[list[dict]] = []
     monkeypatch.setattr(cli, "show_diff_summary", captured.append)
 
@@ -119,7 +117,7 @@ def test_main_rejects_sensitive_root(tmp_path, monkeypatch):
 
 
 def _stub_repl(monkeypatch):
-    agent = Agent(provider=FakeProvider(), registry=build_registry(8000), root=Path.cwd())
+    agent = fake_agent(Path.cwd())
     monkeypatch.setattr(cli, "make_agent", lambda *args, **kwargs: agent)
     started: list[str] = []
 

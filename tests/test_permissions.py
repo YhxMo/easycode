@@ -20,7 +20,7 @@ from easycode.permissions.boundary import PathContext, ToolGrant
 from easycode.permissions.policy import ExecutionPolicy, cap_permission, permission_rule_action
 from easycode.permissions.reviewer import ReviewDecision
 from easycode.tools import build_registry
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, fake_agent
 from tests.helpers_history import assert_valid_tool_protocol
 
 
@@ -78,7 +78,7 @@ def test_subagent_inherits_parent_permission_rules(tmp_path):
         build_registry(8_000),
         tmp_path,
         permission_rules=rules,
-        subagent_factory=lambda _model: Agent(FakeProvider(script=[]), build_registry(8_000), tmp_path),
+        subagent_factory=lambda _model: fake_agent(tmp_path),
     )
 
     child = make_subagent(agent)
@@ -92,10 +92,9 @@ async def test_permission_rule_deny_skips_approval_handler(tmp_path):
         {"tool_calls": [("c1", "execute_shell", {"command": "git status --short"})]},
         {"text": "done"},
     ]
-    agent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
+    agent = fake_agent(
         tmp_path,
+        script,
         permission_rules={"execute_shell": {"git status*": "deny"}},
     )
     called = False
@@ -121,10 +120,9 @@ async def test_permission_rule_deny_still_applies_under_allow_all(tmp_path):
         {"tool_calls": [("c1", "execute_shell", {"command": "git status --short"})]},
         {"text": "done"},
     ]
-    agent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
+    agent = fake_agent(
         tmp_path,
+        script,
         permission_mode="allow-all",
         permission_rules={"execute_shell": {"git status*": "deny"}},
     )
@@ -144,12 +142,7 @@ async def test_disabled_tool_call_is_rejected_at_execution(tmp_path):
         {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "nope"})]},
         {"text": "ok"},
     ]
-    agent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
-        tmp_path,
-        enabled_tools={"read_file"},
-    )
+    agent = fake_agent(tmp_path, script, enabled_tools={"read_file"})
 
     events = [event async for event in agent.respond("write it")]
 
@@ -190,12 +183,7 @@ async def test_approval_identity_binds_capabilities_and_is_reused(tmp_path):
         {"tool_calls": [("c3", "execute_shell", dict(escalated))]},
         {"text": "done"},
     ]
-    agent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
-        tmp_path,
-        approval_handler=handler,
-    )
+    agent = fake_agent(tmp_path, script, approval_handler=handler)
 
     events = [event async for event in agent.respond("go")]
     assert events[-1].kind == "done"
@@ -232,7 +220,7 @@ async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
     subs: list[Agent] = []
 
     def factory(_model: str) -> Agent:
-        sub = Agent(FakeProvider(script=sub_script), build_registry(8_000), root)
+        sub = fake_agent(root, sub_script)
         subs.append(sub)
         return sub
 
@@ -240,10 +228,9 @@ async def test_capped_subagent_approved_external_write_succeeds(tmp_path):
         {"tool_calls": [("t1", "task", {"agent": "writer", "prompt": "write it"})]},
         {"text": "finished"},
     ]
-    parent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
+    parent = fake_agent(
         root,
+        script,
         permission_mode="allow-all",
         agents=registry,
         subagent_factory=factory,
@@ -270,12 +257,7 @@ async def test_destructive_command_is_not_policy_rejected_under_allow_all(tmp_pa
         {"tool_calls": [("c1", "execute_shell", {"command": "git reset --hard"})]},
         {"text": "done"},
     ]
-    agent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
-        tmp_path,
-        permission_mode="allow-all",
-    )
+    agent = fake_agent(tmp_path, script, permission_mode="allow-all")
     events = [event async for event in agent.respond("reset")]
     result = next(event.tool_result for event in events if event.kind == "tool_result")
     payload = json.loads(result)
@@ -294,10 +276,9 @@ async def test_permission_rule_allow_grants_exact_external_file_write(tmp_path):
         {"tool_calls": [("c1", "write_file", {"path": str(outside), "content": "approved"})]},
         {"text": "done"},
     ]
-    agent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
+    agent = fake_agent(
         tmp_path / "project",
+        script,
         permission_rules={"write_file": {f"*{outside.name}": "allow"}},
     )
     agent.root.mkdir()
@@ -387,7 +368,7 @@ async def test_auto_reviewer_denies_before_external_write(tmp_path):
         {"tool_calls": [("c1", "write_file", {"path": str(outside), "content": "no"})]},
         {"text": "done"},
     ]
-    agent = Agent(FakeProvider(script=script), build_registry(8_000), tmp_path, permission_mode="auto-review")
+    agent = fake_agent(tmp_path, script, permission_mode="auto-review")
 
     async def deny(*_args):
         return ReviewDecision(False, "scope is not justified")
@@ -407,7 +388,7 @@ async def test_auto_reviewer_can_approve_exact_external_write(tmp_path):
         {"tool_calls": [("c1", "write_file", {"path": str(outside), "content": "ok"})]},
         {"text": "done"},
     ]
-    agent = Agent(FakeProvider(script=script), build_registry(8_000), tmp_path, permission_mode="auto-review")
+    agent = fake_agent(tmp_path, script, permission_mode="auto-review")
 
     async def approve(*_args):
         return ReviewDecision(True, "explicit task requires this exact file")
@@ -1173,12 +1154,7 @@ async def test_full_access_turn_writes_protected_path_without_asking(tmp_path, m
         {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "[core]\n"})]},
         {"text": "done"},
     ]
-    agent = Agent(
-        FakeProvider(script=script),
-        build_registry(8_000),
-        proj,
-        permission_mode="allow-all",
-    )
+    agent = fake_agent(proj, script, permission_mode="allow-all")
     asked: list[str] = []
 
     async def approval(tc, _reason, _key):

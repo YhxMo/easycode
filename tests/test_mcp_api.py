@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import httpx
 import pytest
@@ -14,14 +13,13 @@ from easycode.extensions.mcp.config import effective_servers, personal_config_pa
 from easycode.extensions.mcp.credentials import CredentialStore, credentials_path
 from easycode.extensions.mcp.manager import MCPSessionManager
 from easycode.web.main import create_app
+from tests.conftest import fake_agent
+from tests.helpers_web import agent_factory, load_config
 
 
 def build(tmp_path):
     """An app with a default project and one registered second project."""
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
     default = tmp_path / "default"
     other = tmp_path / "other"
@@ -34,15 +32,7 @@ def build(tmp_path):
     cfg.root = default
     cfg.workspace_projects = [{"root": str(other), "secondary": []}]
 
-    def factory(alias: str = "fake-a", **kw):
-        root = Path(kw["root"]).resolve() if kw.get("root") else default
-        return Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=root,
-        )
-
-    store = SessionStore(cfg, default, factory)
+    store = SessionStore(cfg, default, agent_factory(default))
     app = create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist")
     return app, cfg, store, {"default": default, "other": other}
 
@@ -344,23 +334,13 @@ def test_the_app_scope_is_not_listed_when_it_is_the_projects_own_file(tmp_path):
     Listing it as two scopes would show one entry as two layers of a merge that
     does not exist.
     """
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
     from easycode.web.store import SessionStore
-    from tests.conftest import FakeProvider
 
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
     store = SessionStore(
         cfg,
         tmp_path,
-        lambda alias="fake-a", **_: Agent(
-            provider=FakeProvider(script=[{"text": "ok"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        ),
+        lambda alias="fake-a", **_: fake_agent(tmp_path, [{"text": "ok"}]),
     )
     client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
 

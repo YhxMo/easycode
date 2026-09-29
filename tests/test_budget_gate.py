@@ -12,21 +12,14 @@ import pytest
 
 from easycode.agent.compaction import BudgetExceededError, Compactor
 from easycode.agent.context import History
-from easycode.agent.loop import Agent
-from easycode.tools import build_registry
-from tests.conftest import FakeProvider
-
-
-def make_agent(tmp_path, script: list[dict] | None = None):
-    provider = FakeProvider(script=list(script or []))
-    agent = Agent(provider=provider, registry=build_registry(8000), root=tmp_path)
-    return agent, provider
+from tests.conftest import fake_agent
 
 
 async def test_single_oversized_turn_fails_before_provider(tmp_path):
     """One huge user message with no tool boundary to cut → the gate fires
     before provider.stream, so provider.calls stays empty."""
-    agent, provider = make_agent(tmp_path)
+    agent = fake_agent(tmp_path)
+    provider = agent.provider
     agent.history.max_tokens = 50
     agent.history.max_chars = 10_000_000
 
@@ -48,7 +41,8 @@ async def test_gate_fires_even_when_compaction_auto_false(tmp_path):
     """`compaction.auto=False` opts out of automatic compaction, but the
     final budget gate must STILL reject an over-budget payload before the
     provider call."""
-    agent, provider = make_agent(tmp_path)
+    agent = fake_agent(tmp_path)
+    provider = agent.provider
     agent.compaction["auto"] = False
     agent.history.max_tokens = 50
     agent.history.max_chars = 10_000_000
@@ -63,7 +57,8 @@ async def test_gate_fires_even_when_compaction_auto_false(tmp_path):
 async def test_small_message_path_unaffected(tmp_path):
     """A message well under budget still reaches the provider exactly once —
     the gate must not reject healthy turns."""
-    agent, provider = make_agent(tmp_path, [{"text": "hello"}])
+    agent = fake_agent(tmp_path, [{"text": "hello"}])
+    provider = agent.provider
     agent.history.max_tokens = 1_000_000
 
     events = [ev async for ev in agent.respond("hi")]
@@ -78,7 +73,9 @@ async def test_budget_error_reaches_web_sse_channel(tmp_path):
     generic agent error event to the client."""
     from easycode.web.bridge import ApprovalBroker, stream_chat_with_approval
 
-    agent, provider = make_agent(tmp_path)
+    agent = fake_agent(tmp_path)
+
+    provider = agent.provider
     agent.history.max_tokens = 50
     agent.history.max_chars = 10_000_000
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -11,7 +10,7 @@ from easycode.agent.events import AgentEvent
 from easycode.agent.loop import Agent
 from easycode.models.base import StreamEvent, ToolCall
 from easycode.tools import build_registry
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, fake_agent
 from tests.helpers_history import ValidatingFakeProvider, assert_valid_tool_protocol
 
 
@@ -19,18 +18,9 @@ async def collect(agent: Agent, user_input: str) -> list[AgentEvent]:
     return [ev async for ev in agent.respond(user_input)]
 
 
-def make_agent(tmp_path: Path, script: list[dict] | None) -> tuple[Agent, FakeProvider]:
-    provider = FakeProvider(script=script)
-    agent = Agent(
-        provider=provider,
-        registry=build_registry(8000),
-        root=tmp_path,
-    )
-    return agent, provider
-
-
 async def test_simple_answer(tmp_path):
-    agent, provider = make_agent(tmp_path, [{"text": "hello world"}])
+    agent = fake_agent(tmp_path, [{"text": "hello world"}])
+    provider = agent.provider
     events = await collect(agent, "hi")
     text = "".join(e.content or "" for e in events if e.kind == "text")
     assert text == "hello world"
@@ -50,7 +40,7 @@ async def test_history_keeps_reader_friendly_text(tmp_path):
         {"text": "found some files"},
     ]
     (tmp_path / "a.py").write_text("x", encoding="utf-8")
-    agent, _ = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
     await collect(agent, "list")
     assert agent.history.messages[-1]["role"] == "assistant"
     assert agent.history.messages[-1]["content"] == "found some files"
@@ -67,7 +57,8 @@ async def test_tool_call_then_answer(tmp_path):
         },
         {"text": "found: a.py"},
     ]
-    agent, provider = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
+    provider = agent.provider
     events = await collect(agent, "list python files")
     final = "".join(e.content or "" for e in events if e.kind == "text")
     assert final == "found: a.py"
@@ -88,7 +79,7 @@ async def test_real_tool_execution_in_loop(tmp_path):
         },
         {"text": "done"},
     ]
-    agent, _ = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
     events = await collect(agent, "search")
     results = [e.tool_result for e in events if e.kind == "tool_result"]
     assert results and "value = 42" in results[0]
@@ -97,7 +88,7 @@ async def test_real_tool_execution_in_loop(tmp_path):
 
 
 async def test_provider_error_reported(tmp_path):
-    agent, _ = make_agent(tmp_path, [{"error": "boom"}])
+    agent = fake_agent(tmp_path, [{"error": "boom"}])
     events = await collect(agent, "hi")
     errs = [e for e in events if e.kind == "error"]
     assert errs and "boom" in errs[0].error
@@ -109,7 +100,7 @@ async def test_provider_error_reported(tmp_path):
 async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
     """a large tool schema (sent on every completion) counts toward the
     context budget, so compaction fires even though the message history is tiny."""
-    agent, _ = make_agent(tmp_path, [])
+    agent = fake_agent(tmp_path)
     agent.history.max_tokens = 1000
     agent.history.max_chars = 10_000_000
     big = {
@@ -138,7 +129,7 @@ async def test_large_tool_schema_counts_toward_budget(tmp_path, monkeypatch):
 async def test_compaction_auto_false_skips_condense(tmp_path, monkeypatch):
     """`compaction.auto=False` must suppress automatic compaction even
     when the history is well over budget — neither summarize nor trim fires."""
-    agent, _ = make_agent(tmp_path, [])
+    agent = fake_agent(tmp_path)
     agent.compaction["auto"] = False
     agent.history.max_tokens = 10
     agent.history.max_chars = 10
@@ -166,7 +157,7 @@ def fake_summarizer_that_marks(called: list[str]):
 async def test_compaction_auto_true_still_condenses(tmp_path, monkeypatch):
     """default `auto=True` keeps compacting when over budget
     (compaction must fire through summarize or trim)."""
-    agent, _ = make_agent(tmp_path, [])
+    agent = fake_agent(tmp_path)
     agent.compaction["auto"] = True
     agent.history.max_tokens = 10
     agent.history.max_chars = 10
@@ -187,7 +178,7 @@ async def test_summary_failure_falls_back_without_injecting_degrade_text(tmp_pat
     """when the summarizer returns None (LLM failure) the loop must NOT
     replace original messages with a fabricated summary note; it falls back to
     the conservative trim path instead."""
-    agent, _ = make_agent(tmp_path, [])
+    agent = fake_agent(tmp_path)
     agent.history.max_tokens = 8000
     agent.history.max_chars = 10_000_000
     for i in range(12):
@@ -216,7 +207,8 @@ async def test_model_can_finish_after_more_than_twelve_tool_rounds(tmp_path):
         {"tool_calls": [(f"c{i}", "glob", {"pattern": "*"})]}
         for i in range(15)
     ] + [{"text": "finished"}]
-    agent, provider = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
+    provider = agent.provider
 
     events = await collect(agent, "loop")
 
@@ -232,7 +224,8 @@ async def test_explicit_iteration_limit_ends_the_turn_with_a_coded_error(tmp_pat
     finished task, and the work already done stays in history."""
     script = [{"tool_calls": [(f"c{i}", "glob", {"pattern": "*"})]} for i in range(5)]
     script.append({"text": "never reached"})
-    agent, provider = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
+    provider = agent.provider
     agent.max_tool_iterations = 3
 
     events = await collect(agent, "loop")
@@ -264,7 +257,7 @@ async def test_approved_tool_result_tells_the_model_it_was_approved(tmp_path):
         {"tool_calls": [("c2", "read_file", {"path": str(inside)})]},
         {"text": "done"},
     ]
-    agent, _ = make_agent(root, script)
+    agent = fake_agent(root, script)
     # An explicit rule, so the prompt does not depend on how the platform
     # classifies a path that happens to live under the OS temp dir (which is
     # where pytest puts tmp_path).
@@ -296,7 +289,7 @@ async def test_protected_write_is_rejected_without_offering_an_approval(tmp_path
         {"tool_calls": [("c1", "write_file", {"path": str(target), "content": "x"})]},
         {"text": "stopped"},
     ]
-    agent, _ = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
     asked: list[str] = []
 
     async def approve(tc: ToolCall, reason: str, identity: str) -> bool:
@@ -316,8 +309,8 @@ async def test_protected_write_is_rejected_without_offering_an_approval(tmp_path
 
 async def test_concurrent_turns_isolated(tmp_path):
     """Two agents (sessions) running interleaved in the same loop."""
-    a1, _p1 = make_agent(tmp_path, [{"text": "A"}])
-    a2, _p2 = make_agent(tmp_path, [{"text": "B"}])
+    a1 = fake_agent(tmp_path, [{"text": "A"}])
+    a2 = fake_agent(tmp_path, [{"text": "B"}])
     t1 = collect(a1, "q1")
     t2 = collect(a2, "q2")
     e1, e2 = await t1, await t2
@@ -334,7 +327,8 @@ async def test_write_file_model_view_strips_diff(tmp_path):
         {"tool_calls": [("c1", "write_file", {"path": "a.txt", "content": "line1\nline2\n"})], "text": ""},
         {"text": "done"},
     ]
-    agent, provider = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
+    provider = agent.provider
     events = await collect(agent, "write")
 
     assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "line1\nline2\n"
@@ -376,7 +370,7 @@ async def test_auto_review_ignores_reads_and_dry_runs(tmp_path):
         },
         {"text": "done"},
     ]
-    agent, _provider = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
     agent.permission_mode = "auto-review"
     events = await collect(agent, "change it")
 
@@ -399,7 +393,7 @@ async def test_edit_file_model_view_strips_diff_review_keeps(tmp_path):
         {"tool_calls": [("c1", "edit_file", {"path": "e.py", "old_string": "return 1", "new_string": "return 42"})], "text": ""},
         {"text": "changed"},
     ]
-    agent, _provider = make_agent(tmp_path, script)
+    agent = fake_agent(tmp_path, script)
     agent.permission_mode = "auto-review"
     events = await collect(agent, "edit")
 

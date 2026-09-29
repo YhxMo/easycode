@@ -10,7 +10,7 @@ from easycode.agent.loop import Agent
 from easycode.extensions.frontmatter import FrontmatterError, parse_frontmatter, parse_spec
 from easycode.extensions.subagents import AgentRegistry
 from easycode.tools import build_registry
-from tests.conftest import FakeProvider
+from tests.conftest import fake_agent
 from tests.helpers_history import assert_valid_tool_protocol
 
 
@@ -119,11 +119,7 @@ You write code.
     subagent_called = []
 
     def fake_factory(model: str) -> Agent:
-        sub = Agent(
-            provider=FakeProvider(script=[{"text": "code generated"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
+        sub = fake_agent(tmp_path, [{"text": "code generated"}])
         subagent_called.append(model)
         return sub
 
@@ -137,13 +133,7 @@ You write code.
         {"text": "Task finished."},
     ]
 
-    main_agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        agents=reg,
-        subagent_factory=fake_factory,
-    )
+    main_agent = fake_agent(tmp_path, script, agents=reg, subagent_factory=fake_factory)
 
     events = [ev async for ev in main_agent.respond("please run coder")]
     results = [e.tool_result for e in events if e.kind == "tool_result"]
@@ -169,12 +159,7 @@ async def test_task_tool_unknown_agent_error(tmp_path):
         },
         {"text": "done"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        agents=reg,
-    )
+    agent = fake_agent(tmp_path, script, agents=reg)
 
     events = [ev async for ev in agent.respond("run")]
     results = [e.tool_result for e in events if e.kind == "tool_result"]
@@ -208,11 +193,7 @@ You only read files.
     subs: list[Agent] = []
 
     def fake_factory(_model: str) -> Agent:
-        sub = Agent(
-            provider=FakeProvider(script=sub_script),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
+        sub = fake_agent(tmp_path, sub_script)
         subs.append(sub)
         return sub
 
@@ -220,13 +201,7 @@ You only read files.
         {"tool_calls": [("t1", "task", {"agent": "reader", "prompt": "write it"})]},
         {"text": "finished"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        agents=reg,
-        subagent_factory=fake_factory,
-    )
+    agent = fake_agent(tmp_path, script, agents=reg, subagent_factory=fake_factory)
 
     events = [ev async for ev in agent.respond("delegate")]
     result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
@@ -253,12 +228,7 @@ async def test_subagent_cannot_exceed_parent_tool_cap(tmp_path):
 
     def factory(_model: str) -> Agent:
         # Mirrors make_agent: the factory hands back its own config-level set.
-        sub = Agent(
-            provider=FakeProvider(script=sub_script),
-            registry=build_registry(8000),
-            root=tmp_path,
-            enabled_tools={"read_file", "write_file"},
-        )
+        sub = fake_agent(tmp_path, sub_script, enabled_tools={"read_file", "write_file"})
         subs.append(sub)
         return sub
 
@@ -272,10 +242,9 @@ async def test_subagent_cannot_exceed_parent_tool_cap(tmp_path):
         approved.append(tc.name)
         return True
 
-    parent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
+    parent = fake_agent(
+        tmp_path,
+        script,
         agents=reg,
         subagent_factory=factory,
         enabled_tools={"read_file", "task"},
@@ -307,10 +276,9 @@ async def test_subagent_cannot_delegate_further(tmp_path):
     subs: list[Agent] = []
 
     def factory(_model: str) -> Agent:
-        sub = Agent(
-            provider=FakeProvider(script=sub_script),
-            registry=build_registry(8000),
-            root=tmp_path,
+        sub = fake_agent(
+            tmp_path,
+            sub_script,
             agents=reg,
             enabled_tools={"read_file", "task", "parallel_tasks"},
         )
@@ -321,10 +289,9 @@ async def test_subagent_cannot_delegate_further(tmp_path):
         {"tool_calls": [("t1", "task", {"agent": "writer", "prompt": "go"})], "text": ""},
         {"text": "finished"},
     ]
-    parent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
+    parent = fake_agent(
+        tmp_path,
+        script,
         agents=reg,
         subagent_factory=factory,
         enabled_tools={"read_file", "task"},
@@ -378,24 +345,13 @@ async def test_builtin_tool_argument_errors_are_results(tmp_path, name, args, ne
 
     def factory(model: str) -> Agent:
         made.append(model)
-        return Agent(
-            provider=FakeProvider(script=[{"text": "unused"}]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
+        return fake_agent(tmp_path, [{"text": "unused"}])
 
     script = [
         {"tool_calls": [("c1", name, args)], "text": ""},
         {"text": "recovered"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        agents=reg,
-        skills=skills,
-        subagent_factory=factory,
-    )
+    agent = fake_agent(tmp_path, script, agents=reg, skills=skills, subagent_factory=factory)
 
     events = [ev async for ev in agent.respond("go")]
     result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))
@@ -413,7 +369,6 @@ def test_subagent_requires_factory(tmp_path):
     from easycode.agent.builtin_tools import make_subagent
     from easycode.agent.loop import Agent
     from easycode.models.litellm_provider import LiteLLMProvider
-    from easycode.tools import build_registry
 
     parent = Agent(
         provider=LiteLLMProvider("demo", api_key="test-key"),
@@ -494,12 +449,7 @@ async def test_task_tool_rejects_primary_agent(tmp_path):
         {"tool_calls": [("t1", "task", {"agent": "main", "prompt": "do work"})], "text": ""},
         {"text": "done"},
     ]
-    agent = Agent(
-        provider=FakeProvider(script=script),
-        registry=build_registry(8000),
-        root=tmp_path,
-        agents=reg,
-    )
+    agent = fake_agent(tmp_path, script, agents=reg)
 
     events = [ev async for ev in agent.respond("run")]
     result = json.loads(next(e.tool_result for e in events if e.kind == "tool_result"))

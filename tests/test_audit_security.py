@@ -20,19 +20,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-from easycode.agent.loop import Agent
-from easycode.config import Config
 from easycode.models.credentials import Credential, new_credential_id, save_credential
 from easycode.paths import data_home
 from easycode.permissions.boundary import PathContext, ToolGrant
 from easycode.permissions.sandbox import child_env
 from easycode.tools import build_registry
-from easycode.web.main import create_app
 from easycode.web.middleware import _origin_is_local
-from easycode.web.store import SessionStore
-from tests.conftest import FakeProvider
 
 # ----------------------------------------------------------------
 
@@ -376,51 +370,14 @@ def test_sandbox_command_grant_fails_closed_non_macos(monkeypatch, tmp_path):
 # ----------------------------------------------------------------
 
 
-def make_app(tmp_path: Path, bind_host: str = "127.0.0.1", bind_port: int = 8000):
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
-
-    def factory(alias: str, **agent_kwargs):
-        root = agent_kwargs.get("root") or tmp_path
-        return Agent(
-            provider=FakeProvider(script=[]),
-            registry=build_registry(8000),
-            root=Path(root),
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    return TestClient(
-        create_app(
-            cfg=cfg,
-            session_store=store,
-            static_dir=tmp_path / "no-dist",
-            bind_host=bind_host,
-            bind_port=bind_port,
-        )
-    )
-
-
 def test_model_detail_hides_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    cfg_file = tmp_path / "easycode.config.json"
-    cfg_file.write_text(json.dumps({"models": {"fake-a": "fake/a"}}), encoding="utf-8")
-    cfg = Config.load(start=tmp_path)
-    cfg.root = tmp_path
+    cfg = load_config(tmp_path)
     key_id = new_credential_id()
     save_credential(Credential(key_id=key_id, api_key="sk-super-secret", base_url="https://api.x"))
     cfg.set_model_alias("fake-a", {"model": "fake/a", "key_id": key_id})
 
-    def factory(alias: str, **agent_kwargs):
-        return Agent(
-            provider=FakeProvider(script=[]),
-            registry=build_registry(8000),
-            root=tmp_path,
-        )
-
-    store = SessionStore(cfg, tmp_path, factory)
-    client = TestClient(create_app(cfg=cfg, session_store=store, static_dir=tmp_path / "no-dist"))
+    client = web_app(cfg, agent_factory(tmp_path), tmp_path)[0]
     r = client.get("/api/models/fake-a")
     assert r.status_code == 200
     data = r.json()
@@ -431,13 +388,13 @@ def test_model_detail_hides_api_key(tmp_path, monkeypatch):
 
 
 def test_cross_origin_post_rejected(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "https://evil.com"})
     assert r.status_code == 403
 
 
 def test_local_origin_post_allowed(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "http://127.0.0.1:8000"})
     assert r.status_code == 200
 
@@ -470,7 +427,7 @@ def test_origin_is_local_no_origin_loopback_only():
 def test_origin_host_equals_host_header_equivalent_rejected(tmp_path):
     """Origin hole #1: Origin host == Host hostname must NOT pass (DNS-rebinding)."""
     assert _origin_is_local("http://evil.example.com:8000", "127.0.0.1", 8000) is False
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post(
         "/api/chat",
         json={"message": "hi"},
@@ -483,7 +440,7 @@ def test_origin_localhost_arbitrary_port_rejected(tmp_path):
     """Origin hole #2: any loopback host on any port must no longer pass; the
     bound PORT must match (5273 is not the bound port)."""
     assert _origin_is_local("http://localhost:4173", "127.0.0.1", 8000) is False
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "http://localhost:4173"})
     assert r.status_code == 403
 
@@ -497,7 +454,7 @@ def test_origin_exact_same_origin_accepted(tmp_path):
     assert _origin_is_local("http://localhost:8000", "127.0.0.1", 8000) is True
     # A different port on the same loopback host is still rejected.
     assert _origin_is_local("http://127.0.0.1:9000", "127.0.0.1", 8000) is False
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "http://127.0.0.1:8000"})
     assert r.status_code == 200
 
@@ -512,7 +469,7 @@ def test_nonloopback_bind_requires_token(tmp_path, monkeypatch):
     """Non-loopback bind (--host 0.0.0.0) demands a bearer token; no-Origin and
     bad tokens are fail-closed. Only a valid EASYCODE_WEB_TOKEN reaches the API."""
     monkeypatch.setenv("EASYCODE_WEB_TOKEN", "sekrit")
-    client = make_app(tmp_path, bind_host="0.0.0.0")
+    client = web_client(tmp_path, bind_host="0.0.0.0")
     # No Origin on a non-loopback bind is rejected outright.
     assert client.post("/api/chat", json={"message": "hi"}).status_code == 403
     ok_origin = {"Origin": "http://127.0.0.1:8000"}
@@ -539,7 +496,7 @@ def test_nonloopback_bind_fails_closed_without_token_env(tmp_path, monkeypatch):
     """If EASYCODE_WEB_TOKEN is unset, a non-loopback bind rejects every
     state-change request (security-first fail-closed)."""
     monkeypatch.delenv("EASYCODE_WEB_TOKEN", raising=False)
-    client = make_app(tmp_path, bind_host="0.0.0.0")
+    client = web_client(tmp_path, bind_host="0.0.0.0")
     r = client.post("/api/chat", json={"message": "hi"}, headers={"Origin": "http://127.0.0.1:8000"})
     assert r.status_code in (401, 403)
     assert r.status_code != 200
@@ -552,6 +509,9 @@ def test_nonloopback_bind_fails_closed_without_token_env(tmp_path, monkeypatch):
 # boundary as `execute_shell` — no unsandboxed escape hatch.
 
 import subprocess as _sp
+
+from tests.conftest import fake_agent
+from tests.helpers_web import agent_factory, load_config, web_app, web_client
 
 
 def _mk_repo_tmp(tmp_path: Path, name: str) -> Path:
@@ -568,7 +528,7 @@ def _mk_repo_tmp(tmp_path: Path, name: str) -> Path:
 
 
 def test_worktreeinclude_rejects_escaping_parent_entry(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-escape")
     # Hostile listing tries to copy a SIBLING file (outside the repo root).
     secret = tmp_path / "secret"
@@ -588,7 +548,7 @@ def test_worktreeinclude_rejects_escaping_parent_entry(tmp_path):
 
 
 def test_worktreeinclude_rejects_absolute_path_entry(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-abs")
     (repo / ".worktreeinclude").write_text("/etc/hosts\n", encoding="utf-8")
     r = client.post("/api/workspaces/worktree", json={"root": str(repo)})
@@ -600,7 +560,7 @@ def test_worktreeinclude_rejects_absolute_path_entry(tmp_path):
 
 
 def test_worktreeinclude_copies_valid_entries(tmp_path):
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-ok")
     (repo / "docs").mkdir()
     (repo / "docs" / "guide.md").write_text("guide", encoding="utf-8")
@@ -618,7 +578,7 @@ def test_worktreeinclude_copies_valid_entries(tmp_path):
 def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatch):
     import easycode.web.routes.workspaces as main_mod
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup")
     (repo / ".easycode").mkdir()
     (repo / ".easycode" / "setup.sh").write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
@@ -647,7 +607,7 @@ def test_worktree_setup_script_runs_through_sandbox_command(tmp_path, monkeypatc
 def test_worktree_setup_script_fails_closed_when_sandbox_unavailable(tmp_path, monkeypatch):
     import easycode.web.routes.workspaces as main_mod
 
-    client = make_app(tmp_path)
+    client = web_client(tmp_path)
     repo = _mk_repo_tmp(tmp_path, "proj-wt-setup-nosand")
     (repo / ".easycode").mkdir()
     (repo / ".easycode" / "setup.sh").write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
@@ -923,7 +883,7 @@ async def test_read_file_external_denied_without_approval(tmp_path, monkeypatch)
     proj.mkdir()
 
     script = [{"tool_calls": [("c1", "read_file", {"path": str(secret)})]}, {"text": "done"}]
-    agent = Agent(FakeProvider(script=script), build_registry(8_000), proj)
+    agent = fake_agent(proj, script)
     prompts: list[str] = []
 
     async def approval(tc, *_args):
@@ -954,7 +914,7 @@ async def test_read_file_external_allowed_after_approval(tmp_path, monkeypatch):
     proj.mkdir()
 
     script = [{"tool_calls": [("c1", "read_file", {"path": str(secret)})]}, {"text": "done"}]
-    agent = Agent(FakeProvider(script=script), build_registry(8_000), proj)
+    agent = fake_agent(proj, script)
 
     async def approval(_tc, *_args):
         return True

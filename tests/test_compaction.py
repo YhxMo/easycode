@@ -8,6 +8,7 @@ import pytest
 
 from easycode.config import Config
 from easycode.models.credentials import Credential, save_credential
+from tests.conftest import fake_agent
 
 
 def test_history_token_budget():
@@ -92,26 +93,16 @@ async def test_agent_no_summarizer_hard_trim(tmp_path):
 
 
 def test_usable_tokens_reserves_output_buffer(tmp_path):
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from tests.conftest import FakeProvider
 
-    a = Agent(
-        provider=FakeProvider(),
-        registry=build_registry(8000),
-        root=tmp_path,
+    a = fake_agent(
+        tmp_path,
         max_context_tokens=32_000,
         model_limits={"context": 100_000, "output": 8_000},
     )
     # default buffer 20_000 → reserved = min(20_000, 8_000) = 8_000
     assert a.compactor.usable_tokens(a.max_context_tokens, a.model_limits) == 100_000 - 8_000
 
-    b = Agent(
-        provider=FakeProvider(),
-        registry=build_registry(8000),
-        root=tmp_path,
-        max_context_tokens=32_000,
-    )
+    b = fake_agent(tmp_path, max_context_tokens=32_000)
     assert b.model_limits is None
     assert (
         b.compactor.usable_tokens(b.max_context_tokens, b.model_limits) == 32_000
@@ -124,11 +115,8 @@ def test_prune_clears_old_tool_outputs(tmp_path, monkeypatch):
     monkeypatch.setattr(compaction, "PRUNE_PROTECT", 20)
     monkeypatch.setattr(compaction, "PRUNE_MINIMUM", 5)
     from easycode.agent.compaction import PRUNED_OUTPUT
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from tests.conftest import FakeProvider
 
-    agent = Agent(provider=FakeProvider(), registry=build_registry(8000), root=tmp_path)
+    agent = fake_agent(tmp_path)
     h = agent.history
     h.add_user("q1")
     h.add_tool("1", "read_file", "x" * 400)
@@ -149,11 +137,8 @@ def test_prune_protects_skill_output(tmp_path, monkeypatch):
 
     monkeypatch.setattr(compaction, "PRUNE_PROTECT", 20)
     monkeypatch.setattr(compaction, "PRUNE_MINIMUM", 5)
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from tests.conftest import FakeProvider
 
-    agent = Agent(provider=FakeProvider(), registry=build_registry(8000), root=tmp_path)
+    agent = fake_agent(tmp_path)
     h = agent.history
     h.add_user("q1")
     h.add_tool("1", "use_skill", "x" * 400)
@@ -172,10 +157,7 @@ def test_prune_protects_skill_output(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_summarizer_merges_previous_summary(tmp_path, monkeypatch):
     """The loop passes the prior summary to LLMSummarizer for rolling merge."""
-    from easycode.agent.loop import Agent
     from easycode.agent.summarizer import LLMSummarizer
-    from easycode.tools import build_registry
-    from tests.conftest import FakeProvider
 
     captured = {}
 
@@ -185,10 +167,9 @@ async def test_summarizer_merges_previous_summary(tmp_path, monkeypatch):
 
     monkeypatch.setattr(LLMSummarizer, "__call__", fake_summarize)
 
-    agent = Agent(
-        provider=FakeProvider(script=[{"text": "ok"}]),
-        registry=build_registry(8000),
-        root=tmp_path,
+    agent = fake_agent(
+        tmp_path,
+        [{"text": "ok"}],
         summarizer=LLMSummarizer("fake/a"),
         max_context_tokens=100_000,
     )
@@ -215,9 +196,6 @@ async def test_summarizer_transcript_skips_prior_summary(tmp_path):
     """10A: the prior summary reaches the summarizer once (previous_summary),
     not a second time as the head of the transcript."""
     from easycode.agent.context import SUMMARY_PREFIX
-    from easycode.agent.loop import Agent
-    from easycode.tools import build_registry
-    from tests.conftest import FakeProvider
 
     captured: dict = {}
 
@@ -226,10 +204,9 @@ async def test_summarizer_transcript_skips_prior_summary(tmp_path):
         captured["previous"] = previous_summary
         return "[merged]"
 
-    agent = Agent(
-        provider=FakeProvider(script=[{"text": "ok"}]),
-        registry=build_registry(8000),
-        root=tmp_path,
+    agent = fake_agent(
+        tmp_path,
+        [{"text": "ok"}],
         summarizer=fake_summarize,
         max_context_tokens=100_000,
     )
