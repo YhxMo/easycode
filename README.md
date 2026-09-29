@@ -57,22 +57,31 @@ access goes through LiteLLM, so any compatible endpoint can be configured.
                                       └───────────────────────────┘
 ```
 
-## Screenshots
+## A worked example
 
-A real session in a throwaway project. The task: add `top_words` to `wordcount.py`, cover it with a
-test and run `pytest`. The agent reads the files, edits the module, writes the test, runs the suite,
-and after its own test expectation fails once, fixes the test and runs it again.
+A throwaway project — `wordcount.py` with a word-count helper and a reading-time helper — and one
+request:
 
-![EasyCode web UI: a conversation with an expanded tool trace on the left and the change panel with a diff on the right](./assets/web-overview.png)
+> Add a `top_words(text, limit=3)` helper to wordcount.py that returns the most common words, cover it
+> with a test, and run the suite.
+
+The loop reads the module, adds the import, adds the helper, writes `test_wordcount.py`, and runs
+pytest inside the workspace sandbox. The screenshot is that run: the tool trace on the left, the change
+panel with the resulting diff on the right.
+
+![EasyCode web UI: a conversation with its tool trace on the left and the change panel showing the diff of wordcount.py on the right](./assets/web-overview.png)
 
 The right panel tracks the session's task list, context, changed files and a preview of any file the
 session touched. `/` lists the commands and skills registered in the workspace, `@` references files.
 
-![The command menu open above the composer, listing a skill and a prompt template](./assets/web-commands.png)
+![The command menu open above the composer, listing a skill and a prompt template from the project](./assets/web-commands.png)
 
 Full access removes the sandbox and the approvals, so it asks for an explicit confirmation first.
 
 ![A confirmation dialog warning that full access closes the file sandbox and the approvals](./assets/web-full-access-confirm.png)
+
+*The assistant text in this run comes from a scripted model so the trace can be reproduced; the tool
+calls, the edits and the test run are real.*
 
 ## Quick Install
 
@@ -131,8 +140,8 @@ uv run easycode main --help
   `.easycode/skills/` (or `~/.easycode/skills/`). Nothing is executed during the import, the source is
   not referenced again, and the same name may exist in both scopes — each row says where it came from
   and whether a higher scope shadows it.
-- Pinning: a pinned conversation is listed once, in the pinned section, and hovering it says which
-  project it belongs to — the row no longer has to carry both facts in one tooltip.
+- Pinning: a pinned conversation is listed once, in the pinned section; hovering it shows the project
+  and path it belongs to.
 
 ## Configuration
 
