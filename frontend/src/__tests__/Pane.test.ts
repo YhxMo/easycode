@@ -8,9 +8,10 @@ import {
   sessionToolItems,
 } from "../features/pane/pane";
 import type { GitFileState } from "../api";
-import type { Item, ToolItem } from "../types";
+import type { ToolItem } from "../types";
 import type { Mock } from "vitest";
 import fixtures from "./fixtures/toolResults.json";
+import { tool } from "./helpers";
 
 // ``paneData`` runs on every render of the activity pane, so it must not pay
 // for a JSON parse on results it has no card for. Counting the parse is the
@@ -37,14 +38,6 @@ const globEmpty = JSON.stringify(fixtures.glob.empty);
 const editApplied = JSON.stringify(fixtures.edit_file.applied);
 const editDryRun = JSON.stringify(fixtures.edit_file.dry_run);
 const editError = JSON.stringify(fixtures.edit_file.error);
-
-const tool = (
-  id: string,
-  name: string,
-  args: Record<string, unknown>,
-  result?: string,
-  done = true,
-): Item => ({ kind: "tool", id, name, args, result, done });
 
 describe("paneData · 读取", () => {
   it("文件卡片读取真实结果，并带上唯一目标", () => {

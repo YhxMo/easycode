@@ -3,36 +3,19 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../app/App";
 import * as api from "../api";
-import { activeTitle, composerField, primeApiMock, session, sidebarRow } from "./helpers";
+import {
+  activeTitle,
+  composerField,
+  controllableStream,
+  primeApiMock,
+  session,
+  sidebarRow,
+} from "./helpers";
 
 // New streams are identified by their SSE session event. Navigation abandons old events.
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-/**
- * A streamChat mock that captures `onEvent` and fails the test if a second
- * stream is started (each send should spawn exactly one stream).
- */
-function controllableStream() {
-  let onEvent: ((e: api.ChatEvent) => void) | undefined;
-  let resolve!: () => void;
-  const done = new Promise<void>((res) => {
-    resolve = res;
-  });
-  m.streamChat.mockImplementation((_sid, _msg, cb, _opts) => {
-    onEvent = cb;
-    return done;
-  });
-  return {
-    get: () => onEvent,
-    /** Resolve the in-flight stream so send()'s finally block runs. */
-    finish: () =>
-      act(async () => {
-        resolve();
-      }),
-  };
-}
 
 beforeEach(() => {
   primeApiMock(m);

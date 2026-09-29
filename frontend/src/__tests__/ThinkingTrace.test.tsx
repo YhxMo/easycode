@@ -4,15 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThinkingTrace } from "../features/chat/ThinkingTrace";
 import { traceOf, toolStep } from "../features/chat/trace";
 import type { Item } from "../types";
-
-const tool = (id: string, name: string, args: Record<string, unknown>, result: string): Item => ({
-  kind: "tool",
-  id,
-  name,
-  args,
-  result,
-  done: true,
-});
+import { tool } from "./helpers";
 
 // A collapsed trace never formats its payloads; only the step the reader opens
 // is parsed and indented.

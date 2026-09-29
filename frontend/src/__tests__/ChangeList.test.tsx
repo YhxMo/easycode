@@ -3,6 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ChangeList } from "../features/pane/ChangeList";
 import type { ChangeRow } from "../features/pane/pane";
+import { deferred } from "./helpers";
+
+type DiffReply = { diff: string | null; diff_note: string | null };
 
 // The working tree's rows carry counts, not diffs: the diff of a row arrives
 // when the reader opens it, and again whenever the counts were re-read — a diff
@@ -14,14 +17,6 @@ const row: ChangeRow = {
   added: 1,
   removed: 1,
   gitSource: { repo: "/ws", path: "src/app.ts" },
-};
-
-const deferred = () => {
-  let resolve!: (v: { diff: string | null; diff_note: string | null }) => void;
-  const promise = new Promise<{ diff: string | null; diff_note: string | null }>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
 };
 
 const other: ChangeRow = {
@@ -58,7 +53,7 @@ describe("ChangeList · 按需取 diff", () => {
 
   it("统计重新读取后，展开的行按同一份快照重取", async () => {
     const user = userEvent.setup();
-    const first = deferred();
+    const first = deferred<DiffReply>();
     const loadDiff = vi.fn((r: ChangeRow) =>
       r.key === row.key
         ? Promise.resolve({ diff: "+first\n", diff_note: null })
@@ -137,7 +132,7 @@ describe("ChangeList · 按需取 diff", () => {
 
   it("统计刷新前发出、已收起那一行的迟到回复不会落下", async () => {
     const user = userEvent.setup();
-    const first = deferred();
+    const first = deferred<DiffReply>();
     const loadDiff = vi.fn().mockReturnValueOnce(first.promise);
     const { rerender, container } = render(
       <ChangeList rows={[row]} loadDiff={loadDiff} statsVersion={1} />,

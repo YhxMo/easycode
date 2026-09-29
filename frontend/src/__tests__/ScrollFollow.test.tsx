@@ -3,7 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../app/App";
 import * as api from "../api";
-import { composerField, detail, primeApiMock, session, sidebarRow } from "./helpers";
+import {
+  captureStreams,
+  composerField,
+  detail,
+  primeApiMock,
+  session,
+  sidebarRow,
+} from "./helpers";
 
 // Scroll ownership: streaming text pulls the view down only while the reader is
 // already at the bottom. Reading history above the fold must not be yanked away.
@@ -26,19 +33,6 @@ function stubScroller(pane: HTMLElement, scrollHeight: number, clientHeight: num
     },
   });
   return { writes, position: () => top };
-}
-
-function captureStreams() {
-  const calls: Array<{ onEvent: (e: api.ChatEvent) => void; resolve: () => void }> = [];
-  m.streamChat.mockImplementation((_sid, _msg, cb) => {
-    let resolve!: () => void;
-    const done = new Promise<void>((res) => {
-      resolve = res;
-    });
-    calls.push({ onEvent: cb, resolve });
-    return done;
-  });
-  return calls;
 }
 
 beforeEach(() => {

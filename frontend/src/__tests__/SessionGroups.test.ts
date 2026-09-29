@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { groupSessions } from "../features/sidebar/sessionGroups";
-import type { SessionSummary, WorkspaceProject } from "../api";
+import type { SessionSummary } from "../api";
+import { project } from "./helpers";
 
 function s(id: string, root: string | null, created: string, extra: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -12,12 +13,6 @@ function s(id: string, root: string | null, created: string, extra: Partial<Sess
     ...extra,
   };
 }
-
-const project = (root: string, extra: Partial<WorkspaceProject> = {}): WorkspaceProject => ({
-  root,
-  secondary: [],
-  ...extra,
-});
 
 describe("groupSessions", () => {
   it("按工作目录归属：有根目录进项目，无根目录进最近", () => {

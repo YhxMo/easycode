@@ -7,6 +7,7 @@ import {
   activeTitle,
   commandsInfo,
   composerField,
+  controllableStream,
   deferred,
   detail,
   primeApiMock,
@@ -21,16 +22,6 @@ import {
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-/** A streamChat mock that captures `onEvent` and stays in-flight forever. */
-function captureStream() {
-  let onEvent: ((e: api.ChatEvent) => void) | undefined;
-  m.streamChat.mockImplementation((_sid, _msg, cb, _opts) => {
-    onEvent = cb;
-    return new Promise<void>(() => {});
-  });
-  return { get: () => onEvent };
-}
 
 beforeEach(() => {
   primeApiMock(m);
@@ -221,7 +212,7 @@ describe("App", () => {
           : detail("s2", "会话B", [{ role: "user", content: "B-视图" }]),
       ),
     );
-    const stream = captureStream();
+    const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("会话A");
@@ -251,7 +242,7 @@ describe("App", () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", [{ role: "user", content: "hi" }]));
-    const stream = captureStream();
+    const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("会话A");
@@ -302,7 +293,7 @@ describe("App", () => {
         },
       ],
     });
-    const stream = captureStream();
+    const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("会话A");
@@ -338,7 +329,7 @@ describe("App", () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
-    const stream = captureStream();
+    const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("会话A");
@@ -393,7 +384,7 @@ describe("App", () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
-    const stream = captureStream();
+    const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("会话A");
@@ -528,7 +519,7 @@ describe("App", () => {
     const user = userEvent.setup();
     m.fetchSessions.mockResolvedValue([session("s1", "会话A")]);
     m.fetchSession.mockResolvedValue(detail("s1", "会话A", []));
-    const stream = captureStream();
+    const stream = controllableStream();
 
     render(<App />);
     await screen.findByText("会话A");

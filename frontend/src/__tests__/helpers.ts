@@ -1,9 +1,18 @@
 // Shared front-end test utilities: the ./api mock surface plus small builders
 // reused by the App-level test files.
 import { vi } from "vitest";
-import { screen } from "@testing-library/react";
-import type { CommandInfo, CommandsInfo, SessionDetail, SessionSummary } from "../api";
+import { act, screen } from "@testing-library/react";
+import type {
+  ChatEvent,
+  ChatOptions,
+  CommandInfo,
+  CommandsInfo,
+  SessionDetail,
+  SessionSummary,
+  WorkspaceProject,
+} from "../api";
 import type { HistoryMessage } from "../features/chat/history";
+import type { Item } from "../types";
 
 export const apiMock = {
   fetchSessions: vi.fn(),
@@ -98,6 +107,83 @@ export function detail(id: string, title: string, messages: HistoryMessage[]): S
   };
 }
 
+/** A conversation with one finished turn, ready to be edited. */
+export function editable(id: string, title: string, prompt = "原来的问题") {
+  return {
+    ...detail(id, title, [
+      { role: "user", content: prompt, turn_id: `${id}-t1` },
+      { role: "assistant", content: "原来的回答", turn_id: `${id}-t1` },
+    ]),
+    turns: [{ id: `${id}-t1`, status: "completed" as const }],
+    revision: 1,
+  };
+}
+
+export function project(root: string, extra: Partial<WorkspaceProject> = {}): WorkspaceProject {
+  return { root, secondary: [], ...extra };
+}
+
+type StreamCallback = (e: ChatEvent) => void;
+
+/**
+ * A streamChat mock the test drives: it keeps the latest stream's callback and
+ * options, and every stream stays open until `finish()`.
+ */
+export function controllableStream() {
+  let onEvent: StreamCallback | undefined;
+  let options: ChatOptions | undefined;
+  let resolve!: () => void;
+  const done = new Promise<void>((res) => {
+    resolve = res;
+  });
+  apiMock.streamChat.mockImplementation(
+    (_sid: unknown, _msg: string, cb: StreamCallback, opts?: ChatOptions) => {
+      onEvent = cb;
+      options = opts;
+      return done;
+    },
+  );
+  return {
+    get: () => onEvent,
+    emit: (e: ChatEvent) => act(async () => onEvent?.(e)),
+    options: () => options,
+    /** Resolve the in-flight stream so send()'s finally block runs. */
+    finish: () => act(async () => resolve()),
+  };
+}
+
+/** A streamChat mock recording every stream; each stays open until its `resolve`. */
+export function captureStreams() {
+  const calls: Array<{
+    onEvent: StreamCallback;
+    resolve: () => void;
+    /** True once the caller aborted the request this call represents. */
+    aborted: () => boolean;
+  }> = [];
+  apiMock.streamChat.mockImplementation(
+    (_sid: unknown, _msg: string, cb: StreamCallback, opts?: ChatOptions) => {
+      let resolve!: () => void;
+      const done = new Promise<void>((res) => {
+        resolve = res;
+      });
+      calls.push({ onEvent: cb, resolve, aborted: () => opts?.signal?.aborted === true });
+      return done;
+    },
+  );
+  return calls;
+}
+
+/** A tool step in the chat stream; it counts as finished once it has a result. */
+export function tool(
+  id: string,
+  name: string,
+  args: Record<string, unknown>,
+  result?: string,
+  done = result !== undefined,
+): Item {
+  return { kind: "tool", id, name, args, result, done };
+}
+
 /** A controllable promise whose resolve/reject are owned by the test. */
 export function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -132,6 +218,13 @@ export function sessionRow(title: string): HTMLElement {
 /** The conversation currently on screen, as named by its active tab. */
 export function activeTitle(): string {
   return document.querySelector(".tab.active .tab-title")?.textContent ?? "";
+}
+
+/** Real session tabs: the start page's own tab has no close button. */
+export function tabTitles(): string[] {
+  return [...document.querySelectorAll(".tab-strip .tab")]
+    .filter((t) => t.querySelector(".tab-close"))
+    .map((t) => t.querySelector(".tab-title")?.textContent ?? "");
 }
 
 /** The composer's field: it carries the combobox role while a menu may open. */

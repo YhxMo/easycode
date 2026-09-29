@@ -3,7 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../app/App";
 import * as api from "../api";
-import { composerField, detail, primeApiMock, session, sidebarRow } from "./helpers";
+import {
+  captureStreams,
+  composerField,
+  detail,
+  primeApiMock,
+  session,
+  sidebarRow,
+} from "./helpers";
 
 // Concurrency contract: a turn owns its own conversation slot. Switching the
 // foreground away neither interrupts it nor lets its output leak into another
@@ -11,20 +18,6 @@ import { composerField, detail, primeApiMock, session, sidebarRow } from "./help
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-/** Captures every started stream so a test can drive them independently. */
-function captureStreams() {
-  const calls: Array<{ onEvent: (e: api.ChatEvent) => void; resolve: () => void }> = [];
-  m.streamChat.mockImplementation((_sid, _msg, cb) => {
-    let resolve!: () => void;
-    const done = new Promise<void>((res) => {
-      resolve = res;
-    });
-    calls.push({ onEvent: cb, resolve });
-    return done;
-  });
-  return calls;
-}
 
 beforeEach(() => {
   primeApiMock(m);

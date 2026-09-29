@@ -5,7 +5,7 @@ import type { SessionSummary, WorkspaceProject, WorkspacesInfo } from "../api";
 import { Sidebar } from "../features/sidebar/Sidebar";
 import { groupSessions } from "../features/sidebar/sessionGroups";
 import type { StreamActivityMap } from "../features/chat/useChatStream";
-import { primeApiMock } from "./helpers";
+import { primeApiMock, project } from "./helpers";
 
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
@@ -22,12 +22,6 @@ function s(id: string, root: string | null, extra: Partial<SessionSummary> = {})
     ...extra,
   };
 }
-
-const project = (root: string, extra: Partial<WorkspaceProject> = {}): WorkspaceProject => ({
-  root,
-  secondary: [],
-  ...extra,
-});
 
 function renderSidebar(
   sessions: SessionSummary[],

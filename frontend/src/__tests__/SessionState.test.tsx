@@ -3,7 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../app/App";
 import * as api from "../api";
-import { composerField, detail, primeApiMock, session, sessionRow, sidebarRow } from "./helpers";
+import {
+  activeTitle,
+  captureStreams,
+  composerField,
+  detail,
+  primeApiMock,
+  session,
+  sessionRow,
+  sidebarRow,
+  tabTitles,
+} from "./helpers";
 
 // S1 regression set: which conversation owns a tab, a draft and a pane choice.
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
@@ -25,32 +35,6 @@ vi.mock("../app/ChatHeader", async (importOriginal) => {
 
 const m = vi.mocked(api);
 
-/** Captures every started stream so a test can drive them independently. */
-function captureStreams() {
-  const calls: Array<{
-    onEvent: (e: api.ChatEvent) => void;
-    resolve: () => void;
-    /** True once the caller aborted the request this call represents. */
-    aborted: () => boolean;
-  }> = [];
-  m.streamChat.mockImplementation((_sid, _msg, cb, opts) => {
-    let resolve!: () => void;
-    const done = new Promise<void>((res) => {
-      resolve = res;
-    });
-    calls.push({ onEvent: cb, resolve, aborted: () => opts?.signal?.aborted === true });
-    return done;
-  });
-  return calls;
-}
-
-const composer = () => composerField() as HTMLTextAreaElement;
-/** Real session tabs: the draft's own tab has no close button. */
-const tabTitles = () =>
-  [...document.querySelectorAll(".tab-strip .tab")]
-    .filter((t) => t.querySelector(".tab-close"))
-    .map((t) => t.querySelector(".tab-title")?.textContent ?? "");
-const activeTitle = () => document.querySelector(".tab.active .tab-title")?.textContent ?? "";
 const paneOpen = () => document.querySelector(".right-pane") !== null;
 const closePane = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(screen.getByRole("button", { name: "关闭面板" }));
@@ -158,7 +142,7 @@ describe("App · 标签生命周期", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(composer(), "first");
+    await user.type(composerField(), "first");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
 
@@ -209,7 +193,7 @@ describe("App · 标签生命周期", () => {
     const created = { ...session("new", "新会话标题") };
     m.fetchSessions.mockResolvedValue([session("A", "会话A"), session("B", "会话B"), created]);
 
-    await user.type(composer(), "go");
+    await user.type(composerField(), "go");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
 
@@ -226,14 +210,14 @@ describe("App · 草稿归属", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(composer(), "只给 A 的草稿");
+    await user.type(composerField(), "只给 A 的草稿");
 
     await user.click(sidebarRow("会话B"));
-    expect(composer().value).toBe("");
+    expect(composerField().value).toBe("");
 
-    await user.type(composer(), "只给 B 的草稿");
+    await user.type(composerField(), "只给 B 的草稿");
     await user.click(sidebarRow("会话A"));
-    expect(composer().value).toBe("只给 A 的草稿");
+    expect(composerField().value).toBe("只给 A 的草稿");
   });
 
   it("关闭已有回合的标签只收起视图，重开仍能恢复草稿", async () => {
@@ -244,13 +228,13 @@ describe("App · 草稿归属", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(composer(), "还没发");
+    await user.type(composerField(), "还没发");
     await user.click(screen.getByRole("button", { name: "关闭 会话A" }));
 
     // The conversation had already run, so the tab close is view-only.
     expect(m.deleteSession).not.toHaveBeenCalled();
     await user.click(sidebarRow("会话A"));
-    expect(composer().value).toBe("还没发");
+    expect(composerField().value).toBe("还没发");
   });
 
   it("关闭空白标签会连同会话一起删除", async () => {
@@ -290,15 +274,15 @@ describe("App · 草稿归属", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(composer(), "A 的消息");
+    await user.type(composerField(), "A 的消息");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
 
     await user.click(sidebarRow("会话B"));
-    await user.type(composer(), "B 正在写");
+    await user.type(composerField(), "B 正在写");
     await act(async () => streams[0].resolve());
 
-    expect(composer().value).toBe("B 正在写");
+    expect(composerField().value).toBe("B 正在写");
   });
 
   it("新建会话命名后，草稿跟着新会话而不是留在前台猜测的会话里", async () => {
@@ -310,18 +294,18 @@ describe("App · 草稿归属", () => {
     const created = { ...session("new", "新会话标题") };
     m.fetchSessions.mockResolvedValue([session("A", "会话A"), session("B", "会话B"), created]);
 
-    await user.type(composer(), "第一条");
+    await user.type(composerField(), "第一条");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
 
     await act(async () => streams[0].onEvent({ type: "session", session_id: "new" }));
     // The user keeps composing after the id arrived: the text belongs to the
     // created conversation, so switching away and back must keep it.
-    await user.type(composer(), "补充");
+    await user.type(composerField(), "补充");
     await user.click(sidebarRow("会话B"));
-    expect(composer().value).toBe("");
+    expect(composerField().value).toBe("");
     await user.click(screen.getByRole("tab", { name: /新会话标题/ }));
-    expect(composer().value).toBe("补充");
+    expect(composerField().value).toBe("补充");
   });
 });
 
@@ -333,7 +317,7 @@ describe("App · 面板归属", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(composer(), "a1");
+    await user.type(composerField(), "a1");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
     await produceContext(streams[0], "a/a.ts");
@@ -349,7 +333,7 @@ describe("App · 面板归属", () => {
     expect(paneOpen()).toBe(false);
 
     // B's own new artifacts do open it: the automatic opening is per turn.
-    await user.type(composer(), "b1");
+    await user.type(composerField(), "b1");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(2));
     await produceContext(streams[1], "b/b.ts");
@@ -376,7 +360,7 @@ describe("App · 面板归属", () => {
     await screen.findByText("旧回复");
     expect(paneOpen()).toBe(false);
 
-    await user.type(composer(), "新的一轮");
+    await user.type(composerField(), "新的一轮");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
     // A pending turn with no artifact of its own must not pop the pane open.
@@ -403,7 +387,7 @@ describe("App · 面板归属", () => {
     render(<App />);
     await screen.findByText("会话A");
     await user.click(sidebarRow("会话A"));
-    await user.type(composer(), "a1");
+    await user.type(composerField(), "a1");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(streams.length).toBe(1));
     await produceContext(streams[0], "shared/a.ts");

@@ -7,6 +7,7 @@ import {
   commandsInfo,
   composerField,
   detail,
+  editable,
   primeApiMock,
   session,
   sidebarRow,
@@ -38,17 +39,6 @@ const OTHER_PROJECT: api.CommandInfo = {
   source_label: "B · 项目",
   project_root: "/ws/b",
 };
-
-function editable(id: string, title: string, prompt = "原来的问题") {
-  return {
-    ...detail(id, title, [
-      { role: "user", content: prompt, turn_id: `${id}-t1` },
-      { role: "assistant", content: "原来的回答", turn_id: `${id}-t1` },
-    ]),
-    turns: [{ id: `${id}-t1`, status: "completed" as const }],
-    revision: 1,
-  };
-}
 
 /** A conversation whose recorded prompt was an MCP command. */
 function sentAsCommand(id: string, title: string) {

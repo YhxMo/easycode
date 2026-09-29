@@ -6,7 +6,9 @@ import * as api from "../api";
 import {
   commandsInfo,
   composerField,
+  controllableStream,
   detail,
+  editable,
   primeApiMock,
   session,
   sidebarRow,
@@ -15,38 +17,6 @@ import {
 vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
-
-/** A conversation with one finished turn, ready to be edited. */
-function editable(id: string, title: string, prompt = "原来的问题") {
-  return {
-    ...detail(id, title, [
-      { role: "user", content: prompt, turn_id: `${id}-t1` },
-      { role: "assistant", content: "原来的回答", turn_id: `${id}-t1` },
-    ]),
-    turns: [{ id: `${id}-t1`, status: "completed" as const }],
-    revision: 1,
-  };
-}
-
-/** Capture the stream so the test decides when the turn ends. */
-function controllableStream() {
-  let onEvent: ((e: api.ChatEvent) => void) | undefined;
-  let options: api.ChatOptions | undefined;
-  let resolve!: () => void;
-  const done = new Promise<void>((res) => {
-    resolve = res;
-  });
-  m.streamChat.mockImplementation((_sid, _msg, cb, opts) => {
-    onEvent = cb;
-    options = opts;
-    return done;
-  });
-  return {
-    emit: (e: api.ChatEvent) => act(async () => onEvent?.(e)),
-    options: () => options,
-    finish: () => act(async () => resolve()),
-  };
-}
 
 function editButtons(): HTMLElement[] {
   return screen.queryAllByRole("button", { name: "编辑并重新发送这条消息" });

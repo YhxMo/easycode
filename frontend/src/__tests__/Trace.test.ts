@@ -2,15 +2,7 @@ import { describe, expect, it } from "vitest";
 import { currentTurn } from "../features/chat/chatStream";
 import { toolStep, traceOf } from "../features/chat/trace";
 import type { Item } from "../types";
-
-const tool = (id: string, name: string, args: Record<string, unknown>, result?: string): Item => ({
-  kind: "tool",
-  id,
-  name,
-  args,
-  result,
-  done: result !== undefined,
-});
+import { tool } from "./helpers";
 
 const ok = JSON.stringify({ status: "ok", path: "a.ts" });
 

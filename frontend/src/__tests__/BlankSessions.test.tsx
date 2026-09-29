@@ -3,7 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../app/App";
 import * as api from "../api";
-import { composerField, primeApiMock, session, sidebarRow } from "./helpers";
+import {
+  activeTitle,
+  composerField,
+  primeApiMock,
+  session,
+  sidebarRow,
+  tabTitles,
+} from "./helpers";
 
 // Blank conversations are real sessions from the moment they are asked for:
 // they survive a refresh, inherit the project on screen, and a tab close
@@ -12,13 +19,6 @@ vi.mock("../api", async () => (await import("./helpers")).apiMock);
 
 const m = vi.mocked(api);
 
-const composer = () => composerField() as HTMLTextAreaElement;
-/** Real session tabs: the start page's own tab has no close button. */
-const tabTitles = () =>
-  [...document.querySelectorAll(".tab-strip .tab")]
-    .filter((t) => t.querySelector(".tab-close"))
-    .map((t) => t.querySelector(".tab-title")?.textContent ?? "");
-const activeTitle = () => document.querySelector(".tab.active .tab-title")?.textContent ?? "";
 const labels = () => [...document.querySelectorAll<HTMLElement>(".tab-strip .tab-label")];
 
 /** A streamChat mock that stays in flight until the test resolves it. */
@@ -62,7 +62,7 @@ describe("App · 空白会话", () => {
     await waitFor(() => expect(m.createSession).toHaveBeenCalledWith("/repoA", expect.any(String)));
     await waitFor(() => expect(tabTitles()).toEqual(["会话A", "新会话"]));
     expect(activeTitle()).toBe("新会话");
-    expect(composer().value).toBe("");
+    expect(composerField().value).toBe("");
   });
 
   it("多个空白会话并存，刷新后标签、当前标签与草稿都回来", async () => {
@@ -82,12 +82,12 @@ describe("App · 空白会话", () => {
     const view = render(<App />);
     await user.click(screen.getByRole("button", { name: "新建会话" }));
     await waitFor(() => expect(tabTitles()).toEqual(["新会话"]));
-    await user.type(composer(), "第一个草稿");
+    await user.type(composerField(), "第一个草稿");
     await user.click(screen.getByRole("button", { name: "新建会话" }));
     await waitFor(() => expect(tabTitles()).toEqual(["新会话", "新会话"]));
     // A new conversation starts with an empty composer: the other one's text
     // stays with the conversation it was typed into.
-    expect(composer().value).toBe("");
+    expect(composerField().value).toBe("");
 
     view.unmount();
     // The server has both by now: a reload is answered by the real list.
@@ -103,7 +103,7 @@ describe("App · 空白会话", () => {
       expect(document.querySelectorAll(".tab.active .tab-close").length).toBe(1),
     );
     await user.click(labels()[0]);
-    await waitFor(() => expect(composer().value).toBe("第一个草稿"));
+    await waitFor(() => expect(composerField().value).toBe("第一个草稿"));
   });
 
   it("发送与关闭同时发生：流已经占了这一格，只关闭视图", async () => {
@@ -117,7 +117,7 @@ describe("App · 空白会话", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "新建会话" }));
     await waitFor(() => expect(tabTitles()).toEqual(["新会话"]));
-    await user.type(composer(), "hi");
+    await user.type(composerField(), "hi");
     await user.click(screen.getByRole("button", { name: /发送消息/ }));
     await waitFor(() => expect(m.streamChat).toHaveBeenCalled());
 
