@@ -177,7 +177,7 @@
   margin: 10px 0;
   border-radius: var(--r-lg);
   background: var(--inset);
-  box-shadow: var(--shadow-hairline);
+  box-shadow: var(--shadow-frame);
   overflow: hidden;
 }
 
@@ -277,7 +277,7 @@
   margin: 6px 0;
   border-radius: var(--r-lg);
   background: var(--inset);
-  box-shadow: var(--shadow-hairline);
+  box-shadow: var(--shadow-frame);
   overflow: hidden;
 }
 

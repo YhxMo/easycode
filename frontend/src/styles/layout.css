@@ -28,6 +28,6 @@
   min-width: 0;
   border-radius: var(--r-xl);
   background: var(--canvas);
-  box-shadow: var(--shadow-hairline);
+  box-shadow: var(--shadow-frame);
   overflow: hidden;
 }

@@ -107,7 +107,7 @@
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
   background: var(--inset);
 }
@@ -192,7 +192,7 @@
   flex-direction: column;
   gap: 5px;
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
   background: var(--inset);
 }

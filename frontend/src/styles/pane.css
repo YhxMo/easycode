@@ -7,7 +7,7 @@
   flex: none;
   border-radius: var(--r-xl);
   background: var(--canvas);
-  box-shadow: var(--shadow-hairline);
+  box-shadow: var(--shadow-frame);
   overflow: hidden;
 }
 
@@ -52,7 +52,7 @@
   border: 0;
   border-radius: var(--r-sm);
   background: none;
-  color: var(--ink-3);
+  color: var(--ink-2);
   font-size: 12.5px;
   cursor: pointer;
   transition:
@@ -97,7 +97,7 @@
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
-  color: var(--ink-3);
+  color: var(--ink-2);
   font-size: 11.5px;
   font-weight: 550;
 }
@@ -146,7 +146,7 @@
   padding: 10px 12px;
   border-radius: var(--r-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-hairline);
+  box-shadow: var(--shadow-frame);
 }
 
 .ctx-head {

@@ -54,7 +54,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  color: var(--ink-3);
+  color: var(--ink-2);
   font-size: 12px;
 }
 
@@ -63,6 +63,10 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.modal-section + .modal-section {
+  margin-top: 8px;
 }
 
 /* A flex row so a section can carry a trailing count (`.pane-count`), which

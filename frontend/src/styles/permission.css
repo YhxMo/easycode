@@ -176,6 +176,11 @@
   white-space: nowrap;
 }
 
+.perm-item:hover .perm-item-copy small,
+.perm-item.active .perm-item-copy small {
+  color: var(--ink-2);
+}
+
 .perm-radio {
   display: grid;
   place-items: center;

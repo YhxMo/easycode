@@ -173,7 +173,7 @@
   border: 0;
   border-radius: var(--r-md);
   background: none;
-  color: var(--ink-3);
+  color: var(--ink-2);
   font-size: 12.5px;
   cursor: pointer;
   transition:
@@ -229,7 +229,7 @@
   width: fit-content;
   max-width: 100%;
   padding: 10px 14px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-soft);
   border-radius: var(--r-xl) var(--r-xl) var(--r-xs) var(--r-xl);
   background: var(--hover-2);
   color: var(--ink);

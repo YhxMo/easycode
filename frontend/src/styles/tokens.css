@@ -1,5 +1,5 @@
 /* EasyCode design tokens, base element rules and shared keyframes.
- * Visual language: cool-neutral dark, hairline ring elevation, quiet chrome.
+ * Visual language: cool-neutral dark, soft frames, quiet chrome.
  * Imported by styles.css; token names are shared with the TSX markup.
  */
 
@@ -22,7 +22,7 @@
   /* ink */
   --ink: oklch(96.4% 0.002 247.8);
   --ink-2: oklch(73.1% 0.008 260.7);
-  --ink-3: oklch(54.1% 0.01 264.5);
+  --ink-3: oklch(64% 0.01 264.5);
 
   /* lines */
   --line: oklch(30.8% 0.006 258.4);
@@ -58,6 +58,8 @@
 
   /* elevation — hairline ring + soft drop */
   --shadow-hairline: 0 0 0 1px var(--line);
+  --shadow-frame: 0 0 0 1px var(--line-soft);
+  --shadow-composer: 0 1px 2px oklch(0% 0 0 / 0.16), 0 2px 6px oklch(0% 0 0 / 0.16);
   --shadow-btn: 0 0 0 1px oklch(100% 0 0 / 0.1), 0 1px 2px oklch(0% 0 0 / 0.3);
   --shadow-card: 0 0 0 1px oklch(100% 0 0 / 0.11), 0 1px 2px oklch(0% 0 0 / 0.2),
     0 2px 6px oklch(0% 0 0 / 0.2);
