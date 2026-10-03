@@ -1,4 +1,4 @@
-"""grep and glob, and the directory walk both of them share.
+"""grep and glob with early pruning of ignored directories.
 
 Dependency and cache directories are skipped as a cost question in every mode;
 the repository database is skipped only while the sandbox is on, because there
@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +85,7 @@ def glob(
     skip_dirs = _search_skip_dirs(scope)
     for r in scope.roots:
         for pat in (args.pattern, f"**/{args.pattern}"):
-            for p in r.glob(pat):
+            for p in _glob_paths(r, pat, skip_dirs):
                 if (
                     p.is_file()
                     and not _is_skipped(p, r, skip_dirs)
@@ -98,6 +99,72 @@ def glob(
     return json_out(
         "ok", {"matches": out, "count": len(out), "truncated": len(results) > args.max_results}
     )
+
+
+def _glob_paths(root: Path, pattern: str, skip_dirs: set[str]) -> Iterator[Path]:
+    """Prune ignored directories while expanding ordinary relative patterns.
+
+    Special expressions retain Path.glob's runtime-specific behavior. Literal
+    segments retain Path.glob's case handling, normal wildcards follow directory
+    links, and ** only descends into real directories.
+    """
+    parsed = Path(pattern)
+    parts = parsed.parts
+    separators = tuple(s for s in (os.sep, os.altsep) if s)
+    if (
+        not parts
+        or parsed.drive
+        or parsed.is_absolute()
+        or pattern.endswith(separators)
+        or parts[-1] == "**"
+        or ".." in parts
+        or any("**" in part and part != "**" for part in parts)
+    ):
+        yield from root.glob(pattern)
+        return
+
+    pending = [(root, 0)]
+    seen: set[tuple[Path, int]] = set()
+    while pending:
+        directory, index = pending.pop()
+        state = (directory, index)
+        if state in seen:
+            continue
+        seen.add(state)
+        part = parts[index]
+        if part in skip_dirs:
+            continue
+        last = index == len(parts) - 1
+        if not any(char in part for char in "*?["):
+            for target in directory.glob(part):
+                if last:
+                    yield target
+                elif target.is_dir():
+                    pending.append((target, index + 1))
+            continue
+        if part == "**":
+            pending.append((directory, index + 1))  # zero directory levels
+        try:
+            # Close before descending, even on deeply nested trees.
+            with os.scandir(directory) as scan:
+                entries = list(scan)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name in skip_dirs:
+                continue
+            target = directory / entry.name
+            try:
+                if part == "**":
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append((target, index))
+                elif fnmatch.fnmatch(entry.name, part):
+                    if last:
+                        yield target
+                    elif entry.is_dir():
+                        pending.append((target, index + 1))
+            except OSError:
+                continue
 
 
 #: What a listing skips unless the caller says otherwise: the performance
