@@ -83,15 +83,15 @@ def register_files(app: FastAPI, cfg, store) -> None:
                 if target in seen:
                     continue
                 seen.add(target)
+                rel = path.relative_to(root).as_posix()
+                if needle and needle not in path.name.lower() and needle not in rel.lower():
+                    continue
                 # Only files the preview can actually open belong here: a
                 # symlink out of the workspace, or into a protected path, would
                 # be listed and then refused.
                 if ctx.is_protected(target) or ctx.is_protected_path(target):
                     continue
                 if not any(target.is_relative_to(r) for r in roots):
-                    continue
-                rel = path.relative_to(root).as_posix()
-                if needle and needle not in path.name.lower() and needle not in rel.lower():
                     continue
                 parent = Path(rel).parent.as_posix()
                 found.append(

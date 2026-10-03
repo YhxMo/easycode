@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from easycode.permissions.boundary import PathContext
 from easycode.tools.reading import CHUNK_BYTES, MAX_READ_BYTES, _LineWindow, read_window
 from tests.helpers_web import web_client
 
@@ -67,6 +69,48 @@ def test_query_ranks_basename_hits_first(tmp_path):
 
     paths = _paths(client.post("/api/files", json={"root": str(tmp_path), "q": "readme"}).json())
     assert paths == ["README.md", "readme/notes.txt"]
+
+
+@pytest.mark.parametrize("full_access", [False, True])
+def test_query_checks_boundaries_only_for_matching_candidates(tmp_path, monkeypatch, full_access):
+    _workspace(tmp_path)
+    client = web_client(tmp_path)
+    session = client.app.state.store.create(root=str(tmp_path))
+    if full_access:
+        session.set_permission_mode("allow-all")
+    checked = []
+    original = PathContext.is_protected_path
+
+    def spy(ctx, target):
+        checked.append(target)
+        return original(ctx, target)
+
+    monkeypatch.setattr(PathContext, "is_protected_path", spy)
+    body = client.post("/api/files", json={"session_id": session.id, "q": "routes"}).json()
+    assert _paths(body) == ["src/web/routes.py"]
+    assert checked == [(tmp_path / "src/web/routes.py").resolve()]
+    checked.clear()
+    assert client.post("/api/files", json={"session_id": session.id, "q": "no-match"}).json() == {
+        "files": [], "total": 0,
+    }
+    assert checked == []
+
+
+def test_query_keeps_primary_name_even_when_only_secondary_name_matches(tmp_path):
+    primary = tmp_path / "ws"
+    secondary = tmp_path / "extra"
+    primary.mkdir()
+    secondary.mkdir()
+    target = secondary / "original.py"
+    target.write_text("x = 1\n")
+    (primary / "alias.py").symlink_to(target)
+    client = web_client(tmp_path)
+    session = client.app.state.store.create(root=str(primary), secondary_roots=[str(secondary)])
+    # Both roots reach the same canonical target, but the primary names it
+    # alias.py. Filtering must not let the secondary's name replace that one.
+    assert client.post("/api/files", json={"session_id": session.id, "q": "alias"}).json()["total"] == 1
+    body = client.post("/api/files", json={"session_id": session.id, "q": "original"}).json()
+    assert body == {"files": [], "total": 0}
 
 
 def test_limit_caps_the_listing(tmp_path):
