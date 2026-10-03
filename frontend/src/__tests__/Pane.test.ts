@@ -404,11 +404,11 @@ describe("paneData · 只解析自己有卡片的工具", () => {
     expect(counted.mock.calls).toHaveLength(fileTools.length);
 
     counted.mockClear();
-    const withOthers = paneData([...fileTools, ...others]);
+    const withOthers = paneData([...fileTools.map((item) => ({ ...item })), ...others]);
 
     // The extra results change nothing about what the pane shows...
     expect(withOthers).toEqual(withoutOthers);
-    // ...and they are never parsed: each file tool costs exactly one parse.
+    // ...and they are never parsed: each fresh file tool costs one parse.
     expect(counted.mock.calls).toHaveLength(fileTools.length);
   });
 
@@ -421,5 +421,55 @@ describe("paneData · 只解析自己有卡片的工具", () => {
     ]);
     const mock = counted as unknown as Mock;
     expect(mock).not.toHaveBeenCalled();
+  });
+});
+
+describe("paneData · 工具对象复用", () => {
+  it("纯文本增长不再解析已有工具结果，复用卡片", async () => {
+    const counted = await parseCounter();
+    const item = tool("cached", "read_file", { path: "src/app.ts" }, readOk);
+    const first = paneData([item]);
+    counted.mockClear();
+    for (let i = 0; i < 5; i++) {
+      const next = paneData([item, { kind: "assistant", text: `文本${i}` }]);
+      expect(next.context[0]).toBe(first.context[0]);
+    }
+    expect(counted).not.toHaveBeenCalled();
+  });
+
+  it("同一工具的返回和失败替换对象后立即更新", () => {
+    const waiting = tool("same", "read_file", { path: "src/app.ts" }, undefined, false);
+    expect(paneData([waiting]).context).toEqual([]);
+    const done = { ...waiting, done: true, result: readOk };
+    expect(paneData([done]).context[0].status).toBe("ok");
+    const failed = { ...done, result: readError };
+    expect(paneData([failed]).context[0].status).toBe("error");
+    expect(paneData([failed]).context[0].excerpt).toBe("not a file: src/nope.ts");
+  });
+
+  it("权限变化分别派生预览入口，切回时复用原来的卡片", () => {
+    const item = tool("outside-cached", "read_file", { path: "/tmp/other/note.txt" }, readOutside);
+    const sandboxed = paneData([item]).context[0];
+    expect(sandboxed.previewTarget).toBeUndefined();
+    expect(paneData([item], { fullAccess: true }).context[0].previewTarget).toBe("/tmp/other/note.txt");
+    expect(paneData([item]).context[0]).toBe(sandboxed);
+  });
+
+  it("历史裁剪桩已被缓存时，同 id 的持久记录仍然优先", () => {
+    const trimmed = tool("same-id", "read_file", {}, JSON.stringify({ status: "ok", content: "[Tool output cleared]" }));
+    expect(paneData([trimmed]).context[0].excerpt).toBe("[Tool output cleared]");
+    const record = tool("same-id", "read_file", { path: "src/app.ts" }, readOk) as ToolItem;
+    const next = paneData(sessionToolItems([record], [trimmed]));
+    expect(next.context[0].excerpt).toBe(fixtures.read_file.ok.content);
+    expect(next.context[0].previewTarget).toBe("/tmp/ws/src/app.ts");
+  });
+
+  it("没有可展示 diff 的写入结果也只解析一次", async () => {
+    const counted = await parseCounter();
+    const item = tool("no-card", "write_file", {}, JSON.stringify({ status: "ok" }));
+    expect(paneData([item]).changes).toEqual([]);
+    counted.mockClear();
+    expect(paneData([item]).changes).toEqual([]);
+    expect(counted).not.toHaveBeenCalled();
   });
 });

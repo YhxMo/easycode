@@ -1,11 +1,10 @@
 import { Fragment, useCallback, useState, type ReactNode } from "react";
 import type { Item } from "../../types";
 import { currentTimeLabel, formatClock, formatDuration } from "./history";
-import { traceOf } from "./trace";
 import { currentTurn } from "./chatStream";
 import { Markdown } from "../../components/Markdown";
 import { ApprovalCard } from "./ApprovalCard";
-import { ThinkingTrace } from "./ThinkingTrace";
+import { ToolTrace } from "./ThinkingTrace";
 import { TaskSummary } from "../pane/TaskRows";
 
 type ApprovalItem = Extract<Item, { kind: "approval" }>;
@@ -84,8 +83,7 @@ export function ChatMessages({
   let tools: Extract<Item, { kind: "tool" }>[] = [];
   const flushTools = () => {
     if (!tools.length) return;
-    const trace = traceOf(tools);
-    rows.push(<ThinkingTrace key={`trace-${tools[0].id || rows.length}`} trace={trace} />);
+    rows.push(<ToolTrace key={`trace-${tools[0].id || rows.length}`} tools={tools} />);
     tools = [];
   };
 

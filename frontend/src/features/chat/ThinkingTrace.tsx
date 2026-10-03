@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { Trace, TraceStep } from "./trace";
+import { traceOf } from "./trace";
+import type { ToolItem } from "../../types";
 import { parseResult, str } from "../../lib/toolResult";
 import { DiffView } from "../../components/primitives/DiffView";
 import { ToolChips } from "./ToolChips";
@@ -101,3 +103,13 @@ export function ThinkingTrace({ trace }: { trace: Trace }) {
     </div>
   );
 }
+
+/** Text growth keeps the same tool objects; only tool changes rebuild a trace. */
+export const ToolTrace = memo(
+  function ToolTrace({ tools }: { tools: ToolItem[] }) {
+    return <ThinkingTrace trace={traceOf(tools)} />;
+  },
+  (prev, next) =>
+    prev.tools.length === next.tools.length &&
+    prev.tools.every((tool, index) => tool === next.tools[index]),
+);

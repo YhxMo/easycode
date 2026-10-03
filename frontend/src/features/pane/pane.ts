@@ -124,6 +124,11 @@ function errorText(data: Record<string, unknown> | null, raw: string | undefined
 /** The tools this pane has a card for; every other result is left unparsed. */
 const PANE_TOOLS = new Set(["write_file", "edit_file", "read_file", "grep", "glob"]);
 
+type PaneCard = ContextCard | ChangeCard;
+// A changed result replaces its ToolItem. Weak keys let deleted conversations
+// release their cards without a second session cache or a cleanup registry.
+const cardCache = new WeakMap<ToolItem, Map<boolean, PaneCard | null>>();
+
 /**
  * Read/search calls become context cards; edits become change cards.
  *
@@ -143,108 +148,120 @@ export function paneData(turn: Item[], opts: { fullAccess?: boolean } = {}): Pan
     // they must not pay for a JSON parse on every render either.
     if (!item.done || item.result === undefined) continue;
     if (!PANE_TOOLS.has(item.name)) continue;
-    const data = parseResult(item.result);
-    if (item.name === "write_file" || item.name === "edit_file") {
-      const diff = str(data?.diff);
-      if (!diff) continue;
-      changes.push({
-        id: item.id,
-        path: str(data?.path) || str(item.args.path),
-        diff,
-        // `dry_run` returns a patch preview and leaves the file untouched.
-        applied: data?.dry_run !== true,
-        target: targetOf(data, item.args),
-      });
-      continue;
+    const fullAccess = Boolean(opts.fullAccess);
+    let cached = cardCache.get(item);
+    if (!cached) {
+      cached = new Map();
+      cardCache.set(item, cached);
     }
-    if (item.name === "read_file") {
-      const failed = isError(data);
-      const display = str(data?.path) || str(item.args.path);
-      // An absolute display path means the file is under no root of this
-      // session. A sandboxed session's preview API refuses those, so the card
-      // keeps the excerpt and must not offer a link that can only fail; full
-      // access previews exactly what its reads may open.
-      const outside = display.startsWith("/") && !opts.fullAccess;
-      const root = outside ? "" : rootOf(str(data?.absolute_path), display);
-      context.push({
-        id: item.id,
-        sourceLabel: display,
-        title: str(data?.path).split("/").pop() || str(item.args.path),
-        excerpt: failed ? errorText(data, item.result) : str(data?.content),
-        meta: readMeta(data, failed),
-        kind: "read",
-        status: failed ? "error" : str(data?.content) ? "ok" : "empty",
-        previewTarget: failed || outside ? undefined : targetOf(data, item.args),
-        previewBlocked:
-          !failed && outside
-            ? "这个文件在工作区之外，本轮读取已获批准；面板只显示上面的摘录，不能预览。"
-            : undefined,
-        rootLabel: root ? basename(root) : undefined,
-      });
-      continue;
-    }
-    if (item.name === "grep") {
-      const failed = isError(data);
-      const rows = Array.isArray(data?.matches) ? data.matches : [];
-      const hits: ContextHit[] = rows.map((row) => {
-        const match = (row ?? {}) as Record<string, unknown>;
-        const file = str(match.file);
-        const root = str(match.root);
-        return {
-          target: hitTarget(file, root),
-          label: file,
-          // The same relative path can exist under several roots; the one that
-          // recorded its root is what tells the two apart.
-          rootLabel: root ? basename(root) : undefined,
-          text: str(match.text),
-          line: num(match.line),
-        };
-      });
-      context.push({
-        id: item.id,
-        sourceLabel: str(item.args.pattern),
-        title: "搜索",
-        // The snippets live in the hit rows below, so the body only carries a
-        // failure reason.
-        excerpt: failed ? errorText(data, item.result) : "",
-        meta: failed ? "失败" : `${hits.length} 处匹配`,
-        kind: "search",
-        status: failed ? "error" : hits.length ? "ok" : "empty",
-        hits,
-      });
-      continue;
-    }
-    if (item.name === "glob") {
-      const failed = isError(data);
-      const rows = Array.isArray(data?.matches) ? data.matches : [];
-      const hits: ContextHit[] = rows.map((row) => {
-        if (typeof row === "string") {
-          return { target: row, label: row, text: "", line: 0 };
-        }
-        const entry = (row ?? {}) as Record<string, unknown>;
-        const path = str(entry.path);
-        const root = str(entry.root);
-        return {
-          target: hitTarget(path, root),
-          label: path,
-          rootLabel: root ? basename(root) : undefined,
-          text: "",
-          line: 0,
-        };
-      });
-      context.push({
-        id: item.id,
-        sourceLabel: str(item.args.pattern),
-        title: "文件列表",
-        excerpt: failed ? errorText(data, item.result) : "",
-        meta: failed ? "失败" : `${hits.length} 个文件`,
-        kind: "read",
-        status: failed ? "error" : hits.length ? "ok" : "empty",
-        hits,
-      });
-    }
+    if (!cached.has(fullAccess)) cached.set(fullAccess, buildCard(item, fullAccess));
+    const card = cached.get(fullAccess);
+    if (!card) continue;
+    if ("diff" in card) changes.push(card);
+    else context.push(card);
   }
   return { context, changes };
+}
+
+function buildCard(item: ToolItem, fullAccess: boolean): PaneCard | null {
+  const data = parseResult(item.result);
+  if (item.name === "write_file" || item.name === "edit_file") {
+    const diff = str(data?.diff);
+    if (!diff) return null;
+    return {
+      id: item.id,
+      path: str(data?.path) || str(item.args.path),
+      diff,
+      // `dry_run` returns a patch preview and leaves the file untouched.
+      applied: data?.dry_run !== true,
+      target: targetOf(data, item.args),
+    };
+  }
+  if (item.name === "read_file") {
+    const failed = isError(data);
+    const display = str(data?.path) || str(item.args.path);
+    // An absolute display path means the file is under no root of this
+    // session. A sandboxed session's preview API refuses those, so the card
+    // keeps the excerpt and must not offer a link that can only fail; full
+    // access previews exactly what its reads may open.
+    const outside = display.startsWith("/") && !fullAccess;
+    const root = outside ? "" : rootOf(str(data?.absolute_path), display);
+    return {
+      id: item.id,
+      sourceLabel: display,
+      title: str(data?.path).split("/").pop() || str(item.args.path),
+      excerpt: failed ? errorText(data, item.result) : str(data?.content),
+      meta: readMeta(data, failed),
+      kind: "read",
+      status: failed ? "error" : str(data?.content) ? "ok" : "empty",
+      previewTarget: failed || outside ? undefined : targetOf(data, item.args),
+      previewBlocked:
+        !failed && outside
+          ? "这个文件在工作区之外，本轮读取已获批准；面板只显示上面的摘录，不能预览。"
+          : undefined,
+      rootLabel: root ? basename(root) : undefined,
+    };
+  }
+  if (item.name === "grep") {
+    const failed = isError(data);
+    const rows = Array.isArray(data?.matches) ? data.matches : [];
+    const hits: ContextHit[] = rows.map((row) => {
+      const match = (row ?? {}) as Record<string, unknown>;
+      const file = str(match.file);
+      const root = str(match.root);
+      return {
+        target: hitTarget(file, root),
+        label: file,
+        // The same relative path can exist under several roots; the one that
+        // recorded its root is what tells the two apart.
+        rootLabel: root ? basename(root) : undefined,
+        text: str(match.text),
+        line: num(match.line),
+      };
+    });
+    return {
+      id: item.id,
+      sourceLabel: str(item.args.pattern),
+      title: "搜索",
+      // The snippets live in the hit rows below, so the body only carries a
+      // failure reason.
+      excerpt: failed ? errorText(data, item.result) : "",
+      meta: failed ? "失败" : `${hits.length} 处匹配`,
+      kind: "search",
+      status: failed ? "error" : hits.length ? "ok" : "empty",
+      hits,
+    };
+  }
+  if (item.name === "glob") {
+    const failed = isError(data);
+    const rows = Array.isArray(data?.matches) ? data.matches : [];
+    const hits: ContextHit[] = rows.map((row) => {
+      if (typeof row === "string") {
+        return { target: row, label: row, text: "", line: 0 };
+      }
+      const entry = (row ?? {}) as Record<string, unknown>;
+      const path = str(entry.path);
+      const root = str(entry.root);
+      return {
+        target: hitTarget(path, root),
+        label: path,
+        rootLabel: root ? basename(root) : undefined,
+        text: "",
+        line: 0,
+      };
+    });
+    return {
+      id: item.id,
+      sourceLabel: str(item.args.pattern),
+      title: "文件列表",
+      excerpt: failed ? errorText(data, item.result) : "",
+      meta: failed ? "失败" : `${hits.length} 个文件`,
+      kind: "read",
+      status: failed ? "error" : hits.length ? "ok" : "empty",
+      hits,
+    };
+  }
+  return null;
 }
 
 /**
